@@ -106,6 +106,11 @@ const makeService = (env: Record<string, string> = {}) => {
     }),
     getMessages: jest.fn().mockResolvedValue([]),
     reactMessage: jest.fn().mockResolvedValue(undefined),
+    getZaloAliases: jest.fn().mockResolvedValue(new Map()),
+    renameCustomer: jest.fn((_p: string, _c: string, name: string) => Promise.resolve(name)),
+    listStorage: jest.fn().mockResolvedValue([]),
+    uploadStorage: jest.fn().mockResolvedValue([{ id: 'x' }]),
+    deleteStorage: jest.fn().mockResolvedValue(undefined),
     getMessageStates: jest.fn().mockResolvedValue(null),
     messageAction: jest.fn().mockResolvedValue(undefined),
     listFriendAvatars: jest.fn().mockResolvedValue({ zlwX: 'https://ava/x-moi.jpg' }),
@@ -192,6 +197,83 @@ describe('SmaxChatService', () => {
     expect(file.attachments).toEqual([{ url: 'https://cdn/b.pdf', thumbnail: null, title: 'bao-gia.pdf', type: 'file' }]);
     expect(sticker.stickerImage).toBe('https://fbcdn/s.png');
     expect(sticker.attachments).toEqual([]);
+  });
+
+  it('normalize: sticker Zalo OA (attachment type "sticker") → stickerImage, không hiện "Tệp đính kèm"', () => {
+    const { service } = makeService();
+    const url = 'https://zalo-api.zadn.vn/api/emoticon/oasticker?eid=1&size=130';
+    const [m] = service.normalize(
+      [
+        {
+          id: '1',
+          pid: 'zlA',
+          type: 'zalo_message',
+          platform: 'zalo',
+          sender_pid: 'zlU',
+          created_at: '2026-11-07T04:31:32Z',
+          zalo: { id: 'A', attachments: [{ url, type: 'sticker' }] },
+        },
+      ] as any,
+      'zlPAGE',
+      {},
+    );
+    expect(m.stickerImage).toBe(url);
+    expect(m.attachments).toEqual([]);
+  });
+
+  describe('Thư viện Smax', () => {
+    const CDN = 'https://cdn-vn.smax.in/s04/smaxai/bizs/68bb9e0029a67b92c1bf71f3/gallery/1-a.png?expire=1&signature=x';
+    afterEach(() => jest.restoreAllMocks());
+
+    it('libraryFiles: map tệp, chỉ giữ link CDN Smax, cursor = created_at tệp cuối khi đủ trang', async () => {
+      const { service, api } = makeService();
+      const rows = Array.from({ length: 30 }, (_, i) => ({
+        id: `s${i}`, name: `a${i}.png`, mime: 'image/png', size: 10, url: CDN, created_at: `2026-11-07T09:00:${String(59 - i).padStart(2, '0')}Z`,
+      }));
+      rows[3].url = 'https://evil.example/x.png';
+      api.listStorage.mockResolvedValue(rows);
+      const res = await service.libraryFiles({ albumId: 'g1', keyword: ' cat ', type: 'image' });
+      expect(api.listStorage).toHaveBeenCalledWith({ groupId: 'g1', name: 'cat', type: 'image', cursor: undefined, limit: 30 });
+      expect(res.files).toHaveLength(29);
+      expect(res.files[0]).toEqual({ id: 's0', name: 'a0.png', mime: 'image/png', size: 10, url: CDN, createdAt: rows[0].created_at });
+      expect(res.nextCursor).toBe(new Date(rows[29].created_at).getTime());
+      api.listStorage.mockResolvedValue(rows.slice(0, 5));
+      expect((await service.libraryFiles({})).nextCursor).toBeNull();
+    });
+
+    const ACTOR = { id: 1, name: 'Admin' } as any;
+    const ALBUM = '698047d04657dc2d1fbf965e';
+    const file = (name: string, mimetype: string, size = 3) =>
+      ({ originalname: name, mimetype, size, buffer: Buffer.alloc(size) }) as Express.Multer.File;
+
+    it('libraryUpload: tải lên album đang xem, ghi audit; chặn loại tệp lạ / album sai', async () => {
+      const { service, api, audit } = makeService();
+      await expect(service.libraryUpload(ACTOR, [file('a.exe', 'application/x-msdownload')])).rejects.toThrow('Không hỗ trợ loại tệp');
+      await expect(service.libraryUpload(ACTOR, [file('a.png', 'image/png')], 'bad album')).rejects.toThrow('Album không hợp lệ');
+      expect(api.uploadStorage).not.toHaveBeenCalled();
+      await expect(service.libraryUpload(ACTOR, [file('Bảng giá.png', 'image/png')], ALBUM)).resolves.toEqual({ uploaded: 1 });
+      expect(api.uploadStorage).toHaveBeenCalledWith([{ buffer: expect.any(Buffer), name: 'Bảng giá.png', mime: 'image/png' }], ALBUM);
+      expect(audit.create.mock.calls.at(-1)[0]).toMatchObject({ actionCode: 'SMAX_LIBRARY_UPLOAD', entityType: 'smax_library', entityId: ALBUM });
+    });
+
+    it('libraryDelete: xoá theo id Smax, ghi audit kèm tên tệp; id sai → 400', async () => {
+      const { service, api, audit } = makeService();
+      await expect(service.libraryDelete(ACTOR, [{ id: '../x' }])).rejects.toBeInstanceOf(BadRequestException);
+      await service.libraryDelete(ACTOR, [{ id: ALBUM, name: 'a.png' }, { id: ALBUM }]);
+      expect(api.deleteStorage).toHaveBeenCalledWith([ALBUM]);
+      expect(audit.create.mock.calls.at(-1)[0]).toMatchObject({ actionCode: 'SMAX_LIBRARY_DELETE', actionType: 'DELETE' });
+    });
+
+    it('importLibraryFiles: chỉ nhận link Thư viện Smax; tải về rồi lưu như tệp tải lên', async () => {
+      const { service } = makeService();
+      await expect(service.importLibraryFiles([{ url: 'https://evil.example/a.png', name: 'a.png' }])).rejects.toBeInstanceOf(BadRequestException);
+      jest.spyOn(global, 'fetch').mockResolvedValue(
+        new Response(Buffer.from('img'), { status: 200, headers: { 'content-type': 'image/png' } }),
+      );
+      const upload = jest.spyOn(service, 'uploadAttachments').mockResolvedValue([{ path: 'smax-chat/x.png' }] as any);
+      await expect(service.importLibraryFiles([{ url: CDN, name: 'catalogue.png', mime: 'image/jpeg' }])).resolves.toEqual([{ path: 'smax-chat/x.png' }]);
+      expect(upload.mock.calls[0][0][0]).toMatchObject({ originalname: 'catalogue.png', mimetype: 'image/png', size: 3 });
+    });
   });
 
   it('getMessages: Smax lỗi khi lấy thread vẫn trả tin nhắn', async () => {
@@ -555,9 +637,9 @@ describe('SmaxChatService', () => {
       expect(api.getMessages).toHaveBeenCalledWith('zlOA', OA_TID, undefined);
       expect(api.getMessageStates).not.toHaveBeenCalled();
       expect(res.canReact).toBe(false);
-      expect(res.messages[0].attachments).toEqual([
-        { url: 'https://zalo-api.zadn.vn/sticker.png', thumbnail: null, title: '', type: 'sticker' },
-      ]);
+      // Sticker Zalo OA hiện như sticker, không thành "Tệp đính kèm"
+      expect(res.messages[0].stickerImage).toBe('https://zalo-api.zadn.vn/sticker.png');
+      expect(res.messages[0].attachments).toEqual([]);
       await expect(service.getThreadMessages(1, 'zlOA', 'bad tid!')).rejects.toBeInstanceOf(BadRequestException);
     });
 
@@ -724,6 +806,46 @@ describe('SmaxChatService', () => {
 
     expect(items.map((i) => i.tid)).toEqual(['zlw1', 'zlw3']);
     expect((api as any).listRecentThreads).toHaveBeenCalledWith([PAGE], 50, 'thúy');
+  });
+
+  it('recentChats: tên gợi nhớ Zalo của kênh ưu tiên hơn tên Smax (chỉ 1-1), tìm được theo tên gợi nhớ', async () => {
+    const { service, api } = makeService();
+    (service as any).prisma.smaxChannelUser.findMany = jest.fn().mockResolvedValue([
+      { pagePid: PAGE, pageName: 'Diệp Trà Cs', platform: 'zaloweb', userId: 1 },
+    ]);
+    (service as any).prisma.customerZaloContact.findMany = jest.fn().mockResolvedValue([]);
+    (service as any).prisma.customer.findMany = jest.fn().mockResolvedValue([]);
+    (api as any).getZaloAliases = jest.fn().mockResolvedValue(new Map([['zlw3', 'Hải RT - Lermao HP'], ['zlw1', 'không áp cho nhóm']]));
+    (api as any).listRecentThreads = jest.fn().mockResolvedValue([
+      { tid: 'zlw1', pagePid: PAGE, name: 'Báo đơn', isGroup: true, lastMessage: 'a', lastMessageAt: null, unread: false },
+      { tid: 'zlw3', pagePid: PAGE, name: 'Hải RT', isGroup: false, lastMessage: 'b', lastMessageAt: null, unread: false },
+    ]);
+
+    const { items } = await service.recentChats(1);
+    expect(items.map((i) => i.name)).toEqual(['Báo đơn', 'Hải RT - Lermao HP']);
+    const found = await service.recentChats(1, undefined, 30, 'lermao');
+    expect(found.items.map((i) => i.tid)).toEqual(['zlw3']);
+    // Tên gợi nhớ cache theo kênh
+    expect((api as any).getZaloAliases).toHaveBeenCalledTimes(1);
+  });
+
+  it('renameThread: đổi tên trên Smax (customer pid = tid), ghi audit; chặn tên rỗng / kênh không phải Zalo cá nhân', async () => {
+    const { service, api, audit } = makeService();
+    const tid = 'zlw2395241168877084467';
+    const res = await service.renameThread(actor, { pagePid: PAGE, tid, name: '  Báo   đơn HN ' });
+    expect(api.renameCustomer).toHaveBeenCalledWith(PAGE, tid, 'Báo đơn HN');
+    expect(res).toEqual({ name: 'Báo đơn HN', alias: null });
+    expect(audit.create).toHaveBeenCalledWith(
+      expect.objectContaining({ actionCode: 'SMAX_THREAD_RENAME', entityId: tid, metadata: expect.objectContaining({ from: 'Nguyễn Toàn test group', to: 'Báo đơn HN' }) }),
+    );
+    await expect(service.renameThread(actor, { pagePid: PAGE, tid, name: '   ' })).rejects.toBeInstanceOf(BadRequestException);
+    await expect(service.renameThread(actor, { pagePid: 'zlOA', tid: 'zl123456', name: 'X' })).rejects.toBeInstanceOf(BadRequestException);
+    expect(api.renameCustomer).toHaveBeenCalledTimes(1);
+    // Trùng tên đang hiện (tên gợi nhớ) → không gọi Smax
+    (api as any).getZaloAliases = jest.fn().mockResolvedValue(new Map([[tid, 'Báo đơn Kho HN']]));
+    (service as any).aliasCache.clear();
+    expect(await service.renameThread(actor, { pagePid: PAGE, tid, name: 'Báo đơn Kho HN' })).toEqual({ name: 'Báo đơn Kho HN', alias: 'Báo đơn Kho HN' });
+    expect(api.renameCustomer).toHaveBeenCalledTimes(1);
   });
 
   it('friendAction: đồng ý = gửi lời mời lại, thu hồi = undo; chỉ cho Zalo cá nhân; ghi audit', async () => {

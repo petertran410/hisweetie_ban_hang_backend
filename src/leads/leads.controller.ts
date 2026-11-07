@@ -119,6 +119,20 @@ export class LeadsController {
     );
   }
 
+  @Post('handovers/:handoverId/confirm-phone')
+  @RequirePermissions('leads:assign')
+  confirmPhone(
+    @Param('handoverId', ParseIntPipe) handoverId: number,
+    @Body() dto: RetryHandoverDto,
+    @Req() req: any,
+  ) {
+    return this.service.confirmHandoverPhone(
+      handoverId,
+      dto.confirmed,
+      this.actor(req),
+    );
+  }
+
   @Get(':id/journey')
   @RequirePermissions('leads:view')
   journey(@Param('id', ParseIntPipe) id: number, @Req() req: any) {

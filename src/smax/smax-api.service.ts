@@ -230,6 +230,85 @@ export class SmaxApiService {
   }
 
   /**
+   * Đổi tên khách / nhóm trên Smax (= tên hội thoại, nút sửa tên trong Smax) qua API nội bộ
+   * (Partner API không có). Zalo cá nhân: customer pid = tid; Smax lưu luôn làm tên gợi nhớ của kênh.
+   */
+  async renameCustomer(pagePid: string, customerPid: string, name: string): Promise<string> {
+    if (!this.userToken) {
+      throw new ServiceUnavailableException('Chưa cấu hình SMAX_USER_TOKEN — chưa đổi tên được');
+    }
+    const body = await this.request(
+      'PUT',
+      `/bizs/${this.bizAlias}/pages/${pagePid}/customers/${customerPid}/info`,
+      { name },
+      { token: this.userToken },
+    );
+    return body?.data?.name ?? name;
+  }
+
+  /** Album của Thư viện Smax (groups type STORAGE, API nội bộ). */
+  async listStorageAlbums(): Promise<{ id: string; name: string; count: number | null; picture: string | null }[]> {
+    if (!this.userToken) throw new ServiceUnavailableException('Chưa cấu hình SMAX_USER_TOKEN — chưa mở được Thư viện Smax');
+    const body = await this.request('GET', `/bizs/${this.bizAlias}/groups?type=STORAGE`, undefined, { token: this.userToken });
+    const rows: any[] = body?.data ?? [];
+    return rows
+      .filter((g) => g?.type === 'STORAGE' && typeof g.id === 'string')
+      .map((g) => ({ id: g.id, name: g.name ?? '', count: typeof g.number === 'number' ? g.number : null, picture: g.picture ?? null }));
+  }
+
+  /** Tệp trong Thư viện Smax, mới → cũ; cursor = mốc created_at (ms) của tệp cuối trang trước. */
+  async listStorage(q: { name?: string; type?: string; groupId?: string; cursor?: number; limit: number }): Promise<any[]> {
+    if (!this.userToken) throw new ServiceUnavailableException('Chưa cấu hình SMAX_USER_TOKEN — chưa mở được Thư viện Smax');
+    const params = new URLSearchParams({ limit: String(q.limit), name: q.name ?? '' });
+    if (q.type) params.set('type', q.type);
+    if (q.groupId) params.set('group_id', q.groupId);
+    // Smax viết sai chính tả tham số phân trang: "cusor"
+    if (q.cursor) params.set('cusor', String(q.cursor));
+    const body = await this.request('GET', `/bizs/${this.bizAlias}/storages?${params}`, undefined, { token: this.userToken });
+    return body?.data ?? [];
+  }
+
+  /** Tải tệp lên Thư viện Smax (như nút "Tải lên" trên Smax); albumId = group STORAGE. */
+  async uploadStorage(files: { buffer: Buffer; name: string; mime: string }[], albumId?: string): Promise<any[]> {
+    if (!this.userToken) throw new ServiceUnavailableException('Chưa cấu hình SMAX_USER_TOKEN — chưa sửa được Thư viện Smax');
+    const form = new FormData();
+    for (const f of files) form.append('files', new Blob([new Uint8Array(f.buffer)], { type: f.mime }), f.name);
+    if (albumId) form.append('group_id', albumId);
+    form.append('private', 'true');
+    const body = await this.request('POST', `/bizs/${this.bizAlias}/storages/uploads`, form, {
+      token: this.userToken,
+      timeout: 120_000,
+    });
+    return body?.data ?? [];
+  }
+
+  /** Xoá tệp khỏi Thư viện Smax (xoá hẳn cho cả doanh nghiệp). */
+  async deleteStorage(ids: string[]): Promise<void> {
+    if (!this.userToken) throw new ServiceUnavailableException('Chưa cấu hình SMAX_USER_TOKEN — chưa sửa được Thư viện Smax');
+    await this.request('DELETE', `/bizs/${this.bizAlias}/storages`, { ids }, { token: this.userToken });
+  }
+
+  /**
+   * Tên gợi nhớ Sale đặt trên app Zalo của kênh (Smax tự đồng bộ từ Zalo): customer pid → tên.
+   * Không có token → rỗng.
+   */
+  async getZaloAliases(pagePid: string): Promise<Map<string, string>> {
+    if (!this.userToken) return new Map();
+    const body = await this.request(
+      'GET',
+      `/bizs/${this.bizAlias}/pages/${pagePid}/zaloweb-alias`,
+      undefined,
+      { allow404: true, token: this.userToken },
+    );
+    const rows: any[] = Array.isArray(body) ? body : (body?.data ?? []);
+    return new Map(
+      rows
+        .filter((r) => typeof r?.customer_pid === 'string' && typeof r?.name === 'string' && r.name.trim())
+        .map((r) => [r.customer_pid, r.name.trim()]),
+    );
+  }
+
+  /**
    * Trạng thái thu hồi / xoá của đúng trang tin như getMessages (cùng 20 tin, `cusor` = `before`),
    * lấy qua API nội bộ. Không có token → null.
    */
@@ -541,7 +620,7 @@ export class SmaxApiService {
   }
 
   private async request(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
     path: string,
     data?: any,
     opts: {

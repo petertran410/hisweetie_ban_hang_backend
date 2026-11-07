@@ -12,6 +12,8 @@ import {
   PublicLeadFormsController,
 } from './lead-forms.controller';
 import { LeadFormsService } from './lead-forms.service';
+import { LeadReportsController } from './lead-reports/lead-reports.controller';
+import { LeadReportsService } from './lead-reports/lead-reports.service';
 
 @Module({
   imports: [
@@ -25,7 +27,8 @@ import { LeadFormsService } from './lead-forms.service';
     LeadsController,
     LeadFormsController,
     PublicLeadFormsController,
+    LeadReportsController,
   ],
-  providers: [LeadsService, LeadsCron, LeadFormsService],
+  providers: [LeadsService, LeadsCron, LeadFormsService, LeadReportsService],
 })
 export class LeadsModule {}

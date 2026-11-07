@@ -94,6 +94,9 @@ const REACTIONS = ['NONE', 'LIKE', 'HEART', 'HAHA', 'WOW', 'CRY', 'ANGRY'];
 const SEND_LIMIT_PER_MINUTE = 20;
 const GROUP_INDEX_TTL_MS = 10 * 60_000;
 const RECENT_TTL_MS = 30_000;
+// Tên gợi nhớ Zalo theo kênh (Smax đồng bộ từ app Zalo) — đổi trên Zalo sẽ hiện sau tối đa 1 phút
+const ALIAS_TTL_MS = 60_000;
+const THREAD_NAME_MAX = 100;
 // So khớp tên không phân biệt hoa thường / dấu tiếng Việt
 const foldVi = (s: string) =>
   s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/gi, 'd').toLowerCase();
@@ -150,6 +153,12 @@ export interface SendContent {
   confirmed?: boolean;
 }
 
+// Thư viện Smax (https://smax.ai/bizs/<biz>/storages): CDN có chữ ký, chỉ lấy tệp trong thư mục của biz
+const SMAX_LIBRARY_URL = /^https:\/\/cdn(-[a-z]+)?\.smax\.in\/[\w-]+\/smaxai\/bizs\/[a-f0-9]{24}\//;
+export const isSmaxLibraryUrl = (url: string) => SMAX_LIBRARY_URL.test(url || '');
+const LIBRARY_PAGE = 30;
+// id Mongo của Smax (tệp / album Thư viện)
+const SMAX_ID = /^[a-f0-9]{24}$/;
 // Máy chủ ảnh/tệp/sticker của Zalo — cho phép chuyển tiếp & tải qua backend
 const ZALO_MEDIA_HOST = /^https:\/\/([\w-]+\.)*(zdn\.vn|zadn\.vn|zalo\.me|dlfl\.vn|dlmd\.me)\//;
 export const isZaloMediaUrl = (url: string) => ZALO_MEDIA_HOST.test(url || '');
@@ -200,6 +209,7 @@ export class SmaxChatService {
   private readonly sendLog = new Map<number, number[]>();
   // Chỉ mục nhóm theo kênh (quét Smax ~15s) — dùng chung giữa các khách
   private readonly recentCache = new Map<string, { at: number; threads: Promise<SmaxRecentThread[]> }>();
+  private readonly aliasCache = new Map<string, { at: number; map: Promise<Map<string, string>> }>();
   private readonly groupIndex = new Map<
     string,
     { at: number; groups: Promise<SmaxGroupThread[]> }
@@ -557,6 +567,56 @@ export class SmaxChatService {
   }
 
   /**
+   * Đổi tên hội thoại Zalo cá nhân (1-1 hoặc nhóm) trên Smax — tên hiện trên Smax & POS;
+   * Smax lưu luôn làm tên gợi nhớ của kênh. Tên nhóm thật trên Zalo không đổi.
+   */
+  async renameThread(actor: ChatActor, dto: { pagePid: string; tid: string; name: string }) {
+    const tid = this.assertTid(dto.tid);
+    const name = (dto.name ?? '').replace(/\s+/g, ' ').trim();
+    if (!name) throw new BadRequestException('Tên không được để trống');
+    if (name.length > THREAD_NAME_MAX) throw new BadRequestException(`Tên tối đa ${THREAD_NAME_MAX} ký tự`);
+    const channel = await this.assertOwnChannel(actor.id, dto.pagePid, true);
+    const thread = await this.smaxApi.getThread(channel.pid, tid);
+    if (!thread) throw new NotFoundException('Hội thoại không còn trên Smax');
+    // Tên đang hiện = tên gợi nhớ (nếu có) hoặc tên Smax
+    const shown = (await this.zaloAliases(channel.pid)).get(tid) ?? thread.name;
+    if (shown === name) return { name, alias: shown === thread.name ? null : shown };
+    this.checkRateLimit(actor.id);
+    const saved = await this.smaxApi.renameCustomer(channel.pid, tid, name);
+    // Smax lưu luôn tên mới làm tên gợi nhớ của kênh → đọc lại danh sách tên gợi nhớ
+    this.aliasCache.delete(channel.pid);
+    // Danh sách gần đây đọc lại tên mới; chỉ mục nhóm (quét lâu) chỉ sửa tên tại chỗ
+    this.recentCache.clear();
+    void this.groupIndex
+      .get(channel.pid)
+      ?.groups.then((gs) => gs.forEach((g) => `${ZALOWEB_PREFIX}${g.zaloId}` === tid && (g.name = saved)))
+      .catch(() => undefined);
+    await this.auditLogs.create({
+      actionType: 'PUT',
+      actionCode: 'SMAX_THREAD_RENAME',
+      entityType: 'smax_threads',
+      entityId: tid,
+      message: `Đổi tên hội thoại Zalo "${shown}" → "${saved}" (kênh "${channel.name}")`,
+      userId: actor.id,
+      userName: actor.name,
+      metadata: { pagePid: channel.pid, tid, from: shown, to: saved },
+    });
+    return { name: saved, alias: (await this.zaloAliases(channel.pid)).get(tid) ?? null };
+  }
+
+  /** Tên gợi nhớ Zalo của 1 kênh (cache 1 phút; lỗi → rỗng, không chặn tải hội thoại). */
+  private zaloAliases(pagePid: string): Promise<Map<string, string>> {
+    const hit = this.aliasCache.get(pagePid);
+    if (hit && Date.now() - hit.at < ALIAS_TTL_MS) return hit.map;
+    const map = this.smaxApi.getZaloAliases(pagePid).catch((e) => {
+      this.logger.warn(`Không tải được tên gợi nhớ Zalo kênh ${pagePid}: ${(e as Error).message}`);
+      return new Map<string, string>();
+    });
+    this.aliasCache.set(pagePid, { at: Date.now(), map });
+    return map;
+  }
+
+  /**
    * Bật Meta Business AI trả lời hội thoại Messenger (Smax "Pass control to Meta Business AI").
    * Tắt = nhân viên gửi tin kèm humanAgent (thẻ HUMAN_AGENT), Smax không có API riêng.
    */
@@ -682,6 +742,112 @@ export class SmaxChatService {
     );
   }
 
+  /** Album Thư viện Smax. */
+  libraryAlbums() {
+    return this.smaxApi.listStorageAlbums();
+  }
+
+  /** Tệp Thư viện Smax (lọc album / tên / loại), mỗi trang LIBRARY_PAGE tệp. */
+  async libraryFiles(q: { albumId?: string; keyword?: string; type?: 'image' | 'video'; cursor?: number }) {
+    const rows = await this.smaxApi.listStorage({
+      groupId: q.albumId,
+      name: q.keyword?.trim(),
+      type: q.type,
+      cursor: q.cursor,
+      limit: LIBRARY_PAGE,
+    });
+    const files = rows
+      .filter((r) => typeof r?.url === 'string' && isSmaxLibraryUrl(r.url))
+      .map((r) => ({
+        id: String(r.id),
+        name: String(r.name ?? ''),
+        mime: String(r.mime ?? ''),
+        size: typeof r.size === 'number' ? r.size : null,
+        url: r.url as string,
+        createdAt: r.created_at as string,
+      }));
+    const last = rows.at(-1)?.created_at;
+    return {
+      files,
+      nextCursor: rows.length >= LIBRARY_PAGE && last ? new Date(last).getTime() : null,
+    };
+  }
+
+  /** Tải tệp lên Thư viện Smax (quyền smax_chat:manage_library), vào album đang xem nếu có. */
+  async libraryUpload(actor: ChatActor, files: Express.Multer.File[], albumId?: string) {
+    if (!files?.length) throw new BadRequestException('Chưa chọn tệp');
+    if (files.length > MAX_ATTACHMENTS) {
+      throw new BadRequestException(`Tối đa ${MAX_ATTACHMENTS} tệp mỗi lần tải lên`);
+    }
+    if (albumId && !SMAX_ID.test(albumId)) throw new BadRequestException('Album không hợp lệ');
+    const items = files.map((f) => {
+      const name = repairUploadedFilename(f.originalname);
+      const mime = f.mimetype.toLowerCase();
+      if (!IMAGE_MIMES.has(mime) && !VIDEO_MIMES.has(mime) && !FILE_MIMES.has(mime)) {
+        throw new BadRequestException(`Không hỗ trợ loại tệp "${name}"`);
+      }
+      if (f.size > MAX_ATTACHMENT_BYTES) throw new BadRequestException(`"${name}" vượt quá 25MB`);
+      return { buffer: f.buffer, name, mime };
+    });
+    const saved = await this.smaxApi.uploadStorage(items, albumId);
+    await this.auditLogs.create({
+      actionType: 'POST',
+      actionCode: 'SMAX_LIBRARY_UPLOAD',
+      entityType: 'smax_library',
+      entityId: albumId ?? 'all',
+      message: `Tải ${items.length} tệp lên Thư viện Smax: ${items.map((i) => i.name).join(', ')}`,
+      userId: actor.id,
+      userName: actor.name,
+      metadata: { albumId: albumId ?? null, files: items.map((i) => ({ name: i.name, mime: i.mime, size: i.buffer.length })) },
+    });
+    return { uploaded: saved.length };
+  }
+
+  /** Xoá tệp khỏi Thư viện Smax (quyền smax_chat:manage_library) — xoá hẳn trên Smax. */
+  async libraryDelete(actor: ChatActor, files: { id: string; name?: string }[]) {
+    if (!files?.length) throw new BadRequestException('Chưa chọn tệp');
+    if (files.some((f) => !SMAX_ID.test(f.id))) throw new BadRequestException('Tệp không hợp lệ');
+    const ids = [...new Set(files.map((f) => f.id))];
+    await this.smaxApi.deleteStorage(ids);
+    await this.auditLogs.create({
+      actionType: 'DELETE',
+      actionCode: 'SMAX_LIBRARY_DELETE',
+      entityType: 'smax_library',
+      entityId: ids.join(',').slice(0, 190),
+      message: `Xoá ${ids.length} tệp khỏi Thư viện Smax: ${files.map((f) => f.name || f.id).join(', ')}`,
+      userId: actor.id,
+      userName: actor.name,
+      metadata: { files },
+    });
+    return { deleted: ids.length };
+  }
+
+  /**
+   * Lấy tệp đã chọn từ Thư viện Smax làm tệp đính kèm (tải về /uploads như tệp người dùng tải lên)
+   * → đi chung luồng gửi / xem trước / gửi lại. Chỉ nhận link CDN Thư viện Smax.
+   */
+  async importLibraryFiles(items: { url: string; name: string; mime?: string }[]) {
+    if (!items?.length) throw new BadRequestException('Chưa chọn tệp');
+    if (items.length > MAX_ATTACHMENTS) {
+      throw new BadRequestException(`Tối đa ${MAX_ATTACHMENTS} tệp mỗi lần gửi`);
+    }
+    if (items.some((i) => !isSmaxLibraryUrl(i.url))) {
+      throw new BadRequestException('Chỉ lấy được tệp trong Thư viện Smax');
+    }
+    const files = await Promise.all(
+      items.map(async (i) => {
+        const res = await fetch(i.url, { signal: AbortSignal.timeout(30_000) }).catch(() => null);
+        if (!res?.ok) throw new BadGatewayException(`Không tải được "${i.name}" từ Thư viện Smax`);
+        const buffer = Buffer.from(await res.arrayBuffer());
+        // Smax ghi mime theo lúc tải lên (có khi lệch đuôi tệp) → ưu tiên mime của CDN
+        const cdnMime = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+        const mime = cdnMime && cdnMime !== 'application/octet-stream' ? cdnMime : (i.mime || '').toLowerCase();
+        return { buffer, originalname: i.name, mimetype: mime, size: buffer.length } as Express.Multer.File;
+      }),
+    );
+    return this.uploadAttachments(files);
+  }
+
   /** Thông tin hội thoại (avatar, tên) + trạng thái kết bạn (chat trực tiếp Zalo cá nhân). */
   async getZaloProfile(customerId: number, actorId: number, pagePid: string, contactId: number) {
     const channel = await this.assertOwnChannel(actorId, pagePid);
@@ -704,12 +870,14 @@ export class SmaxChatService {
     const zaloweb = channel.platform === 'zaloweb';
     // Zalo cá nhân: ID Zalo (bỏ "zlw"); kênh khác: tid
     const zaloId = zaloweb ? tid.slice(ZALOWEB_PREFIX.length) : tid;
-    const [thread, friend] = await Promise.all([
+    const [thread, friend, aliases] = await Promise.all([
       this.smaxApi.getThread(channel.pid, tid).catch(() => null),
       zaloweb && kind === 'user'
         ? this.smaxApi.getFriendStatus(channel.pid, zaloId).catch(() => null)
         : Promise.resolve(null),
+      zaloweb && kind === 'user' ? this.zaloAliases(channel.pid) : Promise.resolve(null),
     ]);
+    const alias = aliases?.get(tid) ?? null;
     return {
       kind,
       zaloId,
@@ -722,7 +890,12 @@ export class SmaxChatService {
       controlledBy: thread?.controlledBy ?? null,
       canPassControlAI: channel.platform === 'facebook' && !!thread && !thread.isComment && this.smaxApi.canReact,
       commentUrl: thread?.commentUrl ?? null,
-      name: thread?.name || fallbackName || null,
+      // Như Smax: tên gợi nhớ trên Zalo của kênh được ưu tiên hơn tên hội thoại trên Smax
+      name: alias || thread?.name || fallbackName || null,
+      // Tên trên Smax (sửa được từ POS) + tên gợi nhớ Zalo — để hộp đổi tên giải thích tên đang hiện
+      smaxName: thread?.name || null,
+      alias,
+      canRename: zaloweb && !!thread && this.smaxApi.canReact,
       avatar: thread?.avatar ?? null,
       memberCount: kind === 'group' ? thread?.memberCount ?? null : null,
       memberPreview: kind === 'group' ? thread?.memberPreview ?? [] : [],
@@ -1309,6 +1482,15 @@ export class SmaxChatService {
       cached.threads.catch(() => this.recentCache.delete(key));
     }
     let threads = await cached.threads;
+    // Tên gợi nhớ Zalo của kênh ưu tiên hơn tên Smax (như app Smax); không sửa mảng trong cache
+    const zalowebPages = [...new Set(threads.filter((t) => !t.isGroup && /^zlw\d+$/.test(t.tid)).map((t) => t.pagePid))];
+    const aliasByPage = new Map(
+      await Promise.all(zalowebPages.map(async (pid) => [pid, await this.zaloAliases(pid)] as const)),
+    );
+    threads = threads.map((t) => {
+      const alias = t.isGroup ? undefined : aliasByPage.get(t.pagePid)?.get(t.tid);
+      return alias ? { ...t, name: alias } : t;
+    });
     // Smax khớp cả thành viên nhóm & nội dung tin → chỉ giữ hội thoại khớp tên Zalo / tên nhóm
     if (keyword) threads = threads.filter((t) => foldVi(t.name).includes(foldVi(keyword)));
 
@@ -1540,7 +1722,10 @@ export class SmaxChatService {
           (m as unknown as Record<string, { attachments?: NonNullable<SmaxRawMessage['zaloweb']>['attachments'] }>)[
             m.platform ?? ''
           ]) as { attachments?: NonNullable<SmaxRawMessage['zaloweb']>['attachments'] } | undefined;
-        const fbSticker = m.facebook?.sticker || null;
+        // Sticker Zalo OA: Smax lưu thành attachment type "sticker" (link ảnh oasticker)
+        const oaSticker =
+          part?.attachments?.find((a) => a?.type === 'sticker' && a.url)?.url ?? null;
+        const fbSticker = m.facebook?.sticker || oaSticker || null;
         return {
           id: m.pid || m.id,
           text: m.message ?? '',
@@ -1550,7 +1735,7 @@ export class SmaxChatService {
           senderName: fromMe
             ? null
             : (m.sender_pid && members[m.sender_pid]) || null,
-          // Sticker Facebook đã hiện qua stickerImage → bỏ attachment trùng
+          // Sticker Facebook / Zalo OA đã hiện qua stickerImage → bỏ attachment trùng
           attachments: (fbSticker ? [] : (part?.attachments ?? []))
             .filter((a) => a?.url)
             .map((a) => ({
