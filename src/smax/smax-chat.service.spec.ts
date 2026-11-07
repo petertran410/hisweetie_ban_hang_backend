@@ -196,6 +196,28 @@ describe('SmaxChatService', () => {
     expect(sticker.attachments).toEqual([]);
   });
 
+  it('normalize: sticker Zalo OA (attachment type "sticker") → stickerImage, không hiện "Tệp đính kèm"', () => {
+    const { service } = makeService();
+    const url = 'https://zalo-api.zadn.vn/api/emoticon/oasticker?eid=1&size=130';
+    const [m] = service.normalize(
+      [
+        {
+          id: '1',
+          pid: 'zlA',
+          type: 'zalo_message',
+          platform: 'zalo',
+          sender_pid: 'zlU',
+          created_at: '2026-11-07T04:31:32Z',
+          zalo: { id: 'A', attachments: [{ url, type: 'sticker' }] },
+        },
+      ] as any,
+      'zlPAGE',
+      {},
+    );
+    expect(m.stickerImage).toBe(url);
+    expect(m.attachments).toEqual([]);
+  });
+
   it('getMessages: Smax lỗi khi lấy thread vẫn trả tin nhắn', async () => {
     const { service, api } = makeService();
     api.getThread.mockRejectedValue(new Error('Smax 500'));
@@ -557,9 +579,9 @@ describe('SmaxChatService', () => {
       expect(api.getMessages).toHaveBeenCalledWith('zlOA', OA_TID, undefined);
       expect(api.getMessageStates).not.toHaveBeenCalled();
       expect(res.canReact).toBe(false);
-      expect(res.messages[0].attachments).toEqual([
-        { url: 'https://zalo-api.zadn.vn/sticker.png', thumbnail: null, title: '', type: 'sticker' },
-      ]);
+      // Sticker Zalo OA hiện như sticker, không thành "Tệp đính kèm"
+      expect(res.messages[0].stickerImage).toBe('https://zalo-api.zadn.vn/sticker.png');
+      expect(res.messages[0].attachments).toEqual([]);
       await expect(service.getThreadMessages(1, 'zlOA', 'bad tid!')).rejects.toBeInstanceOf(BadRequestException);
     });
 

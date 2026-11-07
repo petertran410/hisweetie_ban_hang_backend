@@ -1610,7 +1610,10 @@ export class SmaxChatService {
           (m as unknown as Record<string, { attachments?: NonNullable<SmaxRawMessage['zaloweb']>['attachments'] }>)[
             m.platform ?? ''
           ]) as { attachments?: NonNullable<SmaxRawMessage['zaloweb']>['attachments'] } | undefined;
-        const fbSticker = m.facebook?.sticker || null;
+        // Sticker Zalo OA: Smax lưu thành attachment type "sticker" (link ảnh oasticker)
+        const oaSticker =
+          part?.attachments?.find((a) => a?.type === 'sticker' && a.url)?.url ?? null;
+        const fbSticker = m.facebook?.sticker || oaSticker || null;
         return {
           id: m.pid || m.id,
           text: m.message ?? '',
@@ -1620,7 +1623,7 @@ export class SmaxChatService {
           senderName: fromMe
             ? null
             : (m.sender_pid && members[m.sender_pid]) || null,
-          // Sticker Facebook đã hiện qua stickerImage → bỏ attachment trùng
+          // Sticker Facebook / Zalo OA đã hiện qua stickerImage → bỏ attachment trùng
           attachments: (fbSticker ? [] : (part?.attachments ?? []))
             .filter((a) => a?.url)
             .map((a) => ({
