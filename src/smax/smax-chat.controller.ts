@@ -158,8 +158,15 @@ export class SmaxChatController {
     @Query('pagePid') pagePid?: string,
     @Query('limit') limit?: string,
     @Query('q') q?: string,
+    @Query('fresh') fresh?: string,
   ) {
-    return this.service.recentChats(req.user.id, pagePid || undefined, Number(limit) || undefined, q || undefined);
+    return this.service.recentChats(
+      req.user.id,
+      pagePid || undefined,
+      Number(limit) || undefined,
+      q || undefined,
+      fresh === '1',
+    );
   }
 
   @Get('customers/:id/context')

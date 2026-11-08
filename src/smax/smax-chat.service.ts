@@ -93,7 +93,7 @@ const REACTIONS = ['NONE', 'LIKE', 'HEART', 'HAHA', 'WOW', 'CRY', 'ANGRY'];
 
 const SEND_LIMIT_PER_MINUTE = 20;
 const GROUP_INDEX_TTL_MS = 10 * 60_000;
-const RECENT_TTL_MS = 30_000;
+const RECENT_TTL_MS = 10_000;
 // Tên gợi nhớ Zalo theo kênh (Smax đồng bộ từ app Zalo) — đổi trên Zalo sẽ hiện sau tối đa 1 phút
 const ALIAS_TTL_MS = 60_000;
 const THREAD_NAME_MAX = 100;
@@ -1463,7 +1463,7 @@ export class SmaxChatService {
    * hoặc gợi ý theo mã khách trong tên nhóm / SĐT khách Smax thu được (Facebook…).
    * Không truyền pagePid = mọi kênh Zalo cá nhân; truyền pagePid = đúng kênh đó (mọi nền tảng).
    */
-  async recentChats(actorId: number, pagePid?: string, limit = 30, q?: string) {
+  async recentChats(actorId: number, pagePid?: string, limit = 30, q?: string, fresh = false) {
     // Thanh thu gọn xin thêm khi bấm "…" (Smax: 100 hội thoại ~2s, nên chỉ lấy khi cần)
     const take = Math.min(200, Math.max(10, Math.round(limit)));
     const keyword = q?.trim().slice(0, 100) || undefined;
@@ -1474,7 +1474,8 @@ export class SmaxChatService {
     const pagePids = channels.map((c) => c.pagePid).sort();
     const key = `${pagePids.join(',')}:${take}:${keyword ?? ''}`;
     let cached = this.recentCache.get(key);
-    if (!cached || Date.now() - cached.at > RECENT_TTL_MS) {
+    // fresh (nút ⟳): lấy mới, nhưng dùng chung kết quả vừa lấy < 2s (bấm liên tục / nhiều người cùng kênh)
+    if (!cached || Date.now() - cached.at > (fresh ? 2_000 : RECENT_TTL_MS)) {
       // Mỗi từ khoá tìm là 1 mục cache → dọn mục hết hạn để map không phình
       for (const [k, v] of this.recentCache) if (Date.now() - v.at > RECENT_TTL_MS) this.recentCache.delete(k);
       cached = { at: Date.now(), threads: this.smaxApi.listRecentThreads(pagePids, take, keyword) };
