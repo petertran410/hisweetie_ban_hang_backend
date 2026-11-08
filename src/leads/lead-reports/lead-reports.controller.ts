@@ -9,7 +9,10 @@ import { LeadReportsService } from './lead-reports.service';
 
 type AuthedRequest = { user: { id: number } };
 
-/** Dashboard Lead (/bao-cao/lead). Quyền và phạm vi dữ liệu giống GET /leads. */
+/**
+ * Dashboard Lead (/bao-cao/lead). Quyền xem riêng reports:lead (phân ở Cài đặt → Vai trò → Báo cáo);
+ * phạm vi dữ liệu giống GET /leads.
+ */
 @ApiTags('Reports - Leads')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
@@ -26,13 +29,13 @@ export class LeadReportsController {
   }
 
   @Get('summary')
-  @RequirePermissions('leads:view')
+  @RequirePermissions('reports:lead')
   summary(@Query() q: LeadSummaryQueryDto, @Req() req: AuthedRequest) {
     return this.service.summary(q, this.actor(req));
   }
 
   @Get('filter-options')
-  @RequirePermissions('leads:view')
+  @RequirePermissions('reports:lead')
   filterOptions(@Req() req: AuthedRequest) {
     return this.service.filterOptions(this.actor(req));
   }
