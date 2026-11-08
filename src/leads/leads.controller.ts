@@ -93,6 +93,13 @@ export class LeadsController {
     return this.service.channels();
   }
 
+  /** Tên kênh tự nhập đã dùng của 1 nguồn (vd "Khác") — gợi ý khi tạo kênh mới. */
+  @Get('channel-names')
+  @RequirePermissions('leads:view')
+  channelNames(@Query('source') source: string) {
+    return this.service.channelNames(source);
+  }
+
   @Get('templates')
   @RequirePermissions('leads:view')
   templates() {

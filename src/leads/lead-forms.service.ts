@@ -24,8 +24,10 @@ import {
   CUSTOM_FIELD_KEY,
   DEFAULT_LEAD_FORM_FIELDS,
   LEAD_FORM_BUILTIN_KEYS,
+  LEAD_FORM_NO_DEFAULT_KEYS,
   LEAD_FORM_SLUG,
   LeadFormField,
+  LeadFormProvince,
   SUBMIT_LIMIT_PER_IP,
   SUBMIT_LIMIT_PER_PHONE,
 } from './lead-forms.constants';
@@ -37,6 +39,8 @@ import {
 
 type Actor = { id: number; name: string };
 type Answer = { key: string; label: string; value: string };
+// Trường gửi lên khi tạo / sửa form (giá trị mặc định chưa kiểm)
+type FieldInput = Omit<LeadFormField, 'defaultValue'> & { defaultValue?: unknown };
 
 const DEFAULT_SUCCESS =
   'Cảm ơn bạn đã gửi thông tin! Chúng tôi sẽ liên hệ trong thời gian sớm nhất.';
@@ -212,13 +216,14 @@ export class LeadFormsService {
       title: form.title,
       description: form.description,
       fields: (form.fields as unknown as LeadFormField[])
-        .filter((f) => f.enabled)
-        .map(({ key, label, required, type, options }) => ({
+        .filter((f) => f.enabled && !f.hidden)
+        .map(({ key, label, required, type, options, defaultValue }) => ({
           key,
           label,
           required,
           type,
           options,
+          defaultValue,
         })),
     };
   }
@@ -237,7 +242,10 @@ export class LeadFormsService {
     const fields = (form.fields as unknown as LeadFormField[]).filter(
       (f) => f.enabled,
     );
-    const v = this.parseAnswers(fields, dto.answers ?? {});
+    // Trường ẩn: luôn lấy giá trị mặc định (bỏ qua giá trị khách gửi lên)
+    const raw: Record<string, unknown> = { ...(dto.answers ?? {}) };
+    for (const f of fields) if (f.hidden) raw[f.key] = f.defaultValue;
+    const v = this.parseAnswers(fields, raw);
     if (v.phoneNormalized)
       this.hit(`phone:${v.phoneNormalized}`, SUBMIT_LIMIT_PER_PHONE);
 
@@ -325,7 +333,7 @@ export class LeadFormsService {
   }
 
   /** Giữ thứ tự người dùng sắp; đủ mọi trường Lead; Họ tên luôn bật + bắt buộc. */
-  private normalizeFields(input: LeadFormField[]): LeadFormField[] {
+  private normalizeFields(input: FieldInput[]): LeadFormField[] {
     const seen = new Set<string>();
     const out: LeadFormField[] = [];
     for (const f of input) {
@@ -343,12 +351,18 @@ export class LeadFormsService {
       if (!label) throw new BadRequestException('Câu hỏi thêm cần có nội dung');
       if (builtin) {
         const always = f.key === 'name';
-        out.push({
-          key: f.key,
-          label,
-          enabled: always || !!f.enabled,
-          required: always || (!!f.enabled && !!f.required),
-        });
+        const enabled = always || !!f.enabled;
+        out.push(
+          this.withDefault(
+            {
+              key: f.key,
+              label,
+              enabled,
+              required: always || (enabled && !!f.required),
+            },
+            f,
+          ),
+        );
         continue;
       }
       const type = f.type ?? 'text';
@@ -359,16 +373,21 @@ export class LeadFormsService {
         throw new BadRequestException(
           `Câu hỏi "${label}" cần ít nhất 1 lựa chọn`,
         );
-      out.push({
-        key: f.key,
-        label,
-        enabled: true,
-        required: !!f.required,
-        type,
-        ...(options.length && type !== 'text' && type !== 'textarea'
-          ? { options }
-          : {}),
-      });
+      out.push(
+        this.withDefault(
+          {
+            key: f.key,
+            label,
+            enabled: true,
+            required: !!f.required,
+            type,
+            ...(options.length && type !== 'text' && type !== 'textarea'
+              ? { options }
+              : {}),
+          },
+          f,
+        ),
+      );
     }
     for (const d of DEFAULT_LEAD_FORM_FIELDS)
       if (!seen.has(d.key))
@@ -383,10 +402,71 @@ export class LeadFormsService {
   /** Lead bắt buộc có phân loại: form không hỏi bắt buộc → cần phân loại mặc định. */
   private assertCategory(fields: LeadFormField[], category: string | null) {
     const f = fields.find((x) => x.key === 'category');
-    if (!(f?.enabled && f.required) && !category)
+    const fromForm = f?.enabled && (f.hidden ? !!f.defaultValue : f.required);
+    if (!fromForm && !category)
       throw new BadRequestException(
         'Chọn phân loại mặc định (form không bắt buộc khách chọn phân loại)',
       );
+  }
+
+  /**
+   * Giá trị mặc định + ẩn của 1 trường đang bật (Họ tên, SĐT: không có). Trường ẩn: không bắt buộc
+   * (lead tự nhận giá trị mặc định) nên phải có giá trị mặc định.
+   */
+  private withDefault(field: LeadFormField, input: FieldInput): LeadFormField {
+    if (!field.enabled || LEAD_FORM_NO_DEFAULT_KEYS.includes(field.key))
+      return field;
+    const defaultValue = this.cleanDefault(field, input.defaultValue);
+    const hidden = !!input.hidden;
+    if (hidden && defaultValue === undefined)
+      throw new BadRequestException(
+        `Trường ẩn "${field.label}" cần giá trị mặc định`,
+      );
+    return {
+      ...field,
+      ...(hidden ? { hidden, required: false } : {}),
+      ...(defaultValue === undefined ? {} : { defaultValue }),
+    };
+  }
+
+  /** Chuẩn hoá giá trị mặc định theo loại trường; rỗng → undefined, sai → 400. */
+  private cleanDefault(
+    f: LeadFormField,
+    value: unknown,
+  ): LeadFormField['defaultValue'] {
+    const bad = () =>
+      new BadRequestException(`Giá trị mặc định của "${f.label}" không hợp lệ`);
+    if (value === undefined || value === null || value === '') return undefined;
+    if (f.key === 'province') {
+      if (typeof value !== 'object' || Array.isArray(value)) throw bad();
+      const p = value as Record<string, unknown>;
+      const s = (k: string, max: number) =>
+        typeof p[k] === 'string' ? (p[k] as string).trim().slice(0, max) : '';
+      const provinceCode = s('provinceCode', 20);
+      if (!provinceCode) return undefined;
+      const wardCode = s('wardCode', 20);
+      const out: LeadFormProvince = {
+        provinceCode,
+        provinceName: s('provinceName', 255) || null,
+        wardCode: wardCode || null,
+        wardName: wardCode ? s('wardName', 255) || null : null,
+      };
+      return out;
+    }
+    if (f.type === 'multiselect') {
+      if (!Array.isArray(value)) throw bad();
+      const picked = (f.options ?? []).filter((o) => value.includes(o));
+      if (picked.length !== value.length) throw bad();
+      return picked.length ? picked : undefined;
+    }
+    if (typeof value !== 'string') throw bad();
+    const v = value.trim().slice(0, f.type === 'textarea' || f.key === 'need' ? 2000 : 255);
+    if (!v) return undefined;
+    if (f.key === 'category' && !(LEAD_CATEGORIES as readonly string[]).includes(v))
+      throw bad();
+    if (f.key === 'zaloPhone' && !normalizeVnPhone(v)) throw bad();
+    if (f.type === 'select' && !(f.options ?? []).includes(v)) throw bad();
+    return v;
   }
 
   private async uniqueSlug(raw: string, excludeId?: number) {

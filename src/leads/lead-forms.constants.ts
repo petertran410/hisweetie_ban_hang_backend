@@ -19,6 +19,13 @@ export const LEAD_FORM_FIELD_TYPES = [
 export const LEAD_FORM_SLUG = /^[a-z0-9](?:[a-z0-9-]{1,58})[a-z0-9]$/;
 export const CUSTOM_FIELD_KEY = /^q_[a-z0-9]{1,30}$/;
 
+export interface LeadFormProvince {
+  provinceCode: string;
+  provinceName: string | null;
+  wardCode: string | null;
+  wardName: string | null;
+}
+
 export interface LeadFormField {
   key: string;
   label: string;
@@ -26,7 +33,14 @@ export interface LeadFormField {
   required: boolean;
   type?: string;
   options?: string[];
+  /** Ẩn khỏi form khách: lead tự nhận defaultValue */
+  hidden?: boolean;
+  /** Giá trị mặc định: chuỗi / mảng (chọn nhiều) / khu vực. Trường hiện → điền sẵn cho khách */
+  defaultValue?: string | string[] | LeadFormProvince;
 }
+
+// Họ tên, SĐT: khách luôn tự nhập (không ẩn, không giá trị mặc định)
+export const LEAD_FORM_NO_DEFAULT_KEYS = ['name', 'phone'];
 
 export const DEFAULT_LEAD_FORM_FIELDS: LeadFormField[] = [
   { key: 'name', label: 'Họ tên', enabled: true, required: true },
