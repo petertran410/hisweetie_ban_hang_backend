@@ -546,7 +546,7 @@ describe('SmaxChatService', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
-  it('recentChats: khớp khách theo ID Zalo đã lưu, rồi theo mã khách trong tên nhóm; cache 30s', async () => {
+  it('recentChats: khớp khách theo ID Zalo đã lưu, rồi theo mã khách trong tên nhóm; cache 10s', async () => {
     const { service, api } = makeService();
     (service as any).prisma.smaxChannelUser.findMany = jest.fn().mockResolvedValue([
       { pagePid: PAGE, pageName: 'Diệp Trà Cs', platform: 'zaloweb', userId: 1 },
@@ -587,6 +587,34 @@ describe('SmaxChatService', () => {
       smaxUrl: `https://smax.ai/bizs/dieptra/chats/${PAGE}?tid=zlw2395241168877084467`,
     });
     expect((api as any).listRecentThreads).toHaveBeenCalledTimes(1);
+  });
+
+  it('recentChats fresh (nút ⟳): bỏ qua cache 10s, nhưng dùng chung kết quả vừa lấy < 2s', async () => {
+    const { service, api } = makeService();
+    (service as any).prisma.smaxChannelUser.findMany = jest.fn().mockResolvedValue([
+      { pagePid: PAGE, pageName: 'Diệp Trà Cs', platform: 'zaloweb', userId: 1 },
+    ]);
+    (service as any).prisma.customerZaloContact.findMany = jest.fn().mockResolvedValue([]);
+    (service as any).prisma.customer.findMany = jest.fn().mockResolvedValue([]);
+    (api as any).listRecentThreads = jest.fn().mockResolvedValue([]);
+    const now = jest.spyOn(Date, 'now').mockReturnValue(1_000_000);
+    try {
+      await service.recentChats(1);
+      await service.recentChats(1, undefined, 30, undefined, true); // < 2s → dùng chung
+      expect((api as any).listRecentThreads).toHaveBeenCalledTimes(1);
+
+      now.mockReturnValue(1_003_000);
+      await service.recentChats(1); // 3s < 10s → vẫn cache
+      expect((api as any).listRecentThreads).toHaveBeenCalledTimes(1);
+      await service.recentChats(1, undefined, 30, undefined, true); // > 2s → lấy mới
+      expect((api as any).listRecentThreads).toHaveBeenCalledTimes(2);
+
+      now.mockReturnValue(1_014_000);
+      await service.recentChats(1); // > 10s kể từ lần lấy mới → lấy lại
+      expect((api as any).listRecentThreads).toHaveBeenCalledTimes(3);
+    } finally {
+      now.mockRestore();
+    }
   });
 
   describe('nhóm Zalo gắn nhiều khách', () => {
