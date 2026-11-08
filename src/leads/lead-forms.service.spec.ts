@@ -186,4 +186,58 @@ describe('LeadFormsService', () => {
       required: true,
     });
   });
+
+  it('create: giá trị mặc định + ẩn — chuẩn hoá theo loại trường; ẩn cần mặc định; Họ tên/SĐT không có mặc định', async () => {
+    const { service, prisma } = makeService();
+    prisma.leadForm.findUnique.mockResolvedValue(null);
+    const actor = { id: 1, name: 'A' };
+    const base = FORM.fields.map((f: any) =>
+      f.key === 'category'
+        ? { ...f, hidden: true, defaultValue: 'chain' }
+        : f.key === 'province'
+          ? { ...f, defaultValue: { provinceCode: '79', provinceName: 'TP HCM' } }
+          : f.key === 'q_menu'
+            ? { ...f, hidden: true, defaultValue: ['Cà phê'] }
+            : f.key === 'name'
+              ? { ...f, hidden: true, defaultValue: 'X' }
+              : f,
+    );
+    await service.create({ name: 'Hội chợ HCM', source: 'direct', fields: base }, actor);
+    const saved = prisma.leadForm.create.mock.calls[0][0].data.fields;
+    const by = (k: string) => saved.find((f: any) => f.key === k);
+    expect(by('category')).toMatchObject({ hidden: true, required: false, defaultValue: 'chain' });
+    expect(by('province').defaultValue).toEqual({ provinceCode: '79', provinceName: 'TP HCM', wardCode: null, wardName: null });
+    expect(by('q_menu')).toMatchObject({ hidden: true, defaultValue: ['Cà phê'] });
+    // Họ tên: bỏ qua ẩn / mặc định
+    expect(by('name').hidden).toBeUndefined();
+    expect(by('name').defaultValue).toBeUndefined();
+
+    const bad = (patch: any) =>
+      service.create(
+        { name: 'X', source: 'direct', fields: FORM.fields.map((f: any) => (f.key === patch.key ? { ...f, ...patch } : f)) },
+        actor,
+      );
+    await expect(bad({ key: 'q_menu', hidden: true })).rejects.toThrow('cần giá trị mặc định');
+    await expect(bad({ key: 'q_menu', defaultValue: ['Bánh'] })).rejects.toThrow('không hợp lệ');
+    await expect(bad({ key: 'category', defaultValue: 'abc' })).rejects.toThrow('không hợp lệ');
+    await expect(bad({ key: 'zaloPhone', enabled: true, defaultValue: '123' })).rejects.toThrow('không hợp lệ');
+  });
+
+  it('publicGet / submit: trường ẩn không gửi cho khách, lead nhận giá trị mặc định (bỏ qua giá trị khách gửi)', async () => {
+    const fields = FORM.fields.map((f: any) =>
+      f.key === 'category'
+        ? { ...f, hidden: true, required: false, defaultValue: 'chain' }
+        : f.key === 'need'
+          ? { ...f, defaultValue: 'Báo giá' }
+          : f,
+    );
+    const { service, prisma } = makeService({ ...FORM, fields });
+    const pub = await service.publicGet('hoi-cho-2026');
+    expect(pub.fields.map((f) => f.key)).not.toContain('category');
+    expect(pub.fields.find((f) => f.key === 'need')?.defaultValue).toBe('Báo giá');
+    await service.submit('hoi-cho-2026', { answers: { ...answers, category: 'cafe' } }, { ip: '4.4.4.4' });
+    const data = prisma.lead.create.mock.calls[0][0].data;
+    expect(data.category).toBe('chain');
+    expect(data.formSubmissions.create.answers).toContainEqual({ key: 'category', label: 'Bạn là', value: 'Khách chuỗi' });
+  });
 });

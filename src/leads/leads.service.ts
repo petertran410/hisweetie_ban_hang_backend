@@ -25,6 +25,7 @@ import {
   isAcceptableStepError,
   ZALO_PHONE_NOT_FOUND,
   LEAD_CATEGORY_LABEL,
+  LEAD_SOURCES,
   leadCode,
   renderLeadTemplate,
   StepResult,
@@ -567,6 +568,19 @@ export class LeadsService {
   }
 
   /** Kênh (page) của biz trên Smax để chọn "Kênh" cho lead. */
+  /** Tên kênh không gắn kênh Smax (gõ tay) đã dùng ở lead / form của nguồn, A→Z. */
+  async channelNames(source: string) {
+    if (!(LEAD_SOURCES as readonly string[]).includes(source)) return [];
+    const where = { source, channelPid: null, channelName: { not: null } };
+    const [leads, forms] = await Promise.all([
+      this.prisma.lead.findMany({ where, distinct: ['channelName'], select: { channelName: true }, take: 200 }),
+      this.prisma.leadForm.findMany({ where, distinct: ['channelName'], select: { channelName: true }, take: 200 }),
+    ]);
+    return [...new Set([...leads, ...forms].map((r) => r.channelName!.trim()).filter(Boolean))].sort((a, b) =>
+      a.localeCompare(b, 'vi'),
+    );
+  }
+
   async channels() {
     const pages = await this.smaxApi.listPages();
     return pages.map((p) => ({

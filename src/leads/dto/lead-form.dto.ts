@@ -40,6 +40,14 @@ export class LeadFormFieldDto {
   @IsString({ each: true })
   @MaxLength(255, { each: true })
   options?: string[];
+
+  @IsOptional()
+  @IsBoolean()
+  hidden?: boolean;
+
+  /** Chuỗi / mảng chuỗi / khu vực { provinceCode, provinceName, wardCode, wardName } — kiểm ở service */
+  @IsOptional()
+  defaultValue?: unknown;
 }
 
 export class UpsertLeadFormDto {
