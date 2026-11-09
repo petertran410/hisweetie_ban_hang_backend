@@ -43,23 +43,43 @@ export class SmaxController {
     return this.service.link(pagePid, dto.userId);
   }
 
-  // Token đăng nhập Smax (API nội bộ: thả cảm xúc, thu hồi, đổi tên, Thư viện…) — không trả nguyên token
+  // Token Smax lưu trên POS (thay .env), không trả nguyên token.
+  // user-token: token đăng nhập (API nội bộ: thả cảm xúc, thu hồi, đổi tên, Thư viện…)
+  // api-token: Partner API token (kênh, danh sách hội thoại, tin nhắn, gửi tin…)
   @Get('user-token')
   @RequirePermissions('settings:update')
   userTokenStatus() {
-    return this.service.userTokenStatus();
+    return this.service.tokenStatus('user');
   }
 
   @Put('user-token')
   @RequirePermissions('settings:update')
   setUserToken(@Body() dto: SmaxUserTokenDto, @Req() req: any) {
-    return this.service.setUserToken(dto.token, { id: req.user.id, name: req.user.name });
+    return this.service.setToken('user', dto.token, { id: req.user.id, name: req.user.name });
   }
 
   @Delete('user-token')
   @RequirePermissions('settings:update')
   clearUserToken(@Req() req: any) {
-    return this.service.clearUserToken({ id: req.user.id, name: req.user.name });
+    return this.service.clearToken('user', { id: req.user.id, name: req.user.name });
+  }
+
+  @Get('api-token')
+  @RequirePermissions('settings:update')
+  apiTokenStatus() {
+    return this.service.tokenStatus('api');
+  }
+
+  @Put('api-token')
+  @RequirePermissions('settings:update')
+  setApiToken(@Body() dto: SmaxUserTokenDto, @Req() req: any) {
+    return this.service.setToken('api', dto.token, { id: req.user.id, name: req.user.name });
+  }
+
+  @Delete('api-token')
+  @RequirePermissions('settings:update')
+  clearApiToken(@Req() req: any) {
+    return this.service.clearToken('api', { id: req.user.id, name: req.user.name });
   }
 
   @Delete('zalo-channels/:pagePid')

@@ -7,14 +7,22 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
-import { SmaxApiService } from './smax-api.service';
+import { SmaxApiService, type SmaxTokenKind } from './smax-api.service';
 import { decryptSmaxToken, encryptSmaxToken, jwtExpiry } from './smax-secret.util';
+
+// Dòng trong bảng smax_user_tokens theo loại token
+const TOKEN_ROW_ID: Record<SmaxTokenKind, number> = { user: 1, api: 2 };
+const TOKEN_KINDS: SmaxTokenKind[] = ['user', 'api'];
+const TOKEN_LABEL: Record<SmaxTokenKind, string> = {
+  user: 'token đăng nhập Smax (SMAX_USER_TOKEN)',
+  api: 'Partner API token Smax (SMAX_API_TOKEN)',
+};
 
 @Injectable()
 export class SmaxService implements OnModuleInit {
   private readonly logger = new Logger(SmaxService.name);
   // Có dòng token trên POS nhưng không giải mã được (đổi khoá mã hoá) → báo nhập lại
-  private storedTokenUnreadable = false;
+  private readonly tokenUnreadable: Record<SmaxTokenKind, boolean> = { user: false, api: false };
 
   constructor(
     private readonly prisma: PrismaService,
@@ -24,87 +32,97 @@ export class SmaxService implements OnModuleInit {
 
   async onModuleInit() {
     try {
-      await this.loadUserToken();
+      await this.loadTokens();
     } catch (e) {
       // Bảng chưa tạo (chưa db push) → dùng .env như cũ
       this.logger.warn(`Không đọc được token Smax lưu trên POS: ${(e as Error).message}`);
     }
   }
 
-  /** Nạp token đăng nhập Smax lưu trên POS (ưu tiên hơn SMAX_USER_TOKEN trong .env). */
-  private async loadUserToken() {
-    const row = await this.prisma.smaxUserToken.findUnique({ where: { id: 1 } });
-    const plain = row ? decryptSmaxToken(row.token) : null;
-    this.storedTokenUnreadable = !!row && !plain;
-    this.smaxApi.useStoredUserToken(plain);
-    return row;
+  /** Nạp token Smax lưu trên POS (ưu tiên hơn .env); trả dòng DB theo loại. */
+  private async loadTokens() {
+    const rows = await this.prisma.smaxUserToken.findMany({
+      where: { id: { in: Object.values(TOKEN_ROW_ID) } },
+    });
+    const byKind = {} as Record<SmaxTokenKind, (typeof rows)[number] | undefined>;
+    for (const kind of TOKEN_KINDS) {
+      const row = rows.find((r) => r.id === TOKEN_ROW_ID[kind]);
+      const plain = row ? decryptSmaxToken(row.token) : null;
+      this.tokenUnreadable[kind] = !!row && !plain;
+      this.smaxApi.useStoredToken(kind, plain);
+      byKind[kind] = row;
+    }
+    return byKind;
   }
 
   /**
-   * Tình trạng token đăng nhập Smax cho trang /cai-dat/smax: nguồn, vài ký tự cuối, hạn (JWT),
-   * còn dùng được không (thử 1 API chỉ đọc). Không bao giờ trả nguyên token.
+   * Tình trạng token Smax cho trang /cai-dat/smax: nguồn, vài ký tự cuối, hạn (JWT), còn dùng được
+   * không (thử API chỉ đọc), cảnh báo (vd không ra hội thoại). Không bao giờ trả nguyên token.
    */
-  async userTokenStatus() {
+  async tokenStatus(kind: SmaxTokenKind) {
     // Đọc lại DB: backend chạy nhiều tiến trình thì tiến trình này cũng thấy token mới
-    const row = await this.loadUserToken();
-    const token = this.smaxApi.activeUserToken;
-    const check = token ? await this.smaxApi.checkUserToken(token) : null;
+    const row = (await this.loadTokens())[kind];
+    const token = this.smaxApi.activeToken(kind);
+    const check = token ? await this.smaxApi.checkToken(kind, token) : null;
     const updatedBy = row?.updatedById
       ? await this.prisma.user.findUnique({ where: { id: row.updatedById }, select: { name: true } })
       : null;
     return {
-      source: this.smaxApi.userTokenSource,
-      envConfigured: this.smaxApi.hasEnvUserToken,
+      source: this.smaxApi.tokenSources[kind],
+      envConfigured: this.smaxApi.hasEnvToken(kind),
       last4: token ? token.slice(-4) : null,
       expiresAt: token ? jwtExpiry(token) : null,
       updatedAt: row?.updatedAt ?? null,
       updatedBy: updatedBy?.name ?? null,
       valid: check ? check.ok : null,
-      error: this.storedTokenUnreadable
+      error: this.tokenUnreadable[kind]
         ? 'Token đã lưu không giải mã được (khoá mã hoá đã đổi) — nhập lại token'
         : (check?.message ?? null),
+      warning: check?.warning ?? null,
     };
   }
 
-  /** Lưu token mới (kiểm tra với Smax trước, sai thì không lưu); dùng ngay, không cần khởi động lại. */
-  async setUserToken(raw: string, actor: { id: number; name?: string }) {
+  /** Lưu token mới (kiểm tra với Smax trước, Smax từ chối thì không lưu); dùng ngay, không cần khởi động lại. */
+  async setToken(kind: SmaxTokenKind, raw: string, actor: { id: number; name?: string }) {
     const token = raw.trim().replace(/^Bearer\s+/i, '');
     if (!token) throw new BadRequestException('Nhập token');
-    const check = await this.smaxApi.checkUserToken(token);
+    const check = await this.smaxApi.checkToken(kind, token);
     if (!check.ok) throw new BadRequestException(check.message);
+    const id = TOKEN_ROW_ID[kind];
     const data = { token: encryptSmaxToken(token), updatedById: actor.id };
-    await this.prisma.smaxUserToken.upsert({ where: { id: 1 }, create: { id: 1, ...data }, update: data });
-    this.storedTokenUnreadable = false;
-    this.smaxApi.useStoredUserToken(token);
+    await this.prisma.smaxUserToken.upsert({ where: { id }, create: { id, ...data }, update: data });
+    this.tokenUnreadable[kind] = false;
+    this.smaxApi.useStoredToken(kind, token);
     await this.auditLogs.create({
       actionType: 'PUT',
-      actionCode: 'SMAX_USER_TOKEN_UPDATE',
+      actionCode: kind === 'user' ? 'SMAX_USER_TOKEN_UPDATE' : 'SMAX_API_TOKEN_UPDATE',
       entityType: 'smax_user_tokens',
-      entityId: '1',
-      message: 'Cập nhật token đăng nhập Smax',
+      entityId: String(id),
+      message: `Cập nhật ${TOKEN_LABEL[kind]}`,
       userId: actor.id,
       userName: actor.name || 'Người dùng',
       // Không ghi token; chỉ hạn (nếu là JWT) để tra cứu
       metadata: { expiresAt: jwtExpiry(token) },
     });
-    return this.userTokenStatus();
+    return this.tokenStatus(kind);
   }
 
-  /** Xoá token lưu trên POS → quay về SMAX_USER_TOKEN trong .env (nếu có). */
-  async clearUserToken(actor: { id: number; name?: string }) {
-    await this.prisma.smaxUserToken.deleteMany({});
-    this.storedTokenUnreadable = false;
-    this.smaxApi.useStoredUserToken(null);
+  /** Xoá token lưu trên POS → quay về token trong .env (nếu có). */
+  async clearToken(kind: SmaxTokenKind, actor: { id: number; name?: string }) {
+    const id = TOKEN_ROW_ID[kind];
+    await this.prisma.smaxUserToken.deleteMany({ where: { id } });
+    this.tokenUnreadable[kind] = false;
+    this.smaxApi.useStoredToken(kind, null);
     await this.auditLogs.create({
       actionType: 'DELETE',
-      actionCode: 'SMAX_USER_TOKEN_CLEAR',
+      actionCode: kind === 'user' ? 'SMAX_USER_TOKEN_CLEAR' : 'SMAX_API_TOKEN_CLEAR',
       entityType: 'smax_user_tokens',
-      entityId: '1',
-      message: 'Xoá token đăng nhập Smax lưu trên POS (dùng lại token trong .env)',
+      entityId: String(id),
+      message: `Xoá ${TOKEN_LABEL[kind]} lưu trên POS (dùng lại token trong .env)`,
       userId: actor.id,
       userName: actor.name || 'Người dùng',
     });
-    return this.userTokenStatus();
+    return this.tokenStatus(kind);
   }
 
   /**
