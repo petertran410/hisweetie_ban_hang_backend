@@ -9,6 +9,18 @@ import { ConfigService } from '@nestjs/config';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 
+/** user = token đăng nhập Smax (SMAX_USER_TOKEN, API nội bộ app Smax); api = Partner API token (SMAX_API_TOKEN). */
+export type SmaxTokenKind = 'user' | 'api';
+
+export interface SmaxTokenCheck {
+  ok: boolean;
+  // Smax từ chối token (401/403)
+  invalid?: boolean;
+  message?: string;
+  // Token dùng được nhưng có vấn đề (vd thiếu quyền / Smax trả 0 hội thoại)
+  warning?: string;
+}
+
 /** Kênh (page) đã kết nối trên Smax — chỉ giữ các field POS cần. */
 export interface SmaxPage {
   pid: string;
@@ -160,9 +172,20 @@ export class SmaxApiService {
   private readonly logger = new Logger(SmaxApiService.name);
   private readonly baseUrl: string;
   readonly bizAlias: string;
-  private readonly token?: string;
-  // Token đăng nhập 1 tài khoản Smax (JWT) — chỉ dùng cho API nội bộ Partner API chưa có (thả cảm xúc)
-  private readonly userToken?: string;
+  // api: Partner API token của Business; user: token đăng nhập 1 tài khoản Smax (JWT) — chỉ dùng cho
+  // API nội bộ Partner API chưa có (thả cảm xúc…). Ưu tiên token lưu trên POS (/cai-dat/smax,
+  // SmaxService nạp lúc khởi động), không có thì .env
+  private readonly envTokens: Record<SmaxTokenKind, string | undefined>;
+  private readonly tokens: Record<SmaxTokenKind, string | undefined> = { user: undefined, api: undefined };
+  readonly tokenSources: Record<SmaxTokenKind, 'db' | 'env' | null> = { user: null, api: null };
+
+  private get token() {
+    return this.tokens.api;
+  }
+
+  private get userToken() {
+    return this.tokens.user;
+  }
 
   constructor(
     private readonly http: HttpService,
@@ -172,8 +195,85 @@ export class SmaxApiService {
       .get<string>('SMAX_API_URL', 'https://api.smax.ai')
       .replace(/\/+$/, '');
     this.bizAlias = config.get<string>('SMAX_BIZ_ALIAS', 'dieptra');
-    this.token = config.get<string>('SMAX_API_TOKEN');
-    this.userToken = config.get<string>('SMAX_USER_TOKEN')?.trim() || undefined;
+    this.envTokens = {
+      api: config.get<string>('SMAX_API_TOKEN')?.trim() || undefined,
+      user: config.get<string>('SMAX_USER_TOKEN')?.trim() || undefined,
+    };
+    this.useStoredToken('api', null);
+    this.useStoredToken('user', null);
+  }
+
+  /** Dùng token lưu trên POS; null = bỏ, quay về token trong .env. */
+  useStoredToken(kind: SmaxTokenKind, token: string | null) {
+    this.tokens[kind] = token || this.envTokens[kind];
+    this.tokenSources[kind] = token ? 'db' : this.envTokens[kind] ? 'env' : null;
+  }
+
+  /** Token đang dùng (chỉ để kiểm tra / hiện vài ký tự cuối ở trang cấu hình — không trả nguyên ra ngoài). */
+  activeToken(kind: SmaxTokenKind): string | undefined {
+    return this.tokens[kind];
+  }
+
+  hasEnvToken(kind: SmaxTokenKind): boolean {
+    return !!this.envTokens[kind];
+  }
+
+  /**
+   * Thử token bằng API chỉ đọc. user: album Thư viện (API nội bộ); api: danh sách kênh, rồi lấy thử
+   * 1 hội thoại (quyền GET_LIST_THREAD) — dùng được nhưng không ra hội thoại nào thì cảnh báo.
+   * invalid = Smax từ chối token (401/403); lỗi khác (mạng, 5xx) = chưa kết luận được.
+   */
+  async checkToken(kind: SmaxTokenKind, token = this.tokens[kind]): Promise<SmaxTokenCheck> {
+    if (!token) return { ok: false, message: 'Chưa có token' };
+    const headers = { Authorization: `Bearer ${token}` };
+    try {
+      if (kind === 'user') {
+        await firstValueFrom(
+          this.http.get(`${this.baseUrl}/bizs/${this.bizAlias}/groups?type=STORAGE`, { headers, timeout: 15000 }),
+        );
+        return { ok: true };
+      }
+      const res = await firstValueFrom(
+        this.http.get(`${this.baseUrl}/partner/bizs/${this.bizAlias}/pages`, { headers, timeout: 15000 }),
+      );
+      const pages: any[] = Array.isArray(res.data) ? res.data : (res.data?.data ?? []);
+      const pids = pages.map((p) => String(p?.pid ?? p?.page_pid ?? '')).filter(Boolean);
+      if (!pids.length) return { ok: true, warning: 'Token dùng được nhưng Smax không trả kênh nào' };
+      return { ok: true, warning: await this.threadListWarning(headers, pids) };
+    } catch (error: any) {
+      const status = error?.response?.status;
+      const smaxMessage = error?.response?.data?.message;
+      if (status === 401 || status === 403) {
+        return {
+          ok: false,
+          invalid: true,
+          message: `Token không hợp lệ hoặc đã hết hạn${typeof smaxMessage === 'string' && smaxMessage.trim() ? ` (Smax: ${smaxMessage.trim()})` : ''}`,
+        };
+      }
+      return { ok: false, message: `Không kiểm tra được với Smax (${status ?? error?.code ?? 'lỗi mạng'}) — thử lại sau` };
+    }
+  }
+
+  // Danh sách hội thoại (khung chat "Đang chat gần đây") cần quyền GET_LIST_THREAD và phải ra dữ liệu
+  private async threadListWarning(headers: Record<string, string>, pagePids: string[]): Promise<string | undefined> {
+    try {
+      const res = await firstValueFrom(
+        this.http.post(
+          `${this.baseUrl}/partner/bizs/${this.bizAlias}/threads/threads`,
+          { page_pids: pagePids, limit: 1 },
+          { headers, timeout: 30000 },
+        ),
+      );
+      const rows: unknown[] = res.data?.data ?? [];
+      return rows.length
+        ? undefined
+        : 'Smax trả 0 hội thoại cho token này — danh sách hội thoại trong khung chat sẽ trống';
+    } catch (error: any) {
+      const status = error?.response?.status;
+      return status === 403
+        ? 'Token thiếu quyền GET_LIST_THREAD — danh sách hội thoại trong khung chat không tải được'
+        : `Không lấy thử được danh sách hội thoại (${status ?? error?.code ?? 'lỗi mạng'})`;
+    }
   }
 
   /** Thả cảm xúc được không (đã cấu hình SMAX_USER_TOKEN). */

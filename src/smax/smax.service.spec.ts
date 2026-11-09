@@ -4,6 +4,7 @@ import {
 } from '@nestjs/common';
 import { SmaxService } from './smax.service';
 import { SmaxApiService } from './smax-api.service';
+import { decryptSmaxToken, encryptSmaxToken, jwtExpiry } from './smax-secret.util';
 
 const pages = [
   { pid: 'zl1', name: 'Lermao OA', platform: 'zalo', active: true },
@@ -23,8 +24,9 @@ const makeService = (links: any[] = []) => {
     user: { findUnique: jest.fn().mockResolvedValue({ id: 7 }) },
   };
   const api = { listPages: jest.fn().mockResolvedValue(pages) };
+  const audit = { create: jest.fn().mockResolvedValue(undefined) };
   return {
-    service: new SmaxService(prisma as any, api as any),
+    service: new SmaxService(prisma as any, api as any, audit as any),
     prisma,
   };
 };
@@ -325,5 +327,98 @@ describe('SmaxApiService', () => {
       headers: { Authorization: 'Bearer tok' },
       timeout: 15000,
     });
+  });
+});
+
+describe('SmaxService — token đăng nhập Smax', () => {
+  const JWT = `h.${Buffer.from(JSON.stringify({ exp: 1893456000 })).toString('base64url')}.sigABCD`;
+  beforeAll(() => {
+    process.env.SMAX_TOKEN_ENCRYPTION_KEY = 'test-key';
+  });
+
+  const make = (check: { ok: boolean; invalid?: boolean; message?: string; warning?: string }) => {
+    let rows: any[] = [];
+    const prisma = {
+      smaxUserToken: {
+        findMany: jest.fn(() => Promise.resolve(rows)),
+        upsert: jest.fn((a) => {
+          rows = [...rows.filter((r) => r.id !== a.where.id), { ...a.create, updatedAt: new Date() }];
+          return Promise.resolve(a.create);
+        }),
+        deleteMany: jest.fn((a) => {
+          rows = rows.filter((r) => r.id !== a.where.id);
+          return Promise.resolve({ count: 1 });
+        }),
+      },
+      user: { findUnique: jest.fn().mockResolvedValue({ name: 'Admin' }) },
+    };
+    const active: Record<string, string> = { user: 'env-user-0000', api: 'env-api-0000' };
+    const api: any = {
+      tokenSources: { user: 'env', api: 'env' },
+      hasEnvToken: () => true,
+      activeToken: (k: string) => active[k],
+      checkToken: jest.fn().mockResolvedValue(check),
+      useStoredToken: jest.fn((k: string, t: string | null) => {
+        active[k] = t ?? `env-${k}-0000`;
+        api.tokenSources[k] = t ? 'db' : 'env';
+      }),
+    };
+    const audit = { create: jest.fn() };
+    return {
+      service: new SmaxService(prisma as any, api, audit as any),
+      prisma,
+      api,
+      audit,
+      row: (id: number) => rows.find((r) => r.id === id),
+    };
+  };
+
+  it('mã hoá / giải mã được, sai dữ liệu → null; đọc hạn JWT', () => {
+    const enc = encryptSmaxToken(JWT);
+    expect(enc).not.toContain(JWT);
+    expect(decryptSmaxToken(enc)).toBe(JWT);
+    expect(decryptSmaxToken('enc:v1:00:00:00')).toBeNull();
+    expect(jwtExpiry(JWT)?.toISOString()).toBe('2030-01-01T00:00:00.000Z');
+    expect(jwtExpiry('khong-phai-jwt')).toBeNull();
+  });
+
+  it('lưu: kiểm tra với Smax trước, lưu mã hoá, dùng ngay, audit không chứa token, trả 4 ký tự cuối', async () => {
+    const t = make({ ok: true });
+    const res = await t.service.setToken('user', `  Bearer ${JWT} `, { id: 1, name: 'Admin' });
+    expect(t.api.checkToken).toHaveBeenCalledWith('user', JWT);
+    expect(t.row(1).token).toMatch(/^enc:v1:/);
+    expect(decryptSmaxToken(t.row(1).token)).toBe(JWT);
+    expect(t.api.useStoredToken).toHaveBeenCalledWith('user', JWT);
+    expect(JSON.stringify(t.audit.create.mock.calls)).not.toContain(JWT);
+    expect(res).toMatchObject({ source: 'db', last4: 'ABCD', valid: true });
+    expect(JSON.stringify(res)).not.toContain(JWT);
+  });
+
+  it('token sai: báo lỗi, không lưu, không đổi token đang dùng', async () => {
+    const t = make({ ok: false, invalid: true, message: 'Token không hợp lệ hoặc đã hết hạn' });
+    await expect(t.service.setToken('user', JWT, { id: 1 })).rejects.toBeInstanceOf(BadRequestException);
+    expect(t.prisma.smaxUserToken.upsert).not.toHaveBeenCalled();
+    expect(t.api.useStoredToken).not.toHaveBeenCalledWith('user', JWT);
+  });
+
+  it('xoá: quay về token .env', async () => {
+    const t = make({ ok: true });
+    await t.service.setToken('user', JWT, { id: 1 });
+    const res = await t.service.clearToken('user', { id: 1 });
+    expect(t.api.useStoredToken).toHaveBeenCalledWith('user', null);
+    expect(t.row(1)).toBeUndefined();
+    expect(res.source).toBe('env');
+  });
+
+  it('API token: lưu dòng id 2, xoá không đụng token đăng nhập, trả cảnh báo khi Smax không ra hội thoại', async () => {
+    const t = make({ ok: true, warning: 'Smax trả 0 hội thoại cho token này' });
+    await t.service.setToken('user', JWT, { id: 1 });
+    const res = await t.service.setToken('api', 'partner-token-WXYZ', { id: 1 });
+    expect(decryptSmaxToken(t.row(2).token)).toBe('partner-token-WXYZ');
+    expect(res).toMatchObject({ source: 'db', last4: 'WXYZ', warning: 'Smax trả 0 hội thoại cho token này' });
+    expect(t.audit.create).toHaveBeenLastCalledWith(expect.objectContaining({ actionCode: 'SMAX_API_TOKEN_UPDATE' }));
+    await t.service.clearToken('api', { id: 1 });
+    expect(t.row(2)).toBeUndefined();
+    expect(t.row(1)).toBeDefined();
   });
 });

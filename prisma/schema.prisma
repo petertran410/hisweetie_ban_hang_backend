@@ -2314,6 +2314,19 @@ model Settings {
   @@map("settings")
 }
 
+/// Token Smax sửa ở /cai-dat/smax, dùng thay .env. id 1 = token đăng nhập (SMAX_USER_TOKEN: thả cảm xúc,
+/// thu hồi/xoá tin, đổi tên, Thư viện, Meta AI, tên gợi nhớ Zalo); id 2 = Partner API token
+/// (SMAX_API_TOKEN: kênh, hội thoại, tin nhắn, gửi tin). Lưu mã hoá AES-256-GCM
+/// (src/smax/smax-secret.util.ts); tách khỏi bảng settings vì GET /settings trả nguyên dòng cho mọi người dùng.
+model SmaxUserToken {
+  id          Int      @id @default(1)
+  token       String
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  updatedById Int?     @map("updated_by_id")
+
+  @@map("smax_user_tokens")
+}
+
 model Transfer {
   id                Int              @id @default(autoincrement())
   code              String           @unique
