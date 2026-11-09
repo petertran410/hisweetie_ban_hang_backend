@@ -50,7 +50,9 @@ function makeService(form: any = FORM) {
   const lark: any = {
     im: { message: { create: jest.fn().mockResolvedValue({ code: 0 }) } },
   };
-  const config: any = { get: () => 'https://pos.test' };
+  const config: any = {
+    get: (k: string) => (k === 'FRONTEND_URL' ? 'https://pos.test' : undefined),
+  };
   const service = new LeadFormsService(prisma, auditLogs, lark, config);
   return { service, prisma, auditLogs, lark };
 }
@@ -65,7 +67,7 @@ const answers = {
 };
 
 describe('LeadFormsService', () => {
-  it('submit: tạo lead mới theo cấu hình form, lưu câu trả lời, báo Lark CSKH', async () => {
+  it('submit: tạo lead mới theo cấu hình form (chưa giao CSKH), lưu câu trả lời, báo nhóm Lark', async () => {
     const { service, prisma, lark } = makeService();
     const res = await service.submit(
       'hoi-cho-2026',
@@ -82,17 +84,18 @@ describe('LeadFormsService', () => {
       category: 'cafe',
       provinceCode: '01',
       need: 'Báo giá trà',
-      cskhUserId: 5,
       createdById: 1,
     });
+    expect(data.cskhUserId).toBeUndefined();
     expect(data.formSubmissions.create.answers).toContainEqual({
       key: 'q_menu',
       label: 'Món quan tâm',
       value: 'Cà phê',
     });
-    expect(lark.im.message.create.mock.calls[0][0].data.receive_id).toBe(
-      'ou_cskh',
-    );
+    const msg = lark.im.message.create.mock.calls[0][0];
+    expect(msg.params.receive_id_type).toBe('chat_id');
+    expect(msg.data.receive_id).toBe('oc_1109627e172997978b63cbbcda6cbf3e');
+    expect(JSON.parse(msg.data.content).text).toContain('Lead mới từ form "Hội chợ 2026"');
   });
 
   it('submit: trùng SĐT lead đang mở → gộp, chỉ điền trường trống', async () => {

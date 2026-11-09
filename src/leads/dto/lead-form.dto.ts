@@ -98,6 +98,7 @@ export class UpsertLeadFormDto {
   @IsIn(['', ...LEAD_CATEGORIES])
   category?: string;
 
+  // Không còn dùng (lead từ form báo vào nhóm Lark, chưa giao CSKH) — giữ để bản frontend cũ gửi lên không bị 400
   @IsOptional()
   @Type(() => Number)
   @IsInt()
