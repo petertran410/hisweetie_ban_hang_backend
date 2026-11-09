@@ -2,6 +2,7 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { RECEIPT_FIELD_IDS } from '../approval-lifecycle/approval-lifecycle.constants';
+import { OFFICE_BRANCH_IDS } from '../internal-finance/internal-finance.constants';
 
 export function fundDateKey(value: Date | string): string {
   if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value))
@@ -24,8 +25,8 @@ export function isLarkLedgerRecorded(entry: { sourceSnapshot?: unknown }) {
   const snapshot = entry.sourceSnapshot;
   return Boolean(
     snapshot &&
-      typeof snapshot === 'object' &&
-      (snapshot as { larkLedgerRecorded?: unknown }).larkLedgerRecorded === true,
+    typeof snapshot === 'object' &&
+    (snapshot as { larkLedgerRecorded?: unknown }).larkLedgerRecorded === true,
   );
 }
 
@@ -46,9 +47,20 @@ interface FundApprovalData {
 export const FUND_SOURCE_TYPE = {
   WAREHOUSE_CASH_RECEIPT: 'WAREHOUSE_CASH_RECEIPT',
   LARK_PAYMENT_VOUCHER: 'LARK_PAYMENT_VOUCHER',
+  LARK_SALARY_ADVANCE: 'LARK_SALARY_ADVANCE',
   // Bút toán lịch sử đồng bộ từ sổ quỹ cũ: chỉ đọc trên POS.
   LEDGER_HISTORY: 'LEDGER_HISTORY',
 } as const;
+
+/** Đơn Lark chi tiền mặt từ quỹ (PHIẾU CHI, TẠM ỨNG LƯƠNG). */
+interface LarkCashRequest {
+  id: number;
+  status: string;
+  branchId: number | null;
+  createdById: number;
+  completedAt: Date | null;
+  formSnapshot: unknown;
+}
 
 export interface SystemFundTransactionInput {
   branchId: number;
@@ -154,8 +166,12 @@ export class InternalFundLedgerService {
     }
 
     // Chi ngoài Approval tuần: bắt buộc có lý do, phiếu rời khỏi batch chưa gửi.
-    const reason = manualReason?.trim();
-    if (!reason) {
+    // Văn phòng không có Approval tuần: phiếu tay chi thẳng từ quỹ, lý do tùy ý.
+    const reason = manualReason?.trim() || undefined;
+    const office =
+      (OFFICE_BRANCH_IDS as readonly number[]).includes(current.branchId) &&
+      !current.weeklyBatch;
+    if (!reason && !office) {
       throw new BadRequestException(
         'Khoản chi chưa nằm trong Approval tuần đã duyệt; cần nhập lý do Đã chi',
       );
@@ -483,12 +499,7 @@ export class InternalFundLedgerService {
     if (!amount.isPositive())
       throw new BadRequestException('Số tiền ghi quỹ phải lớn hơn 0');
     if (input.assertOpen)
-      await this.assertOpen(
-        tx,
-        input.branchId,
-        input.occurredAt,
-        input.adjust,
-      );
+      await this.assertOpen(tx, input.branchId, input.occurredAt, input.adjust);
     const row = await tx.internalFundTransaction.create({
       data: {
         code: this.code(input.codeKind),
@@ -511,39 +522,59 @@ export class InternalFundLedgerService {
   }
 
   // Đơn PHIẾU CHI tạo trên Lark: duyệt thì trừ quỹ, thu hồi sau duyệt thì hủy.
-  async applyPaymentVoucher(
+  applyPaymentVoucher(tx: Prisma.TransactionClient, request: LarkCashRequest) {
+    return this.applyLarkCashExpense(tx, request, {
+      keyPrefix: 'PAYMENT_VOUCHER',
+      sourceType: FUND_SOURCE_TYPE.LARK_PAYMENT_VOUCHER,
+      label: 'PHIẾU CHI',
+      fallbackDescription: 'Phiếu chi Lark',
+    });
+  }
+
+  // Đơn TẠM ỨNG LƯƠNG chi tiền mặt từ quỹ: duyệt thì trừ quỹ, thu hồi thì hủy.
+  applySalaryAdvance(tx: Prisma.TransactionClient, request: LarkCashRequest) {
+    return this.applyLarkCashExpense(tx, request, {
+      keyPrefix: 'SALARY_ADVANCE',
+      sourceType: FUND_SOURCE_TYPE.LARK_SALARY_ADVANCE,
+      label: 'TẠM ỨNG LƯƠNG',
+      fallbackDescription: 'Tạm ứng lương',
+    });
+  }
+
+  private async applyLarkCashExpense(
     tx: Prisma.TransactionClient,
-    request: {
-      id: number;
-      status: string;
-      branchId: number | null;
-      createdById: number;
-      completedAt: Date | null;
-      formSnapshot: unknown;
+    request: LarkCashRequest,
+    kind: {
+      keyPrefix: string;
+      sourceType: string;
+      label: string;
+      fallbackDescription: string;
     },
   ) {
-    const key = `PAYMENT_VOUCHER:${request.id}`;
+    const key = `${kind.keyPrefix}:${request.id}`;
     if (request.status === 'REVERTED') {
       await this.cancelBySource(
         tx,
         key,
         request.createdById,
-        'Đơn PHIẾU CHI bị thu hồi trên Lark',
+        `Đơn ${kind.label} bị thu hồi trên Lark`,
       );
       return;
     }
     if (request.status !== 'APPROVED') return;
     const cash = (request.formSnapshot as { metadata?: any } | null)?.metadata;
     if (!request.branchId || !cash?.amount)
-      throw new BadRequestException('Đơn PHIẾU CHI thiếu quỹ hoặc số tiền mặt');
+      throw new BadRequestException(
+        `Đơn ${kind.label} thiếu quỹ hoặc số tiền mặt`,
+      );
     await this.postSystemTransaction(tx, {
       branchId: request.branchId,
       transactionType: 'EXPENSE',
       codeKind: 'CHI',
       amount: cash.amount,
       occurredAt: request.completedAt || new Date(),
-      description: cash.description || 'Phiếu chi Lark',
-      sourceType: FUND_SOURCE_TYPE.LARK_PAYMENT_VOUCHER,
+      description: cash.description || kind.fallbackDescription,
+      sourceType: kind.sourceType,
       sourceKey: key,
       sourceId: String(request.id),
       approvalRequestId: request.id,

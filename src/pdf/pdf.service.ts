@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as PDFDocument from 'pdfkit';
+import { USER_PUBLIC_SELECT } from '../common/user-select.util';
 
 @Injectable()
 export class PdfService {
@@ -11,7 +12,7 @@ export class PdfService {
       where: { id: orderId },
       include: {
         customer: true,
-        creator: true,
+        creator: { select: USER_PUBLIC_SELECT },
         items: {
           include: {
             product: true,

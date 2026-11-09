@@ -1,6 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  localBucketLabel,
+  ratePct,
+  toHeatCells,
+  trendTrunc,
+} from './dashboard-buckets';
 
 export type RangeKey =
   | 'today'
@@ -39,6 +45,14 @@ interface RangeWindow {
 // 5 Đóng hàng · 6 Lấy hàng · 7 Giao thành công · 8 Trả hàng
 // Doanh thu: loại Đã hủy (2) + Trả hàng (8).
 const REVENUE_EXCLUDE = [2, 8];
+
+/** Hàng SQL "tên + doanh thu + số hóa đơn" (nhân viên bán, kênh bán). */
+interface NamedRevenueRow {
+  id: number | null;
+  name: string;
+  revenue: number | null;
+  cnt: number;
+}
 // COD cần giao: loại Hoàn thành (1), Đã hủy (2), Giao thành công (7).
 const COD_DONE_OR_CANCELLED = [1, 2, 7];
 // Worklist (Tổng quan) chỉ tính 3 chi nhánh đang vận hành khi không lọc cụ thể:
@@ -1232,5 +1246,260 @@ export class DashboardService {
       grandTotal: Number(order.grandTotal),
       createdAt: order.createdAt,
     }));
+  }
+
+  // ─────────────── Báo cáo thêm cho trang chủ (app iPhone) ───────────────
+
+  /** Giờ Việt Nam của một cột thời gian (DB lưu UTC, không kèm múi giờ). */
+  private vnTime(col: Prisma.Sql): Prisma.Sql {
+    return Prisma.sql`(${col} AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Ho_Chi_Minh')`;
+  }
+
+  /**
+   * Thu chi sổ quỹ trong kỳ (giống Báo cáo tài chính: bỏ phiếu đã hủy, status 2):
+   * tổng thu, tổng chi, chênh lệch, chuỗi theo giờ/ngày/tháng và 5 nhóm chi lớn nhất.
+   */
+  async getCashflowSummary(
+    range: RangeKey = 'today',
+    branchId?: number,
+    custom?: CustomRange,
+  ) {
+    const w = this.getRangeWindow(range, custom);
+    const trunc = trendTrunc(range, this.spanDays(w.start, w.end));
+    const branchFilter = branchId
+      ? Prisma.sql`AND cf."branchId" = ${branchId}`
+      : Prisma.empty;
+    const t = this.vnTime(Prisma.sql`cf."transDate"`);
+
+    const [rows, groups] = await Promise.all([
+      this.prisma.$queryRaw<
+        {
+          bucket: Date;
+          receipt: number | null;
+          payment: number | null;
+          cnt: number;
+        }[]
+      >`
+        SELECT
+          date_trunc(${trunc}, ${t}) AS bucket,
+          SUM(CASE WHEN cf."isReceipt" THEN cf.amount ELSE 0 END)::float8 AS receipt,
+          SUM(CASE WHEN NOT cf."isReceipt" THEN cf.amount ELSE 0 END)::float8 AS payment,
+          COUNT(*)::int AS cnt
+        FROM cash_flows cf
+        WHERE cf.status <> 2
+          AND cf."transDate" >= ${w.start}
+          AND cf."transDate" <= ${w.end}
+          ${branchFilter}
+        GROUP BY bucket
+        ORDER BY bucket ASC
+      `,
+      this.prisma.$queryRaw<{ name: string; amount: number | null }[]>`
+        SELECT
+          COALESCE(g.name, 'Khác') AS name,
+          SUM(cf.amount)::float8 AS amount
+        FROM cash_flows cf
+        LEFT JOIN cash_flow_groups g ON g.id = cf."cashFlowGroupId"
+        WHERE cf.status <> 2
+          AND cf."isReceipt" = false
+          AND cf."transDate" >= ${w.start}
+          AND cf."transDate" <= ${w.end}
+          ${branchFilter}
+        GROUP BY COALESCE(g.name, 'Khác')
+        ORDER BY amount DESC
+        LIMIT 5
+      `,
+    ]);
+
+    const series = rows.map((r) => ({
+      label: localBucketLabel(new Date(r.bucket), trunc),
+      receipt: Number(r.receipt || 0),
+      payment: Number(r.payment || 0),
+    }));
+    const receipt = series.reduce((s, r) => s + r.receipt, 0);
+    const payment = series.reduce((s, r) => s + r.payment, 0);
+    return {
+      receipt,
+      payment,
+      net: receipt - payment,
+      count: rows.reduce((s, r) => s + Number(r.cnt || 0), 0),
+      series,
+      topPayments: groups.map((g) => ({
+        name: g.name,
+        amount: Number(g.amount || 0),
+      })),
+    };
+  }
+
+  /** Doanh thu theo nhân viên bán (Invoice.soldById), lớn trước. */
+  async getSellers(
+    limit: number = 10,
+    range: RangeKey = 'month',
+    branchId?: number,
+    custom?: CustomRange,
+  ) {
+    const w = this.getRangeWindow(range, custom);
+    const rows = await this.prisma.$queryRaw<NamedRevenueRow[]>`
+      SELECT
+        u.id AS id,
+        COALESCE(u.name, 'Chưa gán nhân viên') AS name,
+        SUM(i."grandTotal")::float8 AS revenue,
+        COUNT(*)::int AS cnt
+      FROM invoices i
+      LEFT JOIN users u ON u.id = i."soldById"
+      WHERE i."purchaseDate" >= ${w.start}
+        AND i."purchaseDate" <= ${w.end}
+        AND i.status NOT IN (2, 8)
+        ${branchId ? Prisma.sql`AND i."branchId" = ${branchId}` : Prisma.empty}
+      GROUP BY u.id, u.name
+      ORDER BY revenue DESC
+      LIMIT ${limit}
+    `;
+    return rows.map((r) => ({
+      id: r.id === null ? null : Number(r.id),
+      name: r.name,
+      revenue: Number(r.revenue || 0),
+      invoiceCount: Number(r.cnt || 0),
+    }));
+  }
+
+  /** Doanh thu theo kênh bán (SaleChannel); hóa đơn không gắn kênh gộp "Bán trực tiếp". */
+  async getSaleChannels(
+    range: RangeKey = 'month',
+    branchId?: number,
+    custom?: CustomRange,
+  ) {
+    const w = this.getRangeWindow(range, custom);
+    const rows = await this.prisma.$queryRaw<NamedRevenueRow[]>`
+      SELECT
+        sc.id AS id,
+        COALESCE(sc.name, 'Bán trực tiếp') AS name,
+        SUM(i."grandTotal")::float8 AS revenue,
+        COUNT(*)::int AS cnt
+      FROM invoices i
+      LEFT JOIN sale_channels sc ON sc.id = i."saleChannelId"
+      WHERE i."purchaseDate" >= ${w.start}
+        AND i."purchaseDate" <= ${w.end}
+        AND i.status NOT IN (2, 8)
+        ${branchId ? Prisma.sql`AND i."branchId" = ${branchId}` : Prisma.empty}
+      GROUP BY sc.id, sc.name
+      ORDER BY revenue DESC
+    `;
+    const total = rows.reduce((s, r) => s + Number(r.revenue || 0), 0);
+    return rows.map((r) => ({
+      id: r.id === null ? null : Number(r.id),
+      name: r.name,
+      revenue: Number(r.revenue || 0),
+      invoiceCount: Number(r.cnt || 0),
+      percent: ratePct(Number(r.revenue || 0), total),
+    }));
+  }
+
+  /**
+   * Khung giờ bán: doanh thu + số hóa đơn theo thứ trong tuần × giờ (giờ
+   * Việt Nam). Mặc định 30 ngày gần nhất để đủ dữ liệu cho từng ô.
+   */
+  async getSalesHeatmap(
+    period: PeriodKey = 'd30',
+    branchId?: number,
+    custom?: CustomRange,
+  ) {
+    const w = this.getPeriodWindow(period, custom);
+    const t = this.vnTime(Prisma.sql`i."purchaseDate"`);
+    const rows = await this.prisma.$queryRaw<
+      { dow: number; hour: number; revenue: number | null; cnt: number }[]
+    >`
+      SELECT
+        EXTRACT(DOW FROM ${t})::int AS dow,
+        EXTRACT(HOUR FROM ${t})::int AS hour,
+        SUM(i."grandTotal")::float8 AS revenue,
+        COUNT(*)::int AS cnt
+      FROM invoices i
+      WHERE i."purchaseDate" >= ${w.start}
+        AND i."purchaseDate" <= ${w.end}
+        AND i.status NOT IN (2, 8)
+        ${branchId ? Prisma.sql`AND i."branchId" = ${branchId}` : Prisma.empty}
+      GROUP BY dow, hour
+    `;
+    return { cells: toHeatCells(rows) };
+  }
+
+  /**
+   * Trả hàng trong kỳ (giống Báo cáo bán hàng › Trả hàng: phiếu đã nhận hàng
+   * hoặc hoàn tất, theo ngày tạo phiếu): số phiếu, giá trị, tỷ lệ trên doanh
+   * thu, số phiếu đang chờ nhận hàng và 5 mặt hàng bị trả nhiều nhất.
+   */
+  async getReturnsSummary(
+    range: RangeKey = 'month',
+    branchId?: number,
+    custom?: CustomRange,
+  ) {
+    const w = this.getRangeWindow(range, custom);
+    const done = [2, 4]; // STOCK_RECEIVED, COMPLETED (return-orders/dto)
+    const roBranch = branchId
+      ? Prisma.sql`AND ro."branchId" = ${branchId}`
+      : Prisma.empty;
+
+    const [totals, pending, revenue, products] = await Promise.all([
+      this.prisma.$queryRaw<[{ cnt: number; amount: number | null }]>`
+        SELECT COUNT(*)::int AS cnt, COALESCE(SUM(ro."totalReturnAmount"), 0)::float8 AS amount
+        FROM return_orders ro
+        WHERE ro.status IN (${Prisma.join(done)})
+          AND ro."createdAt" >= ${w.start}
+          AND ro."createdAt" <= ${w.end}
+          ${roBranch}
+      `,
+      this.prisma.$queryRaw<[{ cnt: number }]>`
+        SELECT COUNT(*)::int AS cnt
+        FROM return_orders ro
+        WHERE ro.status = 1
+          ${roBranch}
+      `,
+      this.prisma.invoice.aggregate({
+        where: this.invoiceWhere({ gte: w.start, lt: w.end }, branchId),
+        _sum: { grandTotal: true },
+      }),
+      this.prisma.$queryRaw<
+        {
+          productId: number;
+          code: string;
+          name: string;
+          quantity: number | null;
+          amount: number | null;
+        }[]
+      >`
+        SELECT
+          d."productId" AS "productId",
+          d."productCode" AS code,
+          d."productName" AS name,
+          SUM(d."confirmedQuantity")::float8 AS quantity,
+          SUM(d."totalAmount")::float8 AS amount
+        FROM return_order_details d
+        INNER JOIN return_orders ro ON ro.id = d."returnOrderId"
+        WHERE ro.status IN (${Prisma.join(done)})
+          AND ro."createdAt" >= ${w.start}
+          AND ro."createdAt" <= ${w.end}
+          ${roBranch}
+        GROUP BY d."productId", d."productCode", d."productName"
+        ORDER BY amount DESC
+        LIMIT 5
+      `,
+    ]);
+
+    const amount = Number(totals[0]?.amount || 0);
+    const revenueNum = Number(revenue._sum.grandTotal || 0);
+    return {
+      count: Number(totals[0]?.cnt || 0),
+      amount,
+      revenue: revenueNum,
+      rate: ratePct(amount, revenueNum),
+      pendingCount: Number(pending[0]?.cnt || 0),
+      topProducts: products.map((p) => ({
+        productId: Number(p.productId),
+        code: p.code,
+        name: p.name,
+        quantity: Number(p.quantity || 0),
+        amount: Number(p.amount || 0),
+      })),
+    };
   }
 }

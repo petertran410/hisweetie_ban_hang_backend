@@ -26,6 +26,7 @@ import {
   InventoryLogActor,
 } from '../common/inventory-log.util';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
+import { USER_PUBLIC_SELECT } from '../common/user-select.util';
 
 @Injectable()
 export class DestructionsService {
@@ -304,7 +305,7 @@ export class DestructionsService {
           include: { product: true },
         },
         branch: true,
-        creator: true,
+        creator: { select: USER_PUBLIC_SELECT },
       },
     });
 

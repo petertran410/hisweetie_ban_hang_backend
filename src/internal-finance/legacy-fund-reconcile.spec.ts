@@ -1,5 +1,6 @@
 import {
   CUTOFF,
+  ledgerBranch,
   mapLedgerRecord,
   readLinks,
   warehouseBranch,
@@ -23,9 +24,31 @@ describe('legacy fund reconcile – mapping Lark ledger rows', () => {
     expect(warehouseBranch('Cửa Hàng Diệp Trà')).toBeNull();
   });
 
+  it('maps the four POS funds when asked, and lets the mapper pick the fund', () => {
+    expect(ledgerBranch('Kho Hà Nội')).toBe(6);
+    expect(ledgerBranch('Văn Phòng Hà Nội')).toBe(4);
+    expect(ledgerBranch('Văn Phòng Sài Gòn')).toBe(7);
+    expect(ledgerBranch('Cửa Hàng Diệp Trà')).toBeNull();
+    const office = record({
+      'Chi Nhánh': 'Văn Phòng Hà Nội',
+      Thu: 175000000,
+      'Loại Thu Chi': 'Chuyển Tiền Nội Bộ',
+    });
+    expect(mapLedgerRecord(office)).toEqual([]);
+    expect(mapLedgerRecord(office, ledgerBranch)).toMatchObject([
+      { branchId: 4, transactionType: 'TRANSFER_IN' },
+    ]);
+  });
+
   it('splits a row with both Thu and Chi into two transactions like the Lark formula', () => {
     const rows = mapLedgerRecord(record({ Thu: 500000, Chi: 280000 }));
-    expect(rows.map((row) => [row.sourceKey, row.transactionType, String(row.amount)])).toEqual([
+    expect(
+      rows.map((row) => [
+        row.sourceKey,
+        row.transactionType,
+        String(row.amount),
+      ]),
+    ).toEqual([
       ['LARK_LEDGER:rec1', 'RECEIPT', '500000'],
       ['LARK_LEDGER:rec1:CHI', 'EXPENSE', '280000'],
     ]);
@@ -66,9 +89,13 @@ describe('legacy fund reconcile – mapping Lark ledger rows', () => {
   });
 
   it('drops rows without date, amount or warehouse', () => {
-    expect(mapLedgerRecord(record({ 'Ngày Giao Dịch': null, Chi: 1 }))).toEqual([]); // không có cả ngày tạo
+    expect(mapLedgerRecord(record({ 'Ngày Giao Dịch': null, Chi: 1 }))).toEqual(
+      [],
+    ); // không có cả ngày tạo
     expect(mapLedgerRecord(record({}))).toEqual([]);
-    expect(mapLedgerRecord(record({ 'Chi Nhánh': 'Văn Phòng Sài Gòn', Chi: 1 }))).toEqual([]);
+    expect(
+      mapLedgerRecord(record({ 'Chi Nhánh': 'Văn Phòng Sài Gòn', Chi: 1 })),
+    ).toEqual([]);
     expect(CUTOFF.toISOString()).toBe('2026-10-10T17:00:00.000Z');
   });
 });

@@ -137,6 +137,37 @@ export const AUDIT_TEMPLATES: Record<
     severity: 'warning',
   },
 
+  CUSTOMER_GROUP_CREATE: {
+    template: 'Tạo nhóm khách hàng {groupName}',
+    category: 'customer',
+    severity: 'info',
+  },
+  CUSTOMER_GROUP_UPDATE: {
+    template: 'Cập nhật nhóm khách hàng {groupName}',
+    category: 'customer',
+    severity: 'info',
+  },
+  CUSTOMER_GROUP_CANCEL: {
+    template: 'Hủy nhóm khách hàng {groupName} (gỡ {customerCount} khách)',
+    category: 'customer',
+    severity: 'warning',
+  },
+  CUSTOMER_GROUP_RESTORE: {
+    template: 'Khôi phục nhóm khách hàng {groupName}',
+    category: 'customer',
+    severity: 'info',
+  },
+  CUSTOMER_GROUP_ADD_CUSTOMERS: {
+    template: 'Thêm {customerCount} khách vào nhóm khách hàng {groupName}',
+    category: 'customer',
+    severity: 'info',
+  },
+  CUSTOMER_GROUP_REMOVE_CUSTOMERS: {
+    template: 'Gỡ {customerCount} khách khỏi nhóm khách hàng {groupName}',
+    category: 'customer',
+    severity: 'warning',
+  },
+
   SUPPLIER_CREATE: {
     template: 'Thêm nhà cung cấp {supplierName} (Mã: {supplierCode})',
     category: 'supplier',
@@ -539,6 +570,14 @@ export const AUDIT_TEMPLATES: Record<
       'Cập nhật giá sản phẩm {productName} trong bảng giá {priceBookName}: {oldPrice} → {newPrice}',
     category: 'setting',
     severity: 'info',
+  },
+  // POS: đổi bảng giá của đơn đang lên sang bảng giá khách không thuộc (đã
+  // xác nhận). Chỉ áp cho đơn đó, không đổi Thiết lập giá.
+  PRICE_BOOK_CUSTOMER_SWITCH: {
+    template:
+      'Bán hàng: đổi bảng giá đơn đang lên cho khách hàng {customerName} từ "{fromPriceBookName}" sang "{toPriceBookName}" (khách không thuộc bảng giá này)',
+    category: 'customer',
+    severity: 'warning',
   },
 
   SETTINGS_UPDATE: {

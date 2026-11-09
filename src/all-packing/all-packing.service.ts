@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AllPackingQueryDto } from './dto/all-packing-query.dto';
 import { searchCustomerIds } from '../common/customer-search.util';
@@ -7,6 +8,12 @@ import {
   summarizeColdCargoWarning,
   type ColdCargoWarning,
 } from '../common/cold-cargo.util';
+import {
+  CASH_WARNING_EPSILON,
+  LATEST_PAYMENT_NOTE,
+  packingCashWarning,
+  withInvoicePaymentNote,
+} from '../common/payment-note.util';
 
 const PACKING_SLIP_LIST_SELECT = {
   id: true,
@@ -39,6 +46,8 @@ const PACKING_SLIP_LIST_SELECT = {
         select: {
           id: true,
           code: true,
+          // Hóa đơn ghi thu tiền mặt → cột "Thu tiền mặt" trong danh sách báo đơn.
+          paymentNotes: LATEST_PAYMENT_NOTE,
           grandTotal: true,
           customer: {
             select: { id: true, name: true, contactNumber: true },
@@ -85,6 +94,8 @@ const PACKING_HANG_LIST_SELECT = {
         select: {
           id: true,
           code: true,
+          // Hóa đơn ghi thu tiền mặt → cột "Thu tiền mặt" trong danh sách báo đơn.
+          paymentNotes: LATEST_PAYMENT_NOTE,
           customerId: true,
           purchaseDate: true,
           grandTotal: true,
@@ -135,6 +146,8 @@ const PACKING_LOADING_LIST_SELECT = {
         select: {
           id: true,
           code: true,
+          // Hóa đơn ghi thu tiền mặt → cột "Thu tiền mặt" trong danh sách báo đơn.
+          paymentNotes: LATEST_PAYMENT_NOTE,
           customerId: true,
           purchaseDate: true,
           grandTotal: true,
@@ -176,6 +189,7 @@ export class AllPackingService {
       invoiceSearch,
       customerSearch,
       paymentMethod,
+      cashWarning,
       fromCreatedDate,
       toCreatedDate,
       limit,
@@ -222,8 +236,20 @@ export class AllPackingService {
       createdDateRange,
     );
 
-    // Nếu có paymentMethod hoặc type === 'giao-hang' → chỉ truy vấn packing_slips.
-    if (paymentMethod || type === 'giao-hang') {
+    // Chỉ phiếu có cảnh báo thu tiền mặt: lấy trước id các phiếu lệch.
+    if (cashWarning) {
+      whereSlips.id = {
+        in: await this.findCashWarningSlipIds(
+          effectiveBranchIds,
+          ownerFilterId,
+          createdDateRange,
+        ),
+      };
+    }
+
+    // Có paymentMethod / cảnh báo tiền mặt hoặc type === 'giao-hang' → chỉ
+    // truy vấn packing_slips (đóng hàng, loading không có phần thanh toán).
+    if (paymentMethod || cashWarning || type === 'giao-hang') {
       const [items, total] = await Promise.all([
         this.prisma.packingSlip.findMany({
           where: whereSlips,
@@ -500,9 +526,14 @@ export class AllPackingService {
   ) {
     const imageCount = item._count?.images ?? 0;
     const expenseFileCount = item._count?.expenseFiles ?? 0;
+    const invoices = withInvoicePaymentNote(
+      (item as { invoices?: readonly unknown[] | null }).invoices,
+    );
     return {
       ...item,
       ...coldWarning,
+      invoices,
+      cashWarning: packingCashWarning(item, invoices),
       type: 'giao-hang' as const,
       imageCount,
       expenseFileCount,
@@ -524,6 +555,9 @@ export class AllPackingService {
     return {
       ...item,
       ...coldWarning,
+      invoices: withInvoicePaymentNote(
+        (item as { invoices?: readonly unknown[] | null }).invoices,
+      ),
       type: 'dong-hang' as const,
       imageCount,
       expenseFileCount: 0,
@@ -543,12 +577,75 @@ export class AllPackingService {
     return {
       ...item,
       ...coldWarning,
+      invoices: withInvoicePaymentNote(
+        (item as { invoices?: readonly unknown[] | null }).invoices,
+      ),
       type: 'loading' as const,
       imageCount,
       expenseFileCount: 0,
       images: Array.from({ length: imageCount }, (_, i) => ({ id: i })),
       expenseFiles: [],
     };
+  }
+
+  /**
+   * Id các phiếu giao hàng (chưa hủy) có cảnh báo thu tiền mặt, theo đúng quy
+   * tắc `packingCashWarning`: lấy ghi chú thanh toán mới nhất của từng hóa đơn
+   * trong phiếu, cộng tiền mặt các hóa đơn ghi thu rồi so với phiếu.
+   */
+  private async findCashWarningSlipIds(
+    branchIds?: number[],
+    ownerFilterId?: number,
+    createdDateRange?: { gte?: Date; lte?: Date },
+  ): Promise<number[]> {
+    const conditions: Prisma.Sql[] = [Prisma.sql`ps."cancelledAt" IS NULL`];
+    if (branchIds?.length) {
+      conditions.push(Prisma.sql`ps."branchId" IN (${Prisma.join(branchIds)})`);
+    }
+    if (ownerFilterId) {
+      conditions.push(Prisma.sql`ps."createdBy" = ${ownerFilterId}`);
+    }
+    if (createdDateRange?.gte) {
+      conditions.push(Prisma.sql`ps."createdAt" >= ${createdDateRange.gte}`);
+    }
+    if (createdDateRange?.lte) {
+      conditions.push(Prisma.sql`ps."createdAt" <= ${createdDateRange.lte}`);
+    }
+    // Hằng số viết thẳng vào SQL: Prisma gửi số thực dạng nhị phân, Postgres
+    // không nhận làm tham số kiểu numeric.
+    const EPSILON_SQL = Prisma.raw(String(CASH_WARNING_EPSILON));
+    const rows = await this.prisma.$queryRaw<{ id: number }[]>`
+      SELECT ps.id
+      FROM packing_slips ps
+      JOIN LATERAL (
+        SELECT
+          COUNT(*) AS noted,
+          COUNT(*) FILTER (WHERE n."paymentType" = 'cash') AS "cashCount",
+          COALESCE(
+            SUM(COALESCE(n.amount, 0)) FILTER (WHERE n."paymentType" = 'cash'),
+            0
+          ) AS "invoiceCash"
+        FROM packing_slip_invoices psi
+        JOIN LATERAL (
+          SELECT ipn."paymentType", ipn.amount
+          FROM invoice_payment_notes ipn
+          WHERE ipn."invoiceId" = psi."invoiceId"
+          ORDER BY ipn."createdAt" DESC, ipn.id DESC
+          LIMIT 1
+        ) n ON true
+        WHERE psi."packingSlipId" = ps.id
+      ) agg ON true
+      WHERE ${Prisma.join(conditions, ' AND ')}
+        AND agg.noted > 0
+        AND (
+          (ps."paymentMethod" IS DISTINCT FROM 'cash' AND agg."cashCount" > 0)
+          OR (
+            ps."paymentMethod" = 'cash'
+            AND ABS(COALESCE(ps."cashAmount", 0) - agg."invoiceCash") > ${EPSILON_SQL}
+          )
+        )
+    `;
+    return rows.map((row) => Number(row.id));
   }
 
   private async getColdWarningsByPackingItems(

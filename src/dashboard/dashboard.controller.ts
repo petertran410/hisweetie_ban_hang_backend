@@ -351,4 +351,158 @@ export class DashboardController {
   ) {
     return this.dashboardService.getRecentActivities(limit || 15);
   }
+
+  // ─────────────── Báo cáo thêm cho trang chủ (app iPhone) ───────────────
+  // Quyền ở mức hàm THAY quyền của lớp (getAllAndOverride) nên phải ghi lại
+  // 'dashboard:view'. Mỗi báo cáo cần thêm quyền của báo cáo tương ứng trên web.
+
+  @Get('cashflow')
+  @RequirePermissions('dashboard:view', 'cash_flows:view')
+  @ApiOperation({ summary: 'Thu chi sổ quỹ trong kỳ (cần quyền xem sổ quỹ)' })
+  @ApiQuery({ name: 'range', required: false })
+  @ApiQuery({ name: 'branchId', required: false, type: Number })
+  @ApiQuery({
+    name: 'from',
+    required: false,
+    description: 'ISO — khi range = custom',
+  })
+  @ApiQuery({
+    name: 'to',
+    required: false,
+    description: 'ISO — khi range = custom',
+  })
+  getCashflow(
+    @Query('range') range?: RangeKey,
+    @Query('branchId', new ParseIntPipe({ optional: true })) branchId?: number,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.dashboardService.getCashflowSummary(
+      range || 'today',
+      branchId,
+      this.parseCustom(range, from, to),
+    );
+  }
+
+  @Get('sellers')
+  @RequirePermissions('dashboard:view', 'reports:sale_soldby')
+  @ApiOperation({
+    summary:
+      'Doanh thu theo nhân viên bán (cần quyền báo cáo bán hàng theo nhân viên)',
+  })
+  @ApiQuery({ name: 'limit', required: false, type: Number })
+  @ApiQuery({ name: 'range', required: false })
+  @ApiQuery({ name: 'branchId', required: false, type: Number })
+  @ApiQuery({
+    name: 'from',
+    required: false,
+    description: 'ISO — khi range = custom',
+  })
+  @ApiQuery({
+    name: 'to',
+    required: false,
+    description: 'ISO — khi range = custom',
+  })
+  getSellers(
+    @Query('limit', new ParseIntPipe({ optional: true })) limit?: number,
+    @Query('range') range?: RangeKey,
+    @Query('branchId', new ParseIntPipe({ optional: true })) branchId?: number,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.dashboardService.getSellers(
+      Math.min(limit || 10, 50),
+      range || 'month',
+      branchId,
+      this.parseCustom(range, from, to),
+    );
+  }
+
+  @Get('sale-channels')
+  @ApiOperation({ summary: 'Doanh thu theo kênh bán' })
+  @ApiQuery({ name: 'range', required: false })
+  @ApiQuery({ name: 'branchId', required: false, type: Number })
+  @ApiQuery({
+    name: 'from',
+    required: false,
+    description: 'ISO — khi range = custom',
+  })
+  @ApiQuery({
+    name: 'to',
+    required: false,
+    description: 'ISO — khi range = custom',
+  })
+  getSaleChannels(
+    @Query('range') range?: RangeKey,
+    @Query('branchId', new ParseIntPipe({ optional: true })) branchId?: number,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.dashboardService.getSaleChannels(
+      range || 'month',
+      branchId,
+      this.parseCustom(range, from, to),
+    );
+  }
+
+  @Get('sales-heatmap')
+  @RequirePermissions('dashboard:view', 'reports:sale_time')
+  @ApiOperation({
+    summary:
+      'Doanh thu theo thứ × giờ (cần quyền báo cáo bán hàng theo thời gian)',
+  })
+  @ApiQuery({ name: 'period', required: false })
+  @ApiQuery({ name: 'branchId', required: false, type: Number })
+  @ApiQuery({
+    name: 'from',
+    required: false,
+    description: 'ISO — khi period = custom',
+  })
+  @ApiQuery({
+    name: 'to',
+    required: false,
+    description: 'ISO — khi period = custom',
+  })
+  getSalesHeatmap(
+    @Query('period') period?: PeriodKey,
+    @Query('branchId', new ParseIntPipe({ optional: true })) branchId?: number,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.dashboardService.getSalesHeatmap(
+      period || 'd30',
+      branchId,
+      this.parseCustom(period, from, to),
+    );
+  }
+
+  @Get('returns')
+  @RequirePermissions('dashboard:view', 'reports:sale_refund')
+  @ApiOperation({
+    summary: 'Trả hàng trong kỳ (cần quyền báo cáo bán hàng › trả hàng)',
+  })
+  @ApiQuery({ name: 'range', required: false })
+  @ApiQuery({ name: 'branchId', required: false, type: Number })
+  @ApiQuery({
+    name: 'from',
+    required: false,
+    description: 'ISO — khi range = custom',
+  })
+  @ApiQuery({
+    name: 'to',
+    required: false,
+    description: 'ISO — khi range = custom',
+  })
+  getReturns(
+    @Query('range') range?: RangeKey,
+    @Query('branchId', new ParseIntPipe({ optional: true })) branchId?: number,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.dashboardService.getReturnsSummary(
+      range || 'month',
+      branchId,
+      this.parseCustom(range, from, to),
+    );
+  }
 }

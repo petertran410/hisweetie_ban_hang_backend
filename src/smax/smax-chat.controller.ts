@@ -28,9 +28,17 @@ import {
 } from './smax-chat.service';
 import {
   ChatMessagesQueryDto,
+  DeliveryBookingDto,
   MediaQueryDto,
   CreateZaloContactDto,
   ReactMessageDto,
+  RenameThreadDto,
+  LibraryFilesQueryDto,
+  LibraryImportDto,
+  LibraryUploadDto,
+  LibraryDeleteDto,
+  MessageActionDto,
+  PassControlBizAIDto,
   FriendActionDto,
   SendChatMessageDto,
   SendThreadMessageDto,
@@ -55,6 +63,9 @@ export class SmaxChatController {
       canViewOtherStaffData: req.user.canViewOtherStaffData,
       canViewDebt: requestHasPermission(req, 'customers:view_debt'),
       canViewPackingSlips: requestHasPermission(req, 'packing_slips:view'),
+      canViewLeads: requestHasPermission(req, 'leads:view'),
+      // Chỉ có leads:view (Sale) → chỉ thấy lead giao cho mình
+      leadsOwnOnly: !requestHasPermission(req, 'leads:update'),
     };
   }
 
@@ -100,6 +111,46 @@ export class SmaxChatController {
     return this.service.reactMessage(this.actor(req), dto);
   }
 
+  // Đổi tên hội thoại Zalo cá nhân (1-1 / nhóm) trên Smax (API nội bộ Smax, cần SMAX_USER_TOKEN)
+  @Patch('threads/name')
+  @RequirePermissions('smax_chat:send')
+  renameThread(@Body() dto: RenameThreadDto, @Req() req: any) {
+    return this.service.renameThread(this.actor(req), dto);
+  }
+
+  // Bật Meta Business AI trả lời hội thoại Messenger (API nội bộ Smax, cần SMAX_USER_TOKEN)
+  @Post('threads/meta-ai')
+  @RequirePermissions('smax_chat:send')
+  passControlBizAI(@Body() dto: PassControlBizAIDto, @Req() req: any) {
+    return this.service.passControlBizAI(this.actor(req), dto);
+  }
+
+  // Thu hồi / xoá phía mình 1 tin (API nội bộ Smax, cần SMAX_USER_TOKEN)
+  @Post('threads/message-action')
+  @RequirePermissions('smax_chat:send')
+  messageAction(@Body() dto: MessageActionDto, @Req() req: any) {
+    return this.service.messageAction(this.actor(req), dto);
+  }
+
+  // Đặt xe giao hàng: gửi tin vào nhóm Zalo đặt xe qua kênh cố định
+  @Get('delivery-booking')
+  @RequirePermissions('invoices:update')
+  deliveryBookingTarget() {
+    return this.service.deliveryBookingTarget();
+  }
+
+  @Get('delivery-booking/senders')
+  @RequirePermissions('invoices:update')
+  deliveryBookingSenders(@Query('branchId', ParseIntPipe) branchId: number) {
+    return this.service.deliveryBookingSenders(branchId);
+  }
+
+  @Post('delivery-booking')
+  @RequirePermissions('invoices:update')
+  bookDelivery(@Body() dto: DeliveryBookingDto, @Req() req: any) {
+    return this.service.bookDelivery(this.actor(req), dto);
+  }
+
   @Get('recent')
   @RequirePermissions('smax_chat:view')
   recent(
@@ -107,8 +158,15 @@ export class SmaxChatController {
     @Query('pagePid') pagePid?: string,
     @Query('limit') limit?: string,
     @Query('q') q?: string,
+    @Query('fresh') fresh?: string,
   ) {
-    return this.service.recentChats(req.user.id, pagePid || undefined, Number(limit) || undefined, q || undefined);
+    return this.service.recentChats(
+      req.user.id,
+      pagePid || undefined,
+      Number(limit) || undefined,
+      q || undefined,
+      fresh === '1',
+    );
   }
 
   @Get('customers/:id/context')
@@ -143,6 +201,49 @@ export class SmaxChatController {
   )
   uploadAttachments(@UploadedFiles() files: Express.Multer.File[]) {
     return this.service.uploadAttachments(files);
+  }
+
+  @Get('library/albums')
+  @RequirePermissions('smax_chat:send')
+  libraryAlbums() {
+    return this.service.libraryAlbums();
+  }
+
+  @Get('library/files')
+  @RequirePermissions('smax_chat:send')
+  libraryFiles(@Query() query: LibraryFilesQueryDto) {
+    return this.service.libraryFiles(query);
+  }
+
+  /** Tải tệp lên Thư viện Smax (vào album đang xem nếu có). */
+  @Post('library/files')
+  @RequirePermissions('smax_chat:manage_library')
+  @UseInterceptors(
+    FilesInterceptor('files', MAX_ATTACHMENTS, {
+      storage: memoryStorage(),
+      limits: { fileSize: MAX_ATTACHMENT_BYTES },
+    }),
+  )
+  libraryUpload(
+    @UploadedFiles() files: Express.Multer.File[],
+    @Body() dto: LibraryUploadDto,
+    @Req() req: any,
+  ) {
+    return this.service.libraryUpload(this.actor(req), files, dto.albumId || undefined);
+  }
+
+  /** Xoá tệp khỏi Thư viện Smax. */
+  @Delete('library/files')
+  @RequirePermissions('smax_chat:manage_library')
+  libraryDelete(@Body() dto: LibraryDeleteDto, @Req() req: any) {
+    return this.service.libraryDelete(this.actor(req), dto.files);
+  }
+
+  /** Tệp chọn từ Thư viện Smax → tệp đính kèm (như tải lên). */
+  @Post('library/import')
+  @RequirePermissions('smax_chat:send')
+  importLibrary(@Body() dto: LibraryImportDto) {
+    return this.service.importLibraryFiles(dto.items);
   }
 
   @Get('customers/:id/zalo-profile')
@@ -203,7 +304,7 @@ export class SmaxChatController {
     @Body() dto: CreateZaloContactDto,
     @Req() req: any,
   ) {
-    return this.service.createContact(id, req.user.id, dto);
+    return this.service.createContact(id, this.actor(req), dto);
   }
 
   @Patch('customers/:id/contacts/:contactId')

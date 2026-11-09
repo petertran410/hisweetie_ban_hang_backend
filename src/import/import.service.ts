@@ -11,6 +11,7 @@ import * as ExcelJS from 'exceljs';
 import { INVOICE_STATUS, getStatusLabel } from 'src/invoices/dto';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 import { replaceDefaultFormulaComponents } from '../products/product-formulas.util';
+import { buildProductImageRows } from '../products/product-images.util';
 
 /**
  * Thông tin người thao tác để gắn vào audit log và enqueue sync.
@@ -977,9 +978,14 @@ export class ImportService {
 
     if (urls.length === 0) return;
 
+    // Giữ ảnh chính cũ nếu URL đó vẫn còn trong file import.
+    const oldPrimary = await client.productImage.findFirst({
+      where: { productId, isPrimary: true },
+      select: { image: true },
+    });
     await client.productImage.deleteMany({ where: { productId } });
     await client.productImage.createMany({
-      data: urls.map((url) => ({ productId, image: url })),
+      data: buildProductImageRows(productId, urls, oldPrimary?.image),
     });
   }
 

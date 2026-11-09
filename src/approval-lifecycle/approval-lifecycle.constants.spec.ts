@@ -1,4 +1,13 @@
-import { readFundReceipt } from './approval-lifecycle.constants';
+import {
+  LARK_LEDGER_CUTOFF,
+  SALARY_ADVANCE_FUND_FROM,
+  VPHN_LEDGER_CUTOFF,
+  larkFundCutoff,
+  larkLedgerCutoff,
+  readFundReceipt,
+  readPaymentVoucherDetails,
+  readSalaryAdvance,
+} from './approval-lifecycle.constants';
 
 describe('readFundReceipt', () => {
   const pick = (id: string, key: string) => ({
@@ -106,5 +115,169 @@ describe('readFundReceipt', () => {
         amount,
       ]),
     ).toBeNull();
+  });
+});
+
+describe('larkLedgerCutoff', () => {
+  it('uses 14/10 for the warehouses and 01/11 for Văn phòng HN', () => {
+    expect(larkLedgerCutoff(6)).toEqual(LARK_LEDGER_CUTOFF);
+    expect(larkLedgerCutoff(1)).toEqual(LARK_LEDGER_CUTOFF);
+    expect(larkLedgerCutoff(4)).toEqual(VPHN_LEDGER_CUTOFF);
+    expect(larkLedgerCutoff(null)).toEqual(LARK_LEDGER_CUTOFF);
+    expect(VPHN_LEDGER_CUTOFF.toISOString()).toBe('2026-10-31T17:00:00.000Z');
+  });
+});
+
+describe('readPaymentVoucherDetails', () => {
+  const base = [
+    { id: 'widget17321753417610001', type: 'radioV2', value: 'Tiền Mặt' },
+    {
+      id: 'widget17643292059530001',
+      type: 'radioV2',
+      value: 'Tiền Mặt Văn Phòng HN',
+    },
+    { id: 'widget17321752802850001', type: 'amount', value: 1306000 },
+    { id: 'widget17321750170610001', type: 'input', value: 'Cước đt T10' },
+  ];
+
+  it('finds the extra fields by their label, ignoring accents and punctuation', () => {
+    expect(
+      readPaymentVoucherDetails([
+        ...base,
+        {
+          id: 'a',
+          name: 'Loại chi phí',
+          type: 'radioV2',
+          value: 'Mua hàng nội địa, CCDC, dịch vụ',
+        },
+        {
+          id: 'b',
+          name: 'Khoản mục chi phí',
+          type: 'radioV2',
+          value: 'Cước điện thoại di động',
+        },
+        {
+          id: 'c',
+          name: 'Chi phí thuộc phòng ban',
+          type: 'radioV2',
+          value: 'Phòng Hành Chính - Nhân Sự',
+        },
+        { id: 'd', name: 'NCU', type: 'input', value: 'Viettel' },
+        { id: 'e', name: 'Số tiền chuyển khoản', type: 'amount', value: 0 },
+      ]),
+    ).toEqual({
+      method: 'Tiền Mặt',
+      expenseType: 'Mua hàng nội địa, CCDC, dịch vụ',
+      expenseItem: 'Cước điện thoại di động',
+      department: 'Phòng Hành Chính - Nhân Sự',
+      supplier: 'Viettel',
+      totalAmount: 1306000,
+      cashAmount: 1306000,
+      transferAmount: null,
+    });
+  });
+
+  it('takes the cash part for mixed payments and leaves unknown fields empty', () => {
+    expect(
+      readPaymentVoucherDetails([
+        {
+          id: 'widget17321753417610001',
+          type: 'radioV2',
+          value: 'Chuyển Khoản (Công Ty + Tiền Mặt)',
+        },
+        {
+          id: 'widget17643292059530001',
+          type: 'radioV2',
+          value: 'Tiền Mặt Văn Phòng HN',
+        },
+        { id: 'widget17321752802850001', type: 'amount', value: 51274630 },
+        { id: 'widget17643300136400001', type: 'amount', value: 43511590 },
+        {
+          id: 'e',
+          name: 'Số tiền chuyển khoản',
+          type: 'amount',
+          value: 7763040,
+        },
+      ]),
+    ).toMatchObject({
+      totalAmount: 51274630,
+      cashAmount: 43511590,
+      transferAmount: 7763040,
+      expenseItem: null,
+      department: null,
+    });
+  });
+});
+
+describe('readSalaryAdvance', () => {
+  const form = (method: string, source: string, amount = 3000000) => [
+    {
+      id: 'widget17321750020230001',
+      name: 'Ngày đề xuất',
+      type: 'date',
+      value: '2026-08-18T17:00:00Z',
+    },
+    {
+      id: 'widget17321753417610001',
+      name: 'Phương thức thanh toán',
+      type: 'radioV2',
+      value: method,
+    },
+    {
+      id: 'widget17642424767350001',
+      name: 'Nguồn Tiền',
+      type: 'radioV2',
+      value: source,
+    },
+    {
+      id: 'widget17321752802850001',
+      name: 'Số tiền',
+      type: 'amount',
+      value: amount,
+    },
+  ];
+
+  it('maps a cash advance to the fund it is paid from', () => {
+    expect(readSalaryAdvance(form('Tiền Mặt', 'Tiền Mặt Kho SG'))).toEqual({
+      amount: 3000000,
+      method: 'Tiền Mặt',
+      cashSource: 'Tiền Mặt Kho SG',
+      branchId: 1,
+      requestDate: new Date('2026-08-18T17:00:00Z'),
+    });
+    expect(
+      readSalaryAdvance(form('Tiền Mặt', 'Tiền Mặt Văn Phòng HN'))?.branchId,
+    ).toBe(4);
+    expect(
+      readSalaryAdvance(form('Tiền Mặt', 'Tiền Mặt Văn Phòng HCM'))?.branchId,
+    ).toBe(7);
+  });
+
+  it('keeps company transfers and unknown sources out of the funds', () => {
+    expect(
+      readSalaryAdvance(form('Chuyển Khoản Công Ty', 'Chuyển Khoản Công Ty'))
+        ?.branchId,
+    ).toBeNull();
+    expect(
+      readSalaryAdvance(form('Tiền Mặt', 'Tiền Mặt CHDT'))?.branchId,
+    ).toBeNull();
+    expect(
+      readSalaryAdvance(form('Tiền Mặt', 'Tiền Mặt Kho SG', 0)),
+    ).toBeNull();
+  });
+});
+
+describe('larkFundCutoff', () => {
+  it('books salary advances only from 02/11/2026, other forms keep the branch cutoff', () => {
+    expect(larkFundCutoff(6, 'LARK_SALARY_ADVANCE')).toEqual(
+      SALARY_ADVANCE_FUND_FROM,
+    );
+    expect(larkFundCutoff(4, 'LARK_SALARY_ADVANCE')).toEqual(
+      SALARY_ADVANCE_FUND_FROM,
+    );
+    expect(larkFundCutoff(6, 'LARK_PAYMENT_VOUCHER')).toEqual(
+      LARK_LEDGER_CUTOFF,
+    );
+    expect(larkFundCutoff(4, null)).toEqual(VPHN_LEDGER_CUTOFF);
   });
 });

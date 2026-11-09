@@ -37,6 +37,12 @@ import { resolveActivePackingInvoiceIds } from '../common/packing-invoice-target
 import { InternalFinanceService } from '../internal-finance/internal-finance.service';
 import { INTERNAL_FINANCE_STATUS } from '../internal-finance/internal-finance.constants';
 import { buildColdCargoWarning } from '../common/cold-cargo.util';
+import {
+  LATEST_PAYMENT_NOTE,
+  packingCashWarning,
+  withInvoicePaymentNote,
+} from '../common/payment-note.util';
+import { USER_PUBLIC_SELECT } from '../common/user-select.util';
 
 @Injectable()
 export class PackingSlipsService {
@@ -148,6 +154,8 @@ export class PackingSlipsService {
                 customerId: true,
                 purchaseDate: true,
                 grandTotal: true,
+                // Ghi chú thanh toán mới nhất → cảnh báo lệch tiền mặt cần thu.
+                paymentNotes: LATEST_PAYMENT_NOTE,
                 customer: {
                   select: {
                     id: true,
@@ -214,9 +222,12 @@ export class PackingSlipsService {
       throw new NotFoundException(`Packing slip with ID ${id} not found`);
     }
 
+    const invoices = withInvoicePaymentNote(packingSlip.invoices);
     return {
       ...packingSlip,
+      invoices,
       ...buildColdCargoWarning(packingSlip.invoices),
+      cashWarning: packingCashWarning(packingSlip, invoices),
     };
   }
 
@@ -290,8 +301,8 @@ export class PackingSlipsService {
         },
         include: {
           branch: true,
-          creator: true,
-          expensePayer: true,
+          creator: { select: USER_PUBLIC_SELECT },
+          expensePayer: { select: USER_PUBLIC_SELECT },
           invoices: { include: { invoice: true, consignment: true } },
           images: true,
           expenseFiles: true,
@@ -593,8 +604,8 @@ export class PackingSlipsService {
         data: updateData,
         include: {
           branch: true,
-          creator: true,
-          expensePayer: true,
+          creator: { select: USER_PUBLIC_SELECT },
+          expensePayer: { select: USER_PUBLIC_SELECT },
           invoices: { include: { invoice: true, consignment: true } },
           images: true,
           expenseFiles: true,

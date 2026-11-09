@@ -17,12 +17,16 @@ setup-backup-dirs.sh
 nginx
 
 POSTGRES-STANDBY-SETUP.md
+/backup
 
 .codex
 .vscode
 AGENTS.md
 
 /uploads
+
+/prisma/scripts
+/prisma/seeds
 
 # Logs
 logs

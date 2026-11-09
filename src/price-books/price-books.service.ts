@@ -13,9 +13,15 @@ import {
   ApplicablePriceBooksDto,
   ProductPriceDto,
   ProductsWithPricesQueryDto,
+  LogCustomerSwitchDto,
 } from './dto';
 import { AuditLogsService } from 'src/audit-logs/audit-logs.service';
 import { searchProductIds } from '../common/product-search.util';
+import {
+  filterPriceBooksForCustomer,
+  isRestrictedPriceBook,
+  selectablePriceBookWhere,
+} from './price-book-customer-scope';
 import {
   getCategoryFromActionCode,
   getSeverityFromActionCode,
@@ -230,8 +236,13 @@ export class PriceBooksService {
           dto.customerGroups.map(async (customerGroupId) => {
             const group = await tx.customerGroup.findUnique({
               where: { id: customerGroupId },
-              select: { name: true },
+              select: { name: true, isActive: true },
             });
+            if (group && !group.isActive) {
+              throw new BadRequestException(
+                `Nhóm khách hàng "${group.name}" đã hủy`,
+              );
+            }
             return {
               priceBookId: priceBook.id,
               customerGroupId,
@@ -428,6 +439,15 @@ export class PriceBooksService {
       }
 
       if (dto.customerGroups !== undefined) {
+        // Nhóm đã hủy mà bảng giá đang gắn sẵn thì giữ nguyên; chỉ chặn gắn mới.
+        const linkedGroupIds = new Set(
+          (
+            await tx.priceBookCustomerGroup.findMany({
+              where: { priceBookId: id },
+              select: { customerGroupId: true },
+            })
+          ).map((g) => g.customerGroupId),
+        );
         await tx.priceBookCustomerGroup.deleteMany({
           where: { priceBookId: id },
         });
@@ -437,8 +457,17 @@ export class PriceBooksService {
             dto.customerGroups.map(async (customerGroupId) => {
               const group = await tx.customerGroup.findUnique({
                 where: { id: customerGroupId },
-                select: { name: true },
+                select: { name: true, isActive: true },
               });
+              if (
+                group &&
+                !group.isActive &&
+                !linkedGroupIds.has(customerGroupId)
+              ) {
+                throw new BadRequestException(
+                  `Nhóm khách hàng "${group.name}" đã hủy`,
+                );
+              }
               return {
                 priceBookId: id,
                 customerGroupId,
@@ -570,69 +599,19 @@ export class PriceBooksService {
   }
 
   async getApplicablePriceBooks(params: ApplicablePriceBooksDto) {
-    const { branchId, customerId, userId, date } = params;
+    const { branchId, customerId, userId, date, anyCustomer } = params;
     const checkDate = date ? new Date(date) : new Date();
 
-    const where: any = {
-      isActive: true,
-      AND: [
-        { OR: [{ startDate: null }, { startDate: { lte: checkDate } }] },
-        { OR: [{ endDate: null }, { endDate: { gte: checkDate } }] },
-      ],
-    };
+    const where = selectablePriceBookWhere({
+      branchId,
+      userId,
+      date: checkDate,
+    });
 
-    // Branch scope
-    if (branchId) {
-      where.AND.push({
-        OR: [{ isGlobal: true }, { priceBookBranches: { some: { branchId } } }],
-      });
-    }
-
-    // Customer scope (gồm customer group + customer cụ thể)
-    if (customerId) {
-      const customer = await this.prisma.customer.findUnique({
-        where: { id: customerId },
-        include: {
-          customerGroupDetails: {
-            select: { customerGroupId: true },
-          },
-        },
-      });
-
-      if (customer) {
-        const groupIds = customer.customerGroupDetails.map(
-          (g) => g.customerGroupId,
-        );
-
-        // Customer group scope
-        const cgConditions: any[] = [{ forAllCusGroup: true }];
-        if (groupIds.length > 0) {
-          cgConditions.push({
-            priceBookCustomerGroups: {
-              some: { customerGroupId: { in: groupIds } },
-            },
-          });
-        }
-        where.AND.push({ OR: cgConditions });
-
-        // Customer cụ thể scope
-        where.AND.push({
-          OR: [
-            { forAllCustomer: true },
-            { priceBookCustomers: { some: { customerId } } },
-          ],
-        });
-      }
-    } else {
-      // Không có customerId → chỉ hiện bảng giá forAllCustomer=true
+    // Không có khách và không yêu cầu liệt kê đủ → chỉ bảng giá forAllCustomer
+    // (giữ hành vi cũ cho tự dò giá khi chưa có khách).
+    if (!customerId && !anyCustomer) {
       where.AND.push({ forAllCustomer: true });
-    }
-
-    // User scope
-    if (userId) {
-      where.AND.push({
-        OR: [{ forAllUser: true }, { priceBookUsers: { some: { userId } } }],
-      });
     }
 
     const priceBooks = await this.prisma.priceBook.findMany({
@@ -659,7 +638,109 @@ export class PriceBooksService {
       orderBy: { priority: 'desc' },
     });
 
+    // Có khách → chỉ giữ bảng giá khách được dùng (xem price-book-customer-scope).
+    if (customerId && !anyCustomer) {
+      const groups = await this.prisma.customerGroupDetail.findMany({
+        where: { customerId },
+        select: { customerGroupId: true },
+      });
+      return filterPriceBooksForCustomer(
+        priceBooks,
+        customerId,
+        groups.map((g) => g.customerGroupId),
+      );
+    }
+
     return priceBooks;
+  }
+
+  // POS: ghi Lịch sử khi người dùng xác nhận chuyển khách sang bảng giá khách
+  // không thuộc. Tên khách/bảng giá/chi nhánh đọc từ DB, không lấy từ client.
+  async logCustomerSwitch(dto: LogCustomerSwitchDto, userId: number) {
+    const customer = await this.prisma.customer.findUnique({
+      where: { id: dto.customerId },
+      select: { id: true, code: true, name: true },
+    });
+    if (!customer) {
+      throw new NotFoundException(
+        `Không tìm thấy khách hàng ${dto.customerId}`,
+      );
+    }
+
+    const priceBookIds = [dto.fromPriceBookId, dto.toPriceBookId].filter(
+      (id): id is number => !!id && id > 0,
+    );
+    const [priceBooks, usable, branch, user] = await Promise.all([
+      this.prisma.priceBook.findMany({
+        where: { id: { in: priceBookIds } },
+        select: { id: true, name: true },
+      }),
+      // Bảng giá khách dùng được ở chi nhánh/người dùng này.
+      this.getApplicablePriceBooks({
+        branchId: dto.branchId,
+        userId,
+        customerId: customer.id,
+      }),
+      dto.branchId
+        ? this.prisma.branch.findUnique({
+            where: { id: dto.branchId },
+            select: { id: true, name: true },
+          })
+        : null,
+      this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true },
+      }),
+    ]);
+
+    // 0 hoặc trống = Bảng giá chung. Bảng giá đã bị xóa (tab POS cũ) vẫn ghi
+    // log theo id, không chặn việc chuyển.
+    const priceBookOf = (id?: number) => {
+      if (!id) return { id: 0, name: 'Bảng giá chung' };
+      return (
+        priceBooks.find((p) => p.id === id) ?? { id, name: `Bảng giá #${id}` }
+      );
+    };
+    const fromPriceBook = priceBookOf(dto.fromPriceBookId);
+    const toPriceBook = priceBookOf(dto.toPriceBookId);
+    // Bảng giá riêng khách đang thuộc (theo khách hoặc nhóm khách).
+    const customerPriceBooks = usable
+      .filter(isRestrictedPriceBook)
+      .map((pb) => ({ id: pb.id, name: pb.name }));
+
+    const messageParams = {
+      customerName: customer.code
+        ? `${customer.code} - ${customer.name}`
+        : customer.name,
+      toPriceBookName: toPriceBook.name,
+      fromPriceBookName: fromPriceBook.name,
+    };
+
+    await this.auditLogsService.create({
+      actionType: 'POST',
+      actionCode: 'PRICE_BOOK_CUSTOMER_SWITCH',
+      entityType: 'customers',
+      entityId: customer.id.toString(),
+      entityCode: customer.code ?? undefined,
+      category: getCategoryFromActionCode('PRICE_BOOK_CUSTOMER_SWITCH'),
+      severity: getSeverityFromActionCode('PRICE_BOOK_CUSTOMER_SWITCH'),
+      snapshot: {
+        customer,
+        customerPriceBooks,
+        fromPriceBook,
+        toPriceBook,
+        branch,
+      },
+      message: renderAuditMessage('PRICE_BOOK_CUSTOMER_SWITCH', messageParams),
+      messageTemplate: 'PRICE_BOOK_CUSTOMER_SWITCH',
+      messageParams,
+      userId,
+      userName: user?.name || user?.email || 'System',
+      branchId: branch?.id,
+      branchName: branch?.name,
+    });
+
+    return { success: true };
   }
 
   async getPriceForProduct(params: ProductPriceDto) {

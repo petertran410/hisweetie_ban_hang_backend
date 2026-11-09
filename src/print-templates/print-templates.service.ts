@@ -8,6 +8,7 @@ import { createDocumentQrPayload } from '../common/document-qr.util';
 import { pickCustomerAddress } from '../common/address-resolver.util';
 import { INVOICE_STATUS } from '../invoices/dto/invoice-status.constants';
 import * as QRCode from 'qrcode';
+import { USER_PUBLIC_SELECT } from '../common/user-select.util';
 
 @Injectable()
 export class PrintTemplatesService {
@@ -336,13 +337,14 @@ export class PrintTemplatesService {
           },
         },
         soldBy: {
-          include: {
+          select: {
+            ...USER_PUBLIC_SELECT,
             bankAccountMapping: {
               include: { bankAccount: true },
             },
           },
         },
-        creator: true,
+        creator: { select: USER_PUBLIC_SELECT },
         branch: true,
         delivery: true,
         details: {
@@ -371,8 +373,8 @@ export class PrintTemplatesService {
             },
           },
         },
-        soldBy: true,
-        creator: true,
+        soldBy: { select: USER_PUBLIC_SELECT },
+        creator: { select: USER_PUBLIC_SELECT },
         branch: true,
         delivery: true,
         order: { select: { id: true, code: true } },
@@ -409,13 +411,14 @@ export class PrintTemplatesService {
           },
         },
         soldBy: {
-          include: {
+          select: {
+            ...USER_PUBLIC_SELECT,
             bankAccountMapping: {
               include: { bankAccount: true },
             },
           },
         },
-        creator: true,
+        creator: { select: USER_PUBLIC_SELECT },
         branch: true,
         delivery: true,
         items: {
@@ -443,13 +446,14 @@ export class PrintTemplatesService {
           },
         },
         soldBy: {
-          include: {
+          select: {
+            ...USER_PUBLIC_SELECT,
             bankAccountMapping: {
               include: { bankAccount: true },
             },
           },
         },
-        creator: true,
+        creator: { select: USER_PUBLIC_SELECT },
         branch: true,
         delivery: true,
         items: { include: { product: true } },
@@ -473,7 +477,7 @@ export class PrintTemplatesService {
           },
         },
         consignment: {
-          include: { creator: true, delivery: true },
+          include: { creator: { select: USER_PUBLIC_SELECT }, delivery: true },
         },
         details: { include: { product: true } },
       },
@@ -487,8 +491,8 @@ export class PrintTemplatesService {
       where: { id },
       include: {
         supplier: true,
-        user: true,
-        creator: true,
+        user: { select: USER_PUBLIC_SELECT },
+        creator: { select: USER_PUBLIC_SELECT },
         branch: true,
         items: { include: { product: true } },
       },
@@ -502,8 +506,8 @@ export class PrintTemplatesService {
       where: { id },
       include: {
         supplier: true,
-        purchaseBy: true,
-        creator: true,
+        purchaseBy: { select: USER_PUBLIC_SELECT },
+        creator: { select: USER_PUBLIC_SELECT },
         branch: true,
         items: { include: { product: true } },
       },
@@ -524,7 +528,7 @@ export class PrintTemplatesService {
             },
           },
         },
-        creator: true,
+        creator: { select: USER_PUBLIC_SELECT },
         branch: true,
         invoice: true,
         details: { include: { product: true } },
@@ -540,7 +544,7 @@ export class PrintTemplatesService {
       include: {
         supplier: true,
         branch: true,
-        creator: true,
+        creator: { select: USER_PUBLIC_SELECT },
         purchaseOrder: true,
         details: { include: { product: true } },
       },
@@ -555,7 +559,7 @@ export class PrintTemplatesService {
       include: {
         fromBranch: true,
         toBranch: true,
-        creator: true,
+        creator: { select: USER_PUBLIC_SELECT },
         details: { include: { product: true } },
       },
     });
@@ -568,8 +572,8 @@ export class PrintTemplatesService {
       where: { id },
       include: {
         branch: true,
-        creator: true,
-        user: true,
+        creator: { select: USER_PUBLIC_SELECT },
+        user: { select: USER_PUBLIC_SELECT },
         purpose: true,
         details: { include: { product: true } },
       },
@@ -900,7 +904,12 @@ export class PrintTemplatesService {
       ...this.staffVars(o.soldBy, o.creator),
       ...this.deliveryVars(o.delivery, o.customer),
       ...this.shippingFeeVars(o.shippingFee),
-      ...this.qrVars(o.soldBy, o.grandTotal, o.code),
+      ...this.qrVars(
+        o.soldBy,
+        Math.max(0, Number(o.debtAmount || 0)),
+        o.code,
+        true,
+      ),
       Ma_Don_Hang: o.code || '',
       Ghi_Chu: o.description || '',
       Tong_Tien_Hang: this.money(o.totalAmount),

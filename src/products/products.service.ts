@@ -36,6 +36,7 @@ import {
 } from '../common/inventory-onhand.util';
 import { searchProductIds } from '../common/product-search.util';
 import { resolveUnitName } from '../common/unit.util';
+import { buildProductImageRows } from './product-images.util';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 import { StockAuditsService } from '../stock-audits/stock-audits.service';
 import {
@@ -1098,6 +1099,7 @@ export class ProductsService {
   async create(dto: CreateProductDto, userId?: number) {
     const {
       imageUrls,
+      primaryImageUrl,
       documents,
       publicationLocation,
       publicationDate,
@@ -1243,10 +1245,7 @@ export class ProductsService {
 
       if (imageUrls && imageUrls.length > 0) {
         await tx.productImage.createMany({
-          data: imageUrls.map((url) => ({
-            productId: product.id,
-            image: url,
-          })),
+          data: buildProductImageRows(product.id, imageUrls, primaryImageUrl),
         });
       }
 
@@ -1495,6 +1494,7 @@ export class ProductsService {
 
     const {
       imageUrls,
+      primaryImageUrl,
       documents,
       publicationLocation,
       publicationDate,
@@ -1663,11 +1663,17 @@ export class ProductsService {
       if (imageUrls !== undefined) {
         await tx.productImage.deleteMany({ where: { productId: id } });
         if (imageUrls.length > 0) {
+          // Không chọn ảnh chính (vd. import Excel) → giữ ảnh chính cũ nếu còn.
+          const oldPrimaryUrl = currentProduct.images.find(
+            (img) => img.isPrimary,
+          )?.image;
           await tx.productImage.createMany({
-            data: imageUrls.map((url) => ({
-              productId: id,
-              image: url,
-            })),
+            data: buildProductImageRows(
+              id,
+              imageUrls,
+              primaryImageUrl,
+              oldPrimaryUrl,
+            ),
           });
         }
       }

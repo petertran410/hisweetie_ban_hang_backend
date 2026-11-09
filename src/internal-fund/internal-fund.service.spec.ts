@@ -228,6 +228,21 @@ describe('Internal fund ledger', () => {
     });
   });
 
+  it('issues an office manual expense without a reason (no weekly approval)', async () => {
+    const f = fixture();
+    f.entry.branchId = 4;
+    f.entry.status = 'PENDING_ACCOUNTANT';
+    f.entry.code = 'TCNB-CHI-2';
+    f.entry.weeklyBatch = null;
+    await f.service.postExpenseEntry(12, 7, true);
+    expect(f.transactions[0]).toMatchObject({
+      sourceKey: 'EXPENSE:12',
+      branchId: 4,
+      description: 'TCNB-CHI-2',
+    });
+    expect(f.entry.cashIssued).toBe(true);
+  });
+
   it('pulls an entry out of a not-yet-sent batch on manual issue and refuses a batch in approval', async () => {
     const f = fixture();
     f.entry.status = 'READY_FOR_WEEKLY_APPROVAL';
@@ -382,6 +397,38 @@ describe('Internal fund ledger', () => {
       approvalRequestId: 50,
     });
     await f.ledger.applyPaymentVoucher(f.prisma, {
+      ...request,
+      status: 'REVERTED',
+    });
+    expect(f.transactions[0].status).toBe('CANCELLED');
+  });
+
+  it('posts an approved cash salary advance under its own key and cancels it when reverted', async () => {
+    const f = fixture();
+    const request = {
+      id: 60,
+      status: 'APPROVED',
+      branchId: 1,
+      createdById: 7,
+      completedAt: new Date('2026-11-05T03:00:00Z'),
+      formSnapshot: {
+        metadata: {
+          amount: 3000000,
+          description: 'Tạm ứng lương - Bùi Tấn Thuận',
+        },
+      },
+    };
+    await f.ledger.applySalaryAdvance(f.prisma, request);
+    await f.ledger.applySalaryAdvance(f.prisma, request);
+    expect(f.transactions).toHaveLength(1);
+    expect(f.transactions[0]).toMatchObject({
+      transactionType: 'EXPENSE',
+      sourceType: 'LARK_SALARY_ADVANCE',
+      sourceKey: 'SALARY_ADVANCE:60',
+      branchId: 1,
+      description: 'Tạm ứng lương - Bùi Tấn Thuận',
+    });
+    await f.ledger.applySalaryAdvance(f.prisma, {
       ...request,
       status: 'REVERTED',
     });

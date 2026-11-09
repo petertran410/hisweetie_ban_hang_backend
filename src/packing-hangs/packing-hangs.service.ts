@@ -32,6 +32,7 @@ import {
 import { assertCanDeliverForCustomers } from '../common/debt-delivery.util';
 import { resolveActivePackingInvoiceIds } from '../common/packing-invoice-target.util';
 import { buildColdCargoWarning } from '../common/cold-cargo.util';
+import { USER_PUBLIC_SELECT } from '../common/user-select.util';
 
 @Injectable()
 export class PackingHangsService {
@@ -204,7 +205,7 @@ export class PackingHangsService {
           },
           include: {
             branch: true,
-            creator: true,
+            creator: { select: USER_PUBLIC_SELECT },
             invoices: { include: { invoice: true, consignment: true } },
             images: true,
           },
@@ -329,7 +330,7 @@ export class PackingHangsService {
         },
         include: {
           branch: true,
-          creator: true,
+          creator: { select: USER_PUBLIC_SELECT },
           invoices: {
             include: {
               invoice: true,
@@ -445,7 +446,7 @@ export class PackingHangsService {
         data: updateData,
         include: {
           branch: true,
-          creator: true,
+          creator: { select: USER_PUBLIC_SELECT },
           invoices: { include: { invoice: true } },
           images: true,
         },

@@ -49,7 +49,10 @@ export class WarehouseExpenseNotesService {
     });
   }
 
-  /** Người tag được: đang hoạt động, đã gắn Lark, xem được phiếu chi của kho. */
+  /**
+   * Mọi người dùng đang hoạt động, kèm lý do chưa tag được (null = tag được),
+   * để ô tìm kiếm vẫn ra người chưa đủ điều kiện thay vì ẩn hẳn họ.
+   */
   async mentionCandidates(entryId: number, user: FinanceActor) {
     const entry = await this.requireEntry(entryId, user, 'request_review');
     return this.candidatesFor(entry.branchId);
@@ -69,7 +72,9 @@ export class WarehouseExpenseNotesService {
     }
     if (mentionIds.length) {
       const allowed = new Set(
-        (await this.candidatesFor(entry.branchId)).map((row) => row.id),
+        (await this.candidatesFor(entry.branchId, mentionIds))
+          .filter((row) => !row.blockedReason)
+          .map((row) => row.id),
       );
       if (mentionIds.some((id) => !allowed.has(id))) {
         throw new BadRequestException(
@@ -152,21 +157,31 @@ export class WarehouseExpenseNotesService {
     return { note: saved, sent, failed: note.mentions.length - sent };
   }
 
-  private async candidatesFor(branchId: number) {
+  /**
+   * Tag được khi: đang hoạt động, xem được phiếu chi của kho (để mở được link
+   * trong tin nhắn) và đã gắn Lark. `ids` giới hạn số người cần kiểm tra.
+   */
+  private async candidatesFor(branchId: number, ids?: number[]) {
     const users = await this.prisma.user.findMany({
-      where: { isActive: true, larkUserId: { not: null } },
-      select: { id: true, name: true },
+      where: { isActive: true, ...(ids ? { id: { in: ids } } : {}) },
+      select: { id: true, name: true, larkUserId: true },
       orderBy: { name: 'asc' },
     });
-    const allowed: Array<{ id: number; name: string }> = [];
-    for (const candidate of users) {
-      if (
-        await this.access.can(candidate.id, branchId, 'warehouse_expense:view')
-      ) {
-        allowed.push(candidate);
-      }
-    }
-    return allowed;
+    return Promise.all(
+      users.map(async ({ id, name, larkUserId }) => {
+        const canView = await this.access.can(
+          id,
+          branchId,
+          'warehouse_expense:view',
+        );
+        const blockedReason = !canView
+          ? 'Thiếu quyền xem phiếu chi kho'
+          : !larkUserId
+            ? 'Chưa gắn Lark'
+            : null;
+        return { id, name, blockedReason };
+      }),
+    );
   }
 
   private async requireEntry(

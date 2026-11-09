@@ -97,8 +97,13 @@ export class SendChatMessageDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(40)
+  @MaxLength(200)
   replyToPid?: string;
+
+  // Messenger: gửi kèm thẻ HUMAN_AGENT → lấy lại quyền trả lời từ Meta Business AI
+  @IsOptional()
+  @IsBoolean()
+  humanAgent?: boolean;
 
   @IsOptional()
   @IsArray()
@@ -116,9 +121,16 @@ export class CreateZaloContactDto {
   @IsIn(['user', 'group'])
   kind: 'user' | 'group';
 
+  // Số Zalo (Zalo cá nhân) hoặc tid hội thoại kênh khác (fb…, zl…, sp…) — khi đó cần pagePid
   @IsString()
   @IsNotEmpty()
+  @MaxLength(80)
   zaloId: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  pagePid?: string;
 
   @IsOptional()
   @IsString()
@@ -233,8 +245,13 @@ export class SendThreadMessageDto {
 
   @IsOptional()
   @IsString()
-  @MaxLength(40)
+  @MaxLength(200)
   replyToPid?: string;
+
+  // Messenger: gửi kèm thẻ HUMAN_AGENT → lấy lại quyền trả lời từ Meta Business AI
+  @IsOptional()
+  @IsBoolean()
+  humanAgent?: boolean;
 
   @IsOptional()
   @IsArray()
@@ -270,6 +287,58 @@ export class ReactMessageDto {
   confirmed?: boolean;
 }
 
+export class RenameThreadDto {
+  @IsString()
+  @IsNotEmpty()
+  pagePid: string;
+
+  @IsString()
+  @IsNotEmpty()
+  tid: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(100)
+  name: string;
+}
+
+export class PassControlBizAIDto {
+  @IsString()
+  @IsNotEmpty()
+  pagePid: string;
+
+  @IsString()
+  @IsNotEmpty()
+  tid: string;
+
+  @IsOptional()
+  @IsBoolean()
+  confirmed?: boolean;
+}
+
+export class MessageActionDto {
+  @IsString()
+  @IsNotEmpty()
+  pagePid: string;
+
+  @IsString()
+  @IsNotEmpty()
+  tid: string;
+
+  // pid tin nhắn ("zlw" + id Zalo)
+  @IsString()
+  @IsNotEmpty()
+  pid: string;
+
+  // recall = thu hồi cả 2 phía; delete = xoá phía mình
+  @IsIn(['recall', 'delete'])
+  action: 'recall' | 'delete';
+
+  @IsOptional()
+  @IsBoolean()
+  confirmed?: boolean;
+}
+
 export class ThreadQueryDto {
   @IsString()
   @IsNotEmpty()
@@ -293,4 +362,101 @@ export class MediaQueryDto {
   @IsNotEmpty()
   @MaxLength(1000)
   url: string;
+}
+
+export class DeliveryBookingDto {
+  // 1 hóa đơn (cũ) hoặc nhiều hóa đơn gộp 1 tin (người nhận 1, 2…)
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  invoiceId?: number;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @Type(() => Number)
+  @IsInt({ each: true })
+  invoiceIds?: number[];
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(2000)
+  text: string;
+
+  @IsOptional()
+  @IsBoolean()
+  confirmed?: boolean;
+}
+
+export class LibraryFilesQueryDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  albumId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  keyword?: string;
+
+  @IsOptional()
+  @IsIn(['image', 'video'])
+  type?: 'image' | 'video';
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  cursor?: number;
+}
+
+export class LibraryImportItemDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(2000)
+  url: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(255)
+  name: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  mime?: string;
+}
+
+export class LibraryImportDto {
+  @IsArray()
+  @ArrayMaxSize(10)
+  @ValidateNested({ each: true })
+  @Type(() => LibraryImportItemDto)
+  items: LibraryImportItemDto[];
+}
+
+export class LibraryUploadDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  albumId?: string;
+}
+
+export class LibraryDeleteItemDto {
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(64)
+  id: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  name?: string;
+}
+
+export class LibraryDeleteDto {
+  @IsArray()
+  @ArrayMaxSize(50)
+  @ValidateNested({ each: true })
+  @Type(() => LibraryDeleteItemDto)
+  files: LibraryDeleteItemDto[];
 }

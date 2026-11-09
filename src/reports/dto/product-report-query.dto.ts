@@ -1,5 +1,19 @@
-import { IsOptional, IsString, IsInt, Min, IsIn } from 'class-validator';
-import { Type } from 'class-transformer';
+import {
+  IsOptional,
+  IsString,
+  IsInt,
+  Min,
+  IsIn,
+  IsArray,
+} from 'class-validator';
+import { Type, Transform } from 'class-transformer';
+
+// Query lặp (?k=a&k=b) → mảng; 1 giá trị → mảng 1 phần tử.
+// Không tách theo dấu phẩy vì tên nhóm hàng có thể chứa dấu phẩy.
+const toStringArray = ({ value }: { value: unknown }) => {
+  if (value === undefined || value === null || value === '') return undefined;
+  return (Array.isArray(value) ? value : [value]).map(String);
+};
 
 // ViewType nhóm báo cáo Hàng hóa (theo KiotViet Product group, bỏ BatchExpire vì
 // không có dữ liệu lô/hạn dùng).
@@ -19,6 +33,12 @@ export type ProductViewType = (typeof PRODUCT_VIEW_TYPES)[number];
 
 export const CATEGORY_LEVELS = ['parent', 'middle', 'child'] as const;
 export type CategoryLevel = (typeof CATEGORY_LEVELS)[number];
+
+// Như trên, cho id số: ?tradeMarkIds=1&tradeMarkIds=2 → [1, 2].
+const toNumberArray = ({ value }: { value: unknown }) => {
+  if (value === undefined || value === null || value === '') return undefined;
+  return (Array.isArray(value) ? value : [value]).map(Number);
+};
 
 export class ProductReportQueryDto {
   @IsOptional()
@@ -66,6 +86,20 @@ export class ProductReportQueryDto {
   @IsOptional()
   @IsString()
   categoryValue?: string;
+
+  // Lọc nhiều nhóm hàng cùng lúc (cùng cấp `categoryLevel`).
+  @IsOptional()
+  @Transform(toStringArray)
+  @IsArray()
+  @IsString({ each: true })
+  categoryValues?: string[];
+
+  // Lọc theo thương hiệu (nhiều id).
+  @IsOptional()
+  @Transform(toNumberArray)
+  @IsArray()
+  @IsInt({ each: true })
+  tradeMarkIds?: number[];
 
   @IsOptional()
   @Type(() => Number)

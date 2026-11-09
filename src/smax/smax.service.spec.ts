@@ -4,6 +4,7 @@ import {
 } from '@nestjs/common';
 import { SmaxService } from './smax.service';
 import { SmaxApiService } from './smax-api.service';
+import { decryptSmaxToken, encryptSmaxToken, jwtExpiry } from './smax-secret.util';
 
 const pages = [
   { pid: 'zl1', name: 'Lermao OA', platform: 'zalo', active: true },
@@ -18,18 +19,20 @@ const makeService = (links: any[] = []) => {
       findUnique: jest.fn(),
       upsert: jest.fn((args) => Promise.resolve(args)),
       deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     user: { findUnique: jest.fn().mockResolvedValue({ id: 7 }) },
   };
   const api = { listPages: jest.fn().mockResolvedValue(pages) };
+  const audit = { create: jest.fn().mockResolvedValue(undefined) };
   return {
-    service: new SmaxService(prisma as any, api as any),
+    service: new SmaxService(prisma as any, api as any, audit as any),
     prisma,
   };
 };
 
 describe('SmaxService', () => {
-  it('chỉ trả kênh Zalo (OA + cá nhân), ghép người dùng đã liên kết', async () => {
+  it('trả mọi kênh của biz (Zalo, Facebook…), ghép người dùng đã liên kết', async () => {
     const user = { id: 7, name: 'Sale A', email: 'a@x', phone: null };
     const { service } = makeService([
       { pagePid: 'zlw2', pageName: 'Diệp Trà Cs', platform: 'zaloweb', user },
@@ -37,7 +40,7 @@ describe('SmaxService', () => {
 
     const channels = await service.getZaloChannels();
 
-    expect(channels.map((c) => c.pagePid)).toEqual(['zl1', 'zlw2']);
+    expect(channels.map((c) => c.pagePid)).toEqual(['zl1', 'zlw2', 'fb3']);
     expect(channels[0].users).toEqual([]);
     expect(channels[1].users).toEqual([user]);
   });
@@ -79,7 +82,24 @@ describe('SmaxService', () => {
     expect(prisma.smaxChannelUser.deleteMany).toHaveBeenLastCalledWith({ where: { pagePid: 'zlw2' } });
   });
 
-  it('link: lưu snapshot tên/platform, chặn kênh lạ hoặc không phải Zalo', async () => {
+  it('sync: cập nhật tên/platform đã lưu khi kênh đổi trên Smax, bỏ qua kênh đã mất', async () => {
+    const { service, prisma } = makeService([
+      { pagePid: 'zlw2', pageName: 'Tên cũ', platform: 'zaloweb', user: { id: 7 } },
+      { pagePid: 'zlw2', pageName: 'Tên cũ', platform: 'zaloweb', user: { id: 8 } },
+      { pagePid: 'zl1', pageName: 'Lermao OA', platform: 'zalo', user: { id: 9 } },
+      { pagePid: 'zlw-gone', pageName: 'Kênh đã xoá', platform: 'zaloweb', user: { id: 7 } },
+    ]);
+    const res = await service.syncZaloChannels();
+    expect(res.updated).toBe(1);
+    expect(prisma.smaxChannelUser.updateMany).toHaveBeenCalledTimes(1);
+    expect(prisma.smaxChannelUser.updateMany).toHaveBeenCalledWith({
+      where: { pagePid: 'zlw2' },
+      data: { pageName: 'Diệp Trà Cs', platform: 'zaloweb' },
+    });
+    expect(res.channels.find((c) => c.pagePid === 'zlw-gone')?.missing).toBe(true);
+  });
+
+  it('link: lưu snapshot tên/platform (mọi loại kênh), chặn kênh không có trên Smax', async () => {
     const { service, prisma } = makeService();
 
     await service.link('zlw2', 7);
@@ -97,13 +117,63 @@ describe('SmaxService', () => {
     await expect(service.link('zlw-x', 7)).rejects.toBeInstanceOf(
       BadRequestException,
     );
-    await expect(service.link('fb3', 7)).rejects.toBeInstanceOf(
-      BadRequestException,
+    await service.link('fb3', 7);
+    expect(prisma.smaxChannelUser.upsert).toHaveBeenLastCalledWith(
+      expect.objectContaining({ create: { pagePid: 'fb3', userId: 7, pageName: 'Fanpage', platform: 'facebook' } }),
     );
   });
 });
 
 describe('SmaxApiService', () => {
+  it('getThread: bình luận Facebook → link bài viết kèm comment_id; tin nhắn → không có link', async () => {
+    const { of } = require('rxjs');
+    const rows = [
+      {
+        tid: 'fb1222_fb2650', platform: 'facebook', type: 'facebook_comment', customer: { name: 'Mỹ Linh' },
+        facebook: { id: '122241220328355350_1911242473407263', link: 'https://www.facebook.com/reel/2298586507567306/' },
+      },
+      { tid: 'fb2949', platform: 'facebook', type: 'facebook_message', customer: { name: 'Thư' }, facebook: { link: '/365228306663549/inbox/1/' } },
+    ];
+    const http = { request: jest.fn(() => of({ data: { data: rows.shift() } })) };
+    const config = { get: (key: string, def?: string) => (key === 'SMAX_API_TOKEN' ? 'tok' : def) };
+    const api = new SmaxApiService(http as any, config as any);
+    expect(await api.getThread('fb3', 'fb1222_fb2650')).toMatchObject({
+      isComment: true,
+      commentUrl: 'https://www.facebook.com/reel/2298586507567306/?comment_id=1911242473407263',
+    });
+    expect(await api.getThread('fb3', 'fb2949')).toMatchObject({ isComment: false, commentUrl: null });
+  });
+
+  it('listRecentThreads: mọi nền tảng (Zalo cá nhân, Facebook, Shopee), tên/ảnh/SĐT/cờ trả lời', async () => {
+    const { of } = require('rxjs');
+    const http = {
+      request: jest.fn(() =>
+        of({
+          data: {
+            data: [
+              { tid: 'zlw777', page_pid: 'zlw1', platform: 'zaloweb', zaloweb: { chat_type: 'group' }, customer: { name: 'Nhóm A' }, message: 'attach', read: false, reply_count: 3 },
+              { tid: 'fb1222_fb2650', page_pid: 'fb3', platform: 'facebook', type: 'facebook_comment', customer: { name: 'Mỹ Linh' }, message: 'E muốn mua nguyên liệu ạ' },
+              { tid: 'fb2949', page_pid: 'fb3', platform: 'facebook', type: 'facebook_message', controlled_by: 'META_AI', can_reply_message: false, phones: ['0913597795'], customer: { name: 'Thư Trần', picture: 'https://cdn/x.jpg' }, message: 'Bên mình có hàng chưa ạ', read: true },
+              { tid: 'sp5089', page_pid: 'sp1', platform: 'shopee', customer: { name: 'ngoankim957', picture: '' }, message: 'Muốn trả hàng' },
+              { tid: null, page_pid: 'x' },
+            ],
+          },
+        }),
+      ),
+    };
+    const config = { get: (key: string, def?: string) => (key === 'SMAX_API_TOKEN' ? 'tok' : def) };
+    const api = new SmaxApiService(http as any, config as any);
+    const threads = await api.listRecentThreads(['zlw1', 'fb3', 'sp1']);
+    expect(threads.map((t) => [t.tid, t.platform, t.isComment, t.name, t.isGroup, t.canReply, t.phones])).toEqual([
+      ['zlw777', 'zaloweb', false, 'Nhóm A', true, true, []],
+      ['fb1222_fb2650', 'facebook', true, 'Mỹ Linh', false, true, []],
+      ['fb2949', 'facebook', false, 'Thư Trần', false, false, ['0913597795']],
+      ['sp5089', 'shopee', false, 'ngoankim957', false, true, []],
+    ]);
+    expect(threads[2].avatar).toBe('https://cdn/x.jpg');
+    expect(threads.map((t) => t.controlledBy)).toEqual([null, null, 'META_AI', null]);
+  });
+
   it('getFriendStatus: đọc is_friend / is_requested / is_requesting', async () => {
     const { of } = require('rxjs');
     const http = {
@@ -257,5 +327,98 @@ describe('SmaxApiService', () => {
       headers: { Authorization: 'Bearer tok' },
       timeout: 15000,
     });
+  });
+});
+
+describe('SmaxService — token đăng nhập Smax', () => {
+  const JWT = `h.${Buffer.from(JSON.stringify({ exp: 1893456000 })).toString('base64url')}.sigABCD`;
+  beforeAll(() => {
+    process.env.SMAX_TOKEN_ENCRYPTION_KEY = 'test-key';
+  });
+
+  const make = (check: { ok: boolean; invalid?: boolean; message?: string; warning?: string }) => {
+    let rows: any[] = [];
+    const prisma = {
+      smaxUserToken: {
+        findMany: jest.fn(() => Promise.resolve(rows)),
+        upsert: jest.fn((a) => {
+          rows = [...rows.filter((r) => r.id !== a.where.id), { ...a.create, updatedAt: new Date() }];
+          return Promise.resolve(a.create);
+        }),
+        deleteMany: jest.fn((a) => {
+          rows = rows.filter((r) => r.id !== a.where.id);
+          return Promise.resolve({ count: 1 });
+        }),
+      },
+      user: { findUnique: jest.fn().mockResolvedValue({ name: 'Admin' }) },
+    };
+    const active: Record<string, string> = { user: 'env-user-0000', api: 'env-api-0000' };
+    const api: any = {
+      tokenSources: { user: 'env', api: 'env' },
+      hasEnvToken: () => true,
+      activeToken: (k: string) => active[k],
+      checkToken: jest.fn().mockResolvedValue(check),
+      useStoredToken: jest.fn((k: string, t: string | null) => {
+        active[k] = t ?? `env-${k}-0000`;
+        api.tokenSources[k] = t ? 'db' : 'env';
+      }),
+    };
+    const audit = { create: jest.fn() };
+    return {
+      service: new SmaxService(prisma as any, api, audit as any),
+      prisma,
+      api,
+      audit,
+      row: (id: number) => rows.find((r) => r.id === id),
+    };
+  };
+
+  it('mã hoá / giải mã được, sai dữ liệu → null; đọc hạn JWT', () => {
+    const enc = encryptSmaxToken(JWT);
+    expect(enc).not.toContain(JWT);
+    expect(decryptSmaxToken(enc)).toBe(JWT);
+    expect(decryptSmaxToken('enc:v1:00:00:00')).toBeNull();
+    expect(jwtExpiry(JWT)?.toISOString()).toBe('2030-01-01T00:00:00.000Z');
+    expect(jwtExpiry('khong-phai-jwt')).toBeNull();
+  });
+
+  it('lưu: kiểm tra với Smax trước, lưu mã hoá, dùng ngay, audit không chứa token, trả 4 ký tự cuối', async () => {
+    const t = make({ ok: true });
+    const res = await t.service.setToken('user', `  Bearer ${JWT} `, { id: 1, name: 'Admin' });
+    expect(t.api.checkToken).toHaveBeenCalledWith('user', JWT);
+    expect(t.row(1).token).toMatch(/^enc:v1:/);
+    expect(decryptSmaxToken(t.row(1).token)).toBe(JWT);
+    expect(t.api.useStoredToken).toHaveBeenCalledWith('user', JWT);
+    expect(JSON.stringify(t.audit.create.mock.calls)).not.toContain(JWT);
+    expect(res).toMatchObject({ source: 'db', last4: 'ABCD', valid: true });
+    expect(JSON.stringify(res)).not.toContain(JWT);
+  });
+
+  it('token sai: báo lỗi, không lưu, không đổi token đang dùng', async () => {
+    const t = make({ ok: false, invalid: true, message: 'Token không hợp lệ hoặc đã hết hạn' });
+    await expect(t.service.setToken('user', JWT, { id: 1 })).rejects.toBeInstanceOf(BadRequestException);
+    expect(t.prisma.smaxUserToken.upsert).not.toHaveBeenCalled();
+    expect(t.api.useStoredToken).not.toHaveBeenCalledWith('user', JWT);
+  });
+
+  it('xoá: quay về token .env', async () => {
+    const t = make({ ok: true });
+    await t.service.setToken('user', JWT, { id: 1 });
+    const res = await t.service.clearToken('user', { id: 1 });
+    expect(t.api.useStoredToken).toHaveBeenCalledWith('user', null);
+    expect(t.row(1)).toBeUndefined();
+    expect(res.source).toBe('env');
+  });
+
+  it('API token: lưu dòng id 2, xoá không đụng token đăng nhập, trả cảnh báo khi Smax không ra hội thoại', async () => {
+    const t = make({ ok: true, warning: 'Smax trả 0 hội thoại cho token này' });
+    await t.service.setToken('user', JWT, { id: 1 });
+    const res = await t.service.setToken('api', 'partner-token-WXYZ', { id: 1 });
+    expect(decryptSmaxToken(t.row(2).token)).toBe('partner-token-WXYZ');
+    expect(res).toMatchObject({ source: 'db', last4: 'WXYZ', warning: 'Smax trả 0 hội thoại cho token này' });
+    expect(t.audit.create).toHaveBeenLastCalledWith(expect.objectContaining({ actionCode: 'SMAX_API_TOKEN_UPDATE' }));
+    await t.service.clearToken('api', { id: 1 });
+    expect(t.row(2)).toBeUndefined();
+    expect(t.row(1)).toBeDefined();
   });
 });

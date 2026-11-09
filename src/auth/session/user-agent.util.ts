@@ -12,6 +12,7 @@ export function describeUserAgent(ua?: string | null): DeviceInfo {
   const s = ua ?? '';
 
   const browser =
+    (/HiSweetiePOS\//.test(s) && 'Ứng dụng HiSweetie POS') ||
     (/coc_coc_browser/i.test(s) && 'Cốc Cốc') ||
     (/Edg(e|A|iOS)?\//.test(s) && 'Edge') ||
     (/(OPR|Opera)\//.test(s) && 'Opera') ||

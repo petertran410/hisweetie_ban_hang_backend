@@ -31,3 +31,4 @@ export {
   CUSTOMER_VIEW_TYPES,
   CustomerViewType,
 } from './customer-report-query.dto';
+export * from './analytics-report-query.dto';

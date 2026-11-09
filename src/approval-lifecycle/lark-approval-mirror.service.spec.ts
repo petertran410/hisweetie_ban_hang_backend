@@ -43,13 +43,25 @@ describe('summarizeLarkInstance', () => {
       skipReason: 'Không chi bằng tiền mặt quỹ nội bộ',
       amount: 500000,
     });
+    // Văn phòng HN đã lên POS; Văn phòng HCM chưa.
     expect(
       summarizeLarkInstance(
         'PHIEU_CHI',
         voucher('Tiền Mặt', 'Tiền Mặt Văn Phòng HN'),
         approvedAt,
       ),
-    ).toMatchObject({ inScope: false, branchId: 4 });
+    ).toMatchObject({ inScope: true, branchId: 4, skipReason: null });
+    expect(
+      summarizeLarkInstance(
+        'PHIEU_CHI',
+        voucher('Tiền Mặt', 'Tiền Mặt Văn Phòng HCM'),
+        approvedAt,
+      ),
+    ).toMatchObject({
+      inScope: false,
+      branchId: 7,
+      skipReason: 'Chi từ quỹ văn phòng',
+    });
   });
 
   it('reads a cash receipt into Kho SG as an in-scope receipt', () => {
@@ -129,6 +141,64 @@ describe('summarizeLarkInstance', () => {
         approvedAt,
       ),
     ).toMatchObject({ inScope: false, fundBranchIds: [6, 4] });
+  });
+});
+
+describe('summarizeLarkInstance – TẠM ỨNG LƯƠNG', () => {
+  const advance = (method: string, source: string) => [
+    {
+      id: 'widget17321750020230001',
+      type: 'date',
+      value: '2026-11-03T17:00:00Z',
+    },
+    { id: 'widget17321753417610001', type: 'radioV2', value: method },
+    { id: 'widget17642424767350001', type: 'radioV2', value: source },
+    { id: 'widget17321752802850001', type: 'amount', value: 4000000 },
+  ];
+
+  it('takes in a cash advance from a POS fund, dated by the request date', () => {
+    expect(
+      summarizeLarkInstance(
+        'TAM_UNG_LUONG',
+        advance('Tiền Mặt', 'Tiền Mặt Kho HN'),
+        approvedAt,
+      ),
+    ).toMatchObject({
+      inScope: true,
+      branchId: 6,
+      direction: 'EXPENSE',
+      amount: 4000000,
+      cashAmount: 4000000,
+      occurredAt: new Date('2026-11-03T17:00:00Z'),
+      fundBranchIds: [6],
+    });
+  });
+
+  it('only shows company transfers and VP HCM cash', () => {
+    expect(
+      summarizeLarkInstance(
+        'TAM_UNG_LUONG',
+        advance('Chuyển Khoản Công Ty', 'Chuyển Khoản Công Ty'),
+        approvedAt,
+      ),
+    ).toMatchObject({
+      inScope: false,
+      branchId: null,
+      cashAmount: null,
+      skipReason: 'Chuyển khoản công ty, không chi quỹ tiền mặt',
+      fundBranchIds: [],
+    });
+    expect(
+      summarizeLarkInstance(
+        'TAM_UNG_LUONG',
+        advance('Tiền Mặt', 'Tiền Mặt Văn Phòng HCM'),
+        approvedAt,
+      ),
+    ).toMatchObject({
+      inScope: false,
+      branchId: 7,
+      skipReason: 'Chi từ quỹ văn phòng',
+    });
   });
 });
 
@@ -262,6 +332,127 @@ describe('LarkApprovalMirrorService.ensureEntry', () => {
       larkLedgerRecorded: true,
     });
     expect(f.prisma.internalFundTransaction.update).not.toHaveBeenCalled();
+  });
+
+  it('keeps office voucher details on the entry and uses the VPHN ledger cutoff', async () => {
+    // Duyệt 20/10: sau mốc kho (14/10) nhưng trước mốc VPHN (01/11) → sổ Lark đã ghi.
+    const approvedOct20 = new Date('2026-10-20T03:00:00Z');
+    const form = [
+      ...voucher(
+        'Chuyển Khoản (Công Ty + Tiền Mặt)',
+        'Tiền Mặt Văn Phòng HN',
+        200000,
+      ),
+      {
+        id: 'w-loai',
+        name: 'Loại chi phí',
+        type: 'radioV2',
+        value: 'Mua hàng nội địa, CCDC, dịch vụ',
+      },
+      {
+        id: 'w-khoan',
+        name: 'Khoản mục chi phí',
+        type: 'radioV2',
+        value: 'Cước điện thoại di động',
+      },
+      {
+        id: 'w-pb',
+        name: 'Chi phí thuộc phòng ban',
+        type: 'radioV2',
+        value: 'Phòng Hành Chính - Nhân Sự',
+      },
+      { id: 'w-ncu', name: 'NCU', type: 'input', value: 'Viettel' },
+      {
+        id: 'w-ck',
+        name: 'Số tiền chuyển khoản',
+        type: 'amount',
+        value: 300000,
+      },
+    ];
+    const f = setup({
+      request: {
+        completedAt: approvedOct20,
+        formSnapshot: { version: 'lark', form },
+      },
+      mirror: {
+        branchId: 4,
+        amount: 500000,
+        cashAmount: 200000,
+        cashSource: 'Tiền Mặt Văn Phòng HN',
+        completedAt: approvedOct20,
+        occurredAt: approvedOct20,
+      },
+      fundRow: null,
+    });
+    await f.service.ensureEntry(50);
+    expect(f.entries).toHaveLength(1);
+    expect(f.entries[0]).toMatchObject({
+      branchId: 4,
+      amount: 200000,
+      expenseItem: 'Cước điện thoại di động',
+    });
+    expect(f.entries[0].sourceSnapshot).toMatchObject({
+      larkLedgerRecorded: true,
+      cashSource: 'Tiền Mặt Văn Phòng HN',
+      method: 'Chuyển Khoản (Công Ty + Tiền Mặt)',
+      expenseType: 'Mua hàng nội địa, CCDC, dịch vụ',
+      expenseItem: 'Cước điện thoại di động',
+      department: 'Phòng Hành Chính - Nhân Sự',
+      supplier: 'Viettel',
+      totalAmount: 500000,
+      cashAmount: 200000,
+      transferAmount: 300000,
+    });
+    expect(f.prisma.internalFundTransaction.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('turns an approved cash salary advance into a TUL entry with the recipient', async () => {
+    const approvedNov = new Date('2026-11-05T03:00:00Z');
+    const f = setup({
+      request: { sourceType: 'LARK_SALARY_ADVANCE', completedAt: approvedNov },
+      mirror: {
+        formKind: 'TAM_UNG_LUONG',
+        branchId: 1,
+        amount: 3000000,
+        cashAmount: 3000000,
+        method: 'Tiền Mặt',
+        cashSource: 'Tiền Mặt Kho SG',
+        description: 'Tạm ứng lương - Bùi Tấn Thuận',
+        completedAt: approvedNov,
+        occurredAt: approvedNov,
+        detailSnapshot: {
+          posInfo: {
+            requesterName: 'Bùi Tấn Thuận',
+            departmentName: 'Kho Sài Gòn',
+          },
+        },
+      },
+      fundRow: {
+        id: 73,
+        status: 'POSTED',
+        entryId: null,
+        branchId: 1,
+        occurredAt: approvedNov,
+        sourceKey: 'SALARY_ADVANCE:50',
+      },
+    });
+    await f.service.ensureEntry(50);
+    expect(f.entries).toHaveLength(1);
+    expect(f.entries[0]).toMatchObject({
+      category: 'SALARY_ADVANCE',
+      subCategory: 'SALARY_ADVANCE',
+      branchId: 1,
+      amount: 3000000,
+      payerId: null,
+      cashIssued: true,
+    });
+    expect(f.entries[0].sourceSnapshot).toMatchObject({
+      recipientName: 'Bùi Tấn Thuận',
+      department: 'Kho Sài Gòn',
+      method: 'Tiền Mặt',
+    });
+    expect(f.entries[0].sourceSnapshot.larkLedgerRecorded).toBeUndefined();
+    expect(f.fundRow!.entryId).toBe(900);
   });
 
   it('cancels the entry and the receipt fund row when Lark revokes an approved receipt', async () => {

@@ -20,10 +20,12 @@ import {
   APPROVAL_STATUS_ORDER,
   EXPENSE_FIELD_IDS,
   EXPENSE_VP_OPTIONS,
-  LARK_LEDGER_CUTOFF,
+  larkFundCutoff,
   PAYMENT_VOUCHER,
   readFundReceipt,
   readPaymentVoucherCash,
+  readSalaryAdvance,
+  SALARY_ADVANCE,
   RECEIPT_FIELD_IDS,
   RECEIPT_LOCATION_BRANCHES,
   RECEIPT_OPTIONS,
@@ -232,6 +234,7 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
                   'INTERNAL_FUND_RECEIPT',
                   'INTERNAL_FUND_TRANSFER',
                   PAYMENT_VOUCHER.sourceType,
+                  SALARY_ADVANCE.sourceType,
                 ],
               },
             },
@@ -537,6 +540,73 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
     );
   }
 
+  private salaryAdvanceCode() {
+    return (
+      this.config.get<string>('LARK_SALARY_ADVANCE_APPROVAL_CODE') ||
+      SALARY_ADVANCE.approvalCode
+    );
+  }
+
+  /**
+   * Nhận đơn TẠM ỨNG LƯƠNG chi tiền mặt từ một quỹ nội bộ (kho, VPHN) để trừ
+   * quỹ khi duyệt. Đơn chuyển khoản chỉ có bản sao, không tạo request.
+   */
+  private async ingestSalaryAdvance(instanceCode: string, knownDetail?: any) {
+    const detail: any = knownDetail || (await this.getInstance(instanceCode));
+    let form: ApprovalFormItem[] = [];
+    try {
+      form = JSON.parse(detail?.form || '[]');
+    } catch {
+      form = [];
+    }
+    const advance = readSalaryAdvance(form);
+    if (!advance?.branchId) return null;
+    const requester = detail?.open_id
+      ? await this.prisma.user.findFirst({
+          where: { larkUserId: String(detail.open_id) },
+          select: { id: true },
+        })
+      : null;
+    const createdById = requester?.id || 1;
+    const name = await this.larkMirror.larkUserName(detail?.open_id);
+    try {
+      const created = await this.prisma.approvalRequest.create({
+        data: {
+          kind: SALARY_ADVANCE.kind,
+          approvalCode: this.salaryAdvanceCode(),
+          instanceCode,
+          clientUuid: `LARK:${instanceCode}`,
+          status: 'PENDING',
+          sourceType: SALARY_ADVANCE.sourceType,
+          branchId: advance.branchId,
+          createdById,
+          formSnapshot: {
+            version: 'lark',
+            form,
+            metadata: {
+              branchId: advance.branchId,
+              amount: advance.amount,
+              cashSource: advance.cashSource,
+              method: advance.method,
+              description: name ? `Tạm ứng lương - ${name}` : 'Tạm ứng lương',
+              serialNumber: detail?.serial_number || null,
+            },
+          } as unknown as Prisma.InputJsonValue,
+          detailSnapshot: detail as Prisma.InputJsonValue,
+        },
+        select: { id: true },
+      });
+      return created.id;
+    } catch (error: any) {
+      if (error?.code !== 'P2002') throw error;
+      const existing = await this.prisma.approvalRequest.findUnique({
+        where: { instanceCode },
+        select: { id: true },
+      });
+      return existing?.id || null;
+    }
+  }
+
   /**
    * Nhận đơn PHIẾU CHI tạo trực tiếp trên Lark. Chỉ lưu đơn chi tiền mặt từ
    * một trong các quỹ nội bộ; đơn khác trả null để sự kiện bị bỏ qua như cũ.
@@ -685,6 +755,7 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
   /** Form Lark do nhân viên tạo trực tiếp mà POS nhận về; null nếu không thuộc 4 form. */
   larkFormKind(approvalCode: string): LarkFormKind | null {
     if (approvalCode === this.paymentVoucherCode()) return 'PHIEU_CHI';
+    if (approvalCode === this.salaryAdvanceCode()) return 'TAM_UNG_LUONG';
     if (approvalCode === APPROVAL_DEFINITIONS.RECEIPT.approvalCode)
       return 'PHIEU_THU';
     if (approvalCode === APPROVAL_DEFINITIONS.EXPENSE_HN.approvalCode)
@@ -698,6 +769,7 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
   larkApprovalCodes() {
     return [
       this.paymentVoucherCode(),
+      this.salaryAdvanceCode(),
       APPROVAL_DEFINITIONS.RECEIPT.approvalCode,
       APPROVAL_DEFINITIONS.EXPENSE_HN.approvalCode,
       APPROVAL_DEFINITIONS.EXPENSE_SG.approvalCode,
@@ -735,7 +807,9 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
         ? await this.ingestPaymentVoucher(instanceCode, detail)
         : kind === 'PHIEU_THU'
           ? await this.ingestFundReceipt(instanceCode, detail)
-          : null;
+          : kind === 'TAM_UNG_LUONG' && result.summary.inScope
+            ? await this.ingestSalaryAdvance(instanceCode, detail)
+            : null;
     if (requestId) await this.larkMirror.linkRequest(instanceCode, requestId);
     return { requestId, skipReason: result.summary.skipReason };
   }
@@ -860,7 +934,9 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
         ? Boolean(readPaymentVoucherCash(form))
         : kind === 'PHIEU_THU'
           ? Boolean(readFundReceipt(form))
-          : false) &&
+          : kind === 'TAM_UNG_LUONG'
+            ? inspected.summary.inScope
+            : false) &&
       (!fundBranches ||
         inspected.summary.fundBranchIds.every((id) =>
           fundBranches.includes(id),
@@ -885,7 +961,13 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
     const fund =
       status !== 'APPROVED' || !fundEligible
         ? 'none'
-        : (completedAt && completedAt < LARK_LEDGER_CUTOFF) || ledgerTwin
+        : (completedAt &&
+              completedAt <
+                larkFundCutoff(
+                  summary.branchId,
+                  kind === 'TAM_UNG_LUONG' ? SALARY_ADVANCE.sourceType : null,
+                )) ||
+            ledgerTwin
           ? 'ledger'
           : existing?.status === status
             ? 'existing'
@@ -1242,6 +1324,7 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
           sourceType: true,
           sourceId: true,
           clientUuid: true,
+          branchId: true,
         },
       });
       if (!current) return;
@@ -1277,13 +1360,15 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
         ...(detail ? { detailSnapshot: detail } : {}),
       };
 
-      // Đơn tạo trên Lark mà sổ quỹ Lark đã ghi tiền (duyệt trước ngày dùng POS,
-      // hoặc sổ đã có dòng trùng): chỉ cập nhật trạng thái, không ghi quỹ lần 2.
+      // Đơn tạo trên Lark mà sổ quỹ Lark đã ghi tiền (duyệt trước ngày dùng POS
+      // của chi nhánh, hoặc sổ đã có dòng trùng): chỉ cập nhật trạng thái,
+      // không ghi quỹ lần 2.
       if (
         isLarkCreated(current.clientUuid) &&
         status === 'APPROVED' &&
         data.completedAt &&
-        (data.completedAt.getTime() < LARK_LEDGER_CUTOFF.getTime() ||
+        (data.completedAt.getTime() <
+          larkFundCutoff(current.branchId, current.sourceType).getTime() ||
           (await this.ledgerHasLarkOrder(tx, requestId, data.completedAt)))
       ) {
         await tx.approvalRequest.update({ where: { id: requestId }, data });
@@ -1309,6 +1394,15 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
           data,
         });
         await this.fundLedger.applyPaymentVoucher(tx, updated);
+        return;
+      }
+
+      if (current.sourceType === SALARY_ADVANCE.sourceType) {
+        const updated = await tx.approvalRequest.update({
+          where: { id: requestId },
+          data,
+        });
+        await this.fundLedger.applySalaryAdvance(tx, updated);
         return;
       }
 
@@ -1588,7 +1682,7 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
         }
         if (
           branchId &&
-          (branchId === 4 || branchId === 5 || branchId === 7) &&
+          APPROVAL_BRANCHES.EXPENSE_VP.has(branchId) &&
           EXPENSE_VP_OPTIONS.branchCashSources[branchId] !== source
         ) {
           throw new BadRequestException(

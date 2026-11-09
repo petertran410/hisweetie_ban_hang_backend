@@ -67,7 +67,13 @@ import { TiktokEventsOutboxService } from '../tiktok-events/tiktok-events-outbox
 import {
   assertCanCreateInvoiceForCustomer,
   assertCanDeliverForCustomer,
+  assertPrepaidPolicySatisfied,
 } from '../common/debt-delivery.util';
+import { USER_PUBLIC_SELECT } from '../common/user-select.util';
+import {
+  LATEST_PAYMENT_NOTE,
+  latestPaymentNote,
+} from '../common/payment-note.util';
 
 const POS_PAYMENT_EPSILON = 1;
 
@@ -219,6 +225,7 @@ export class InvoicesService {
     };
     const invoiceSelect = {
       ...baseSelect,
+      paymentNotes: LATEST_PAYMENT_NOTE,
       details: {
         where: { product: { cargoType: 'COLD' } },
         select: {
@@ -323,7 +330,16 @@ export class InvoicesService {
           : (resolved as any).consignDate,
       customer: resolved.customer,
       ...(parsed.kind === 'invoice'
-        ? mapColdCargoInvoice(resolved as any)
+        ? {
+            ...mapColdCargoInvoice(resolved as any),
+            paymentNote: latestPaymentNote(
+              (
+                resolved as {
+                  paymentNotes?: { paymentType: string; amount: unknown }[];
+                }
+              ).paymentNotes,
+            ),
+          }
         : {}),
     };
   }
@@ -574,6 +590,14 @@ export class InvoicesService {
       where.updatedAt = {};
       if (fromUpdatedDate) where.updatedAt.gte = new Date(fromUpdatedDate);
       if (toUpdatedDate) where.updatedAt.lte = new Date(toUpdatedDate);
+    }
+
+    if (query.fromMisaSyncedDate || query.toMisaSyncedDate) {
+      where.misaSyncedAt = {};
+      if (query.fromMisaSyncedDate)
+        where.misaSyncedAt.gte = new Date(query.fromMisaSyncedDate);
+      if (query.toMisaSyncedDate)
+        where.misaSyncedAt.lte = new Date(query.toMisaSyncedDate);
     }
 
     // Filter theo người tạo (chỉ áp dụng khi user có quyền xem data người khác)
@@ -1317,8 +1341,8 @@ export class InvoicesService {
           },
         },
         branch: true,
-        soldBy: true,
-        creator: true,
+        soldBy: { select: USER_PUBLIC_SELECT },
+        creator: { select: USER_PUBLIC_SELECT },
         details: {
           include: {
             product: { include: { inventories: true } },
@@ -2340,7 +2364,7 @@ export class InvoicesService {
             delivery: true,
             customer: true,
             branch: true,
-            soldBy: true,
+            soldBy: { select: USER_PUBLIC_SELECT },
             priceBook: true,
           },
         });
@@ -2968,7 +2992,7 @@ export class InvoicesService {
           payments: true,
           delivery: true,
           branch: true,
-          soldBy: true,
+          soldBy: { select: USER_PUBLIC_SELECT },
           order: true,
         },
       });
@@ -3299,7 +3323,7 @@ export class InvoicesService {
             customer: true,
             order: true,
             branch: true,
-            soldBy: true,
+            soldBy: { select: USER_PUBLIC_SELECT },
             priceBook: true,
           },
         });
@@ -3490,7 +3514,7 @@ export class InvoicesService {
             delivery: true,
             customer: true,
             branch: true,
-            soldBy: true,
+            soldBy: { select: USER_PUBLIC_SELECT },
             order: true,
             priceBook: true,
           },
@@ -4116,30 +4140,6 @@ export class InvoicesService {
     await recalcCustomerDebt(tx, customerId, { syncTotalPurchased: true });
   }
 
-  /**
-   * Giữ tương thích với chính sách cũ: cờ này chỉ được dùng để thực thi
-   * quy tắc thanh toán đủ, không suy diễn lại từ debtForm/debtRuleType.
-   * Khách mới mặc định PREPAID + NONE và được tạo với cờ = true; khách cũ
-   * vẫn giữ nguyên giá trị đã lưu.
-   */
-  private requiresFullPaymentForInvoice(
-    policy:
-      | {
-          debtForm: string | null;
-          hasCreditLimit: boolean;
-          hasTermDays: boolean;
-          isActive: boolean;
-          requireFullPaymentForInvoice?: boolean;
-        }
-      | null
-      | undefined,
-  ) {
-    return !!(
-      policy?.isActive !== false &&
-      policy?.requireFullPaymentForInvoice === true
-    );
-  }
-
   private getPosPaymentAmount(
     dto: Pick<CreateInvoiceDto, 'paidAmount' | 'payments'>,
     fallback: number,
@@ -4168,25 +4168,17 @@ export class InvoicesService {
     mode: 'invoice' | 'order';
     paymentMethod?: 'cash' | 'transfer' | string;
   }) {
-    if (!this.requiresFullPaymentForInvoice(input.policy)) return;
-    if (input.paymentMethod === 'cash') return;
-    // Công nợ âm là tiền khách đã trả trước nhưng chưa phân bổ. Chỉ dùng
-    // giá trị này để so sánh điều kiện; tuyệt đối không ghi vào đơn/hóa đơn.
-    const advanceCredit = Math.max(0, -(input.currentCustomerDebt ?? 0));
-    const effectivePaid = input.paidAmount + advanceCredit;
-    if (effectivePaid + POS_PAYMENT_EPSILON < input.grandTotal) {
-      throw new BadRequestException(
-        `${
-          input.mode === 'order'
-            ? POS_PREPAID_ORDER_MESSAGE
-            : POS_PREPAID_INVOICE_MESSAGE
-        } Đã thanh toán: ${Math.round(input.paidAmount).toLocaleString(
-          'vi-VN',
-        )} đ (gồm trả trước chưa phân bổ: ${Math.round(advanceCredit).toLocaleString('vi-VN')} đ) / Cần thanh toán: ${Math.round(
-          input.grandTotal,
-        ).toLocaleString('vi-VN')} đ.`,
-      );
-    }
+    assertPrepaidPolicySatisfied({
+      policy: input.policy,
+      paidAmount: input.paidAmount,
+      grandTotal: input.grandTotal,
+      currentCustomerDebt: input.currentCustomerDebt,
+      paymentMethod: input.paymentMethod,
+      message:
+        input.mode === 'order'
+          ? POS_PREPAID_ORDER_MESSAGE
+          : POS_PREPAID_INVOICE_MESSAGE,
+    });
   }
 
   async createFromOrder(
@@ -4987,7 +4979,7 @@ export class InvoicesService {
           delivery: true,
           customer: true,
           branch: true,
-          soldBy: true,
+          soldBy: { select: USER_PUBLIC_SELECT },
           order: { select: { code: true } },
         },
       });
@@ -5419,7 +5411,7 @@ export class InvoicesService {
           payments: true,
           customer: true,
           branch: true,
-          soldBy: true,
+          soldBy: { select: USER_PUBLIC_SELECT },
           consignment: { select: { code: true } },
         },
       });
@@ -5899,6 +5891,7 @@ export class InvoicesService {
         grandTotal: true,
         purchaseDate: true,
         customer: { select: { id: true, name: true } },
+        paymentNotes: LATEST_PAYMENT_NOTE,
         details: {
           where: { product: { cargoType: 'COLD' } },
           select: {
@@ -5963,6 +5956,8 @@ export class InvoicesService {
         ...(packingType
           ? { packingCount: packingCountByInvoiceId.get(invoice.id) ?? 0 }
           : {}),
+        paymentNote: latestPaymentNote(invoice.paymentNotes),
+        paymentNotes: undefined,
         details: undefined,
       })),
       total: data.length,
@@ -6071,6 +6066,7 @@ export class InvoicesService {
           grandTotal: true,
           createdAt: true,
           customer: { select: { id: true, name: true } },
+          paymentNotes: LATEST_PAYMENT_NOTE,
         },
         orderBy: { createdAt: 'desc' },
         skip: currentItem,
@@ -6080,7 +6076,10 @@ export class InvoicesService {
 
     return {
       stats: { total, delivered, pending },
-      data,
+      data: data.map(({ paymentNotes, ...invoice }) => ({
+        ...invoice,
+        paymentNote: latestPaymentNote(paymentNotes),
+      })),
       total: listTotal,
     };
   }
@@ -6663,6 +6662,14 @@ export class InvoicesService {
         where.updatedAt.gte = new Date(query.fromUpdatedDate);
       if (query.toUpdatedDate)
         where.updatedAt.lte = new Date(query.toUpdatedDate);
+    }
+
+    if (query.fromMisaSyncedDate || query.toMisaSyncedDate) {
+      where.misaSyncedAt = {};
+      if (query.fromMisaSyncedDate)
+        where.misaSyncedAt.gte = new Date(query.fromMisaSyncedDate);
+      if (query.toMisaSyncedDate)
+        where.misaSyncedAt.lte = new Date(query.toMisaSyncedDate);
     }
 
     if (query.createdByIds?.length) {

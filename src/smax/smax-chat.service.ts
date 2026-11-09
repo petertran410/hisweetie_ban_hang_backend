@@ -6,6 +6,7 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -16,7 +17,10 @@ import { join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { UploadService } from '../upload/upload.service';
+import { LarkUserDirectoryService } from '../lark-sync/services/lark-user-directory.service';
+import { LeadLinkService } from '../leads/lead-link/lead-link.service';
 import { repairUploadedFilename } from '../common/uploaded-filename.util';
+import { normalizeVnPhone } from '../common/phone.util';
 import {
   GROUP_SCAN_LIMIT,
   SmaxApiService,
@@ -24,6 +28,7 @@ import {
   SmaxPage,
   SmaxRawMessage,
   SmaxRecentThread,
+  ThreadMessagePart,
   ZalowebContent,
 } from './smax-api.service';
 
@@ -34,6 +39,8 @@ export interface ChatActor {
   canViewOtherStaffData?: boolean;
   canViewDebt: boolean;
   canViewPackingSlips?: boolean;
+  canViewLeads?: boolean;
+  leadsOwnOnly?: boolean;
 }
 
 export interface ChatMessage {
@@ -49,10 +56,14 @@ export interface ChatMessage {
   albumId: string | null;
   // Tin sticker Zalo
   stickerId: string | null;
+  // Tin sticker Facebook: URL ảnh sticker
+  stickerImage: string | null;
   // Tin trả lời: trích tin gốc (pid để cuộn tới tin gốc)
   quote: { pid: string | null; text: string; senderName: string | null } | null;
   // Cảm xúc gộp theo icon; mine = kênh (tài khoản Zalo của mình) đã thả icon này
   reactions: { icon: string; count: number; mine: boolean; users: { name: string | null; avatar: string | null }[] }[];
+  // Tin đã thu hồi (kênh hoặc khách thu hồi) — vẫn giữ nội dung để nhân viên xem
+  recalled: boolean;
   createdAt: string;
 }
 
@@ -82,12 +93,17 @@ const REACTIONS = ['NONE', 'LIKE', 'HEART', 'HAHA', 'WOW', 'CRY', 'ANGRY'];
 
 const SEND_LIMIT_PER_MINUTE = 20;
 const GROUP_INDEX_TTL_MS = 10 * 60_000;
-const RECENT_TTL_MS = 30_000;
+const RECENT_TTL_MS = 10_000;
+// Tên gợi nhớ Zalo theo kênh (Smax đồng bộ từ app Zalo) — đổi trên Zalo sẽ hiện sau tối đa 1 phút
+const ALIAS_TTL_MS = 60_000;
+const THREAD_NAME_MAX = 100;
 // So khớp tên không phân biệt hoa thường / dấu tiếng Việt
 const foldVi = (s: string) =>
   s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/gi, 'd').toLowerCase();
 // Mã khách POS trong tên nhóm Zalo, vd "… DIỆP TRÀ KH005844", "KH241166031.1"
 const CUSTOMER_CODE_IN_NAME = /\bKH\d{3,}(?:\.\d+)?\b/gi;
+// SĐT VN khách gõ trong tin (vd "0365692400", "+84 912 345 678", "091.234.5678")
+const PHONE_IN_TEXT = /(?:\+?84|0)(?:[\s.-]?\d){9}(?!\d)/g;
 const MEDIA_SUBFOLDER = 'smax-chat';
 export const MAX_ATTACHMENTS = 10;
 export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -132,9 +148,17 @@ export interface SendContent {
   replyToPid?: string;
   // Chuyển tiếp ảnh/tệp đã có trên máy chủ Zalo (chỉ nhận host Zalo)
   forwardMedia?: { url: string; kind: 'image' | 'file' }[];
+  // Messenger: gửi với thẻ HUMAN_AGENT → lấy lại quyền trả lời từ Meta Business AI (như "Tự phản hồi" trên Smax)
+  humanAgent?: boolean;
   confirmed?: boolean;
 }
 
+// Thư viện Smax (https://smax.ai/bizs/<biz>/storages): CDN có chữ ký, chỉ lấy tệp trong thư mục của biz
+const SMAX_LIBRARY_URL = /^https:\/\/cdn(-[a-z]+)?\.smax\.in\/[\w-]+\/smaxai\/bizs\/[a-f0-9]{24}\//;
+export const isSmaxLibraryUrl = (url: string) => SMAX_LIBRARY_URL.test(url || '');
+const LIBRARY_PAGE = 30;
+// id Mongo của Smax (tệp / album Thư viện)
+const SMAX_ID = /^[a-f0-9]{24}$/;
 // Máy chủ ảnh/tệp/sticker của Zalo — cho phép chuyển tiếp & tải qua backend
 const ZALO_MEDIA_HOST = /^https:\/\/([\w-]+\.)*(zdn\.vn|zadn\.vn|zalo\.me|dlfl\.vn|dlmd\.me)\//;
 export const isZaloMediaUrl = (url: string) => ZALO_MEDIA_HOST.test(url || '');
@@ -149,6 +173,31 @@ export interface ChatAttachmentInput {
 }
 // Kênh Zalo cá nhân: tid / pid hội thoại = "zlw" + ID Zalo (đã kiểm chứng 26/10).
 const ZALOWEB_PREFIX = 'zlw';
+// tid mọi kênh: tiền tố nền tảng + id (zlw…, zl…, fb…, ig…, sp…, ttw…, ctm…)
+const THREAD_TID = /^[a-z]{2,4}[A-Za-z0-9_-]{3,64}$/;
+
+/**
+ * ID hội thoại của khách lưu ở customer_zalo_contacts.zalo_id:
+ * - Zalo cá nhân: số Zalo (tid = "zlw" + số), dùng được với mọi kênh Zalo cá nhân.
+ * - Kênh khác (Zalo OA, Facebook, Instagram, Tiktok, Shopee, Website): tid đầy đủ có tiền tố chữ
+ *   (vd "fb2870…") + page_pid, vì ID khách của các nền tảng này riêng theo từng trang.
+ */
+const isZaloContact = (c: { zaloId: string }) => /^\d+$/.test(c.zaloId);
+const contactTid = (c: { zaloId: string }) => (isZaloContact(c) ? `${ZALOWEB_PREFIX}${c.zaloId}` : c.zaloId);
+
+/** 1 bước gửi (dạng zaloweb-messages) → các phần tin gửi vào thread của kênh khác. */
+const threadParts = (c: ZalowebContent): ThreadMessagePart[] => [
+  ...(c.message ? [{ message: c.message }] : []),
+  ...(c.images ?? []).map((picture) => ({ picture })),
+  ...(c.file ? [{ file: c.file }] : []),
+];
+
+// Người gửi đặt xe theo chi nhánh hóa đơn: nhân sự phòng ban Lark tương ứng + người thêm
+// (theo tên POS); chi nhánh khác → mọi nhân sự.
+const DELIVERY_SENDER_SCOPES: Record<string, { departments: string[]; users?: string[] }> = {
+  'Kho Hà Nội': { departments: ['Kho Hà Nội'], users: ['Nguyễn Huyền Trang'] },
+  'Kho Sài Gòn': { departments: ['Kho Sài Gòn'] },
+};
 
 /**
  * Sidebar chat Zalo trên POS: chat bằng kênh Zalo đã liên kết với CHÍNH người
@@ -156,9 +205,11 @@ const ZALOWEB_PREFIX = 'zlw';
  */
 @Injectable()
 export class SmaxChatService {
+  private readonly logger = new Logger(SmaxChatService.name);
   private readonly sendLog = new Map<number, number[]>();
   // Chỉ mục nhóm theo kênh (quét Smax ~15s) — dùng chung giữa các khách
   private readonly recentCache = new Map<string, { at: number; threads: Promise<SmaxRecentThread[]> }>();
+  private readonly aliasCache = new Map<string, { at: number; map: Promise<Map<string, string>> }>();
   private readonly groupIndex = new Map<
     string,
     { at: number; groups: Promise<SmaxGroupThread[]> }
@@ -169,6 +220,8 @@ export class SmaxChatService {
     { at: number; map: Record<string, string>; loading: boolean }
   >();
   private readonly confirmBeforeSend: boolean;
+  // Đặt xe giao hàng: kênh + nhóm Zalo cố định (mặc định kênh "Diệp Trà Cs", nhóm "Book hộ xe")
+  private readonly deliveryBooking: { pagePid: string; tid: string };
   // Domain công khai Smax tải được file đính kèm (localhost thì Smax không tới được)
   private readonly mediaPublicUrl: string | null;
 
@@ -178,6 +231,8 @@ export class SmaxChatService {
     private readonly auditLogs: AuditLogsService,
     private readonly uploads: UploadService,
     config: ConfigService,
+    private readonly larkDirectory: LarkUserDirectoryService,
+    private readonly leadLink?: LeadLinkService,
   ) {
     const base = config.get<string>('SMAX_MEDIA_PUBLIC_URL')?.trim().replace(/\/+$/, '');
     this.mediaPublicUrl = base && /^https:\/\//.test(base) ? base : null;
@@ -186,6 +241,10 @@ export class SmaxChatService {
       flag !== undefined
         ? flag === 'true'
         : config.get<string>('NODE_ENV') !== 'production';
+    this.deliveryBooking = {
+      pagePid: config.get<string>('SMAX_DELIVERY_PAGE_PID')?.trim() || 'zlw693698651694262958',
+      tid: config.get<string>('SMAX_DELIVERY_GROUP_TID')?.trim() || 'zlw612515329498631054',
+    };
   }
 
   /** Tải ảnh/tệp Zalo (hoặc ảnh QR VietQR) qua backend (trình duyệt bị CORS + chặn hotlink). */
@@ -206,7 +265,7 @@ export class SmaxChatService {
   private async sendReply(pagePid: string, tid: string, replyToPid: string, message: string) {
     const startedAt = Date.now();
     try {
-      await this.smaxApi.sendThreadMessage(pagePid, tid, { replyToPid, message });
+      await this.smaxApi.sendThreadMessage(pagePid, tid, { replyToPid, messages: [{ message }] });
     } catch (e) {
       if (!(e instanceof BadGatewayException)) throw e;
       const latest: SmaxRawMessage[] = await this.smaxApi.getMessages(pagePid, tid).catch(() => []);
@@ -260,7 +319,11 @@ export class SmaxChatService {
 
     const salePicId = customer.debtPolicy?.salePicId ?? null;
     const ownOnly = actor.canViewOtherStaffData === false;
-    const [salePic, channels, orders, invoices, packingSlips] = await Promise.all([
+    const zaloContacts = customer.zaloContacts.filter(isZaloContact);
+    const otherContacts = customer.zaloContacts.filter((c) => !isZaloContact(c));
+    const groupZaloIds = zaloContacts.filter((c) => c.kind === 'group').map((c) => c.zaloId);
+    const sharedIds = [...groupZaloIds, ...otherContacts.map((c) => c.zaloId)];
+    const [salePic, channels, orders, invoices, packingSlips, shared, lead] = await Promise.all([
       salePicId
         ? this.prisma.user.findUnique({
             where: { id: salePicId },
@@ -328,9 +391,28 @@ export class SmaxChatService {
             },
           })
         : null,
+      // Khách khác cùng gắn nhóm Zalo / hội thoại kênh khác này (vd nhóm chung các chi nhánh)
+      sharedIds.length
+        ? this.prisma.customerZaloContact.findMany({
+            where: { zaloId: { in: sharedIds }, customerId: { not: customerId } },
+            select: { id: true, zaloId: true, customer: { select: { id: true, code: true, name: true } } },
+            orderBy: { createdAt: 'asc' },
+          })
+        : Promise.resolve<{ id: number; zaloId: string; customer: { id: number; code: string | null; name: string } }[]>(
+            [],
+          ),
+      // Lead nguồn của khách (cần leads:view; Sale chỉ thấy lead giao cho mình)
+      this.leadLink?.leadOfCustomer(customerId, {
+        canViewLeads: !!actor.canViewLeads,
+        ownOnly: actor.leadsOwnOnly !== false,
+        userId: actor.id,
+      }) ?? null,
     ]);
 
-    const contacts = customer.zaloContacts;
+    const withShared = <T extends { zaloId: string }>(c: T) => ({
+      ...c,
+      sharedWith: shared.filter((s) => s.zaloId === c.zaloId).map((s) => ({ ...s.customer, contactId: s.id })),
+    });
     return {
       customer: {
         id: customer.id,
@@ -339,10 +421,13 @@ export class SmaxChatService {
         phone: customer.contactNumber || customer.phone || null,
       },
       salePic,
+      lead,
       myChannels: channels,
       contacts: {
-        user: contacts.find((c) => c.kind === 'user') ?? null,
-        groups: contacts.filter((c) => c.kind === 'group'),
+        user: zaloContacts.find((c) => c.kind === 'user') ?? null,
+        groups: zaloContacts.filter((c) => c.kind === 'group').map(withShared),
+        // Hội thoại trên kênh khác Zalo cá nhân (mỗi cái gắn với 1 kênh — pagePid)
+        others: otherContacts.map(withShared),
       },
       debt: actor.canViewDebt ? Number(customer.totalDebt) : null,
       recentOrders: orders.map((o) => ({
@@ -387,7 +472,7 @@ export class SmaxChatService {
   ) {
     const channel = await this.assertOwnChannel(actor.id, pagePid);
     const contact = await this.getContact(customerId, contactId);
-    return this.loadThreadMessages(channel, `${ZALOWEB_PREFIX}${contact.zaloId}`, before);
+    return this.loadThreadMessages(channel, this.contactThread(contact, channel), before);
   }
 
   /** Tin của hội thoại chưa gắn khách POS (mở từ "Đang chat gần đây"). */
@@ -397,12 +482,17 @@ export class SmaxChatService {
   }
 
   private async loadThreadMessages(channel: SmaxPage, tid: string, before?: string) {
-    const [thread, raw] = await Promise.all([
+    const [thread, fetched, states] = await Promise.all([
       // Thông tin thread chỉ để lấy tên người gửi — Smax lỗi ở đây (đã gặp 500)
       // thì vẫn trả tin nhắn
       before ? null : this.smaxApi.getThread(channel.pid, tid).catch(() => null),
       this.smaxApi.getMessages(channel.pid, tid, before),
+      // Thu hồi / xoá chỉ API nội bộ Smax có (Zalo cá nhân); lỗi thì hiện tin như thường
+      channel.platform === 'zaloweb'
+        ? this.smaxApi.getMessageStates(channel.pid, tid, before).catch(() => null)
+        : null,
     ]);
+    const raw = states ? fetched.map((m) => ({ ...m, ...states.get(m.pid) })) : fetched;
     const members = thread?.members ?? {};
     // Người gửi khác kênh: tên + avatar (tin cũ tải thêm dùng lại bảng này ở client)
     const senders: Record<string, { name: string | null; avatar: string | null }> = {};
@@ -420,8 +510,8 @@ export class SmaxChatService {
         ...(channel.picture ? { [channel.pid]: channel.picture } : {}),
       }),
       hasMore: raw.length >= 20,
-      // Thả cảm xúc cần SMAX_USER_TOKEN (API nội bộ Smax)
-      canReact: this.smaxApi.canReact,
+      // Thả cảm xúc, thu hồi / xoá tin: Zalo cá nhân + SMAX_USER_TOKEN (API nội bộ Smax)
+      canReact: channel.platform === 'zaloweb' && this.smaxApi.canReact,
     };
   }
 
@@ -454,7 +544,7 @@ export class SmaxChatService {
     const tid = this.assertTid(dto.tid);
     if (!/^zlw\d{3,25}$/.test(dto.pid)) throw new BadRequestException('Tin nhắn không hợp lệ');
     if (!REACTIONS.includes(dto.reaction)) throw new BadRequestException('Cảm xúc không hợp lệ');
-    const channel = await this.assertOwnChannel(actor.id, dto.pagePid);
+    const channel = await this.assertOwnChannel(actor.id, dto.pagePid, true);
     if (channel.connectionError) {
       throw new ConflictException(`Kênh "${channel.name}" đang mất kết nối — làm mới kết nối trên Smax trước`);
     }
@@ -476,10 +566,130 @@ export class SmaxChatService {
     return { ok: true };
   }
 
-  /** tid kênh Zalo cá nhân = "zlw" + ID Zalo (cá nhân/nhóm). */
+  /**
+   * Đổi tên hội thoại Zalo cá nhân (1-1 hoặc nhóm) trên Smax — tên hiện trên Smax & POS;
+   * Smax lưu luôn làm tên gợi nhớ của kênh. Tên nhóm thật trên Zalo không đổi.
+   */
+  async renameThread(actor: ChatActor, dto: { pagePid: string; tid: string; name: string }) {
+    const tid = this.assertTid(dto.tid);
+    const name = (dto.name ?? '').replace(/\s+/g, ' ').trim();
+    if (!name) throw new BadRequestException('Tên không được để trống');
+    if (name.length > THREAD_NAME_MAX) throw new BadRequestException(`Tên tối đa ${THREAD_NAME_MAX} ký tự`);
+    const channel = await this.assertOwnChannel(actor.id, dto.pagePid, true);
+    const thread = await this.smaxApi.getThread(channel.pid, tid);
+    if (!thread) throw new NotFoundException('Hội thoại không còn trên Smax');
+    // Tên đang hiện = tên gợi nhớ (nếu có) hoặc tên Smax
+    const shown = (await this.zaloAliases(channel.pid)).get(tid) ?? thread.name;
+    if (shown === name) return { name, alias: shown === thread.name ? null : shown };
+    this.checkRateLimit(actor.id);
+    const saved = await this.smaxApi.renameCustomer(channel.pid, tid, name);
+    // Smax lưu luôn tên mới làm tên gợi nhớ của kênh → đọc lại danh sách tên gợi nhớ
+    this.aliasCache.delete(channel.pid);
+    // Danh sách gần đây đọc lại tên mới; chỉ mục nhóm (quét lâu) chỉ sửa tên tại chỗ
+    this.recentCache.clear();
+    void this.groupIndex
+      .get(channel.pid)
+      ?.groups.then((gs) => gs.forEach((g) => `${ZALOWEB_PREFIX}${g.zaloId}` === tid && (g.name = saved)))
+      .catch(() => undefined);
+    await this.auditLogs.create({
+      actionType: 'PUT',
+      actionCode: 'SMAX_THREAD_RENAME',
+      entityType: 'smax_threads',
+      entityId: tid,
+      message: `Đổi tên hội thoại Zalo "${shown}" → "${saved}" (kênh "${channel.name}")`,
+      userId: actor.id,
+      userName: actor.name,
+      metadata: { pagePid: channel.pid, tid, from: shown, to: saved },
+    });
+    return { name: saved, alias: (await this.zaloAliases(channel.pid)).get(tid) ?? null };
+  }
+
+  /** Tên gợi nhớ Zalo của 1 kênh (cache 1 phút; lỗi → rỗng, không chặn tải hội thoại). */
+  private zaloAliases(pagePid: string): Promise<Map<string, string>> {
+    const hit = this.aliasCache.get(pagePid);
+    if (hit && Date.now() - hit.at < ALIAS_TTL_MS) return hit.map;
+    const map = this.smaxApi.getZaloAliases(pagePid).catch((e) => {
+      this.logger.warn(`Không tải được tên gợi nhớ Zalo kênh ${pagePid}: ${(e as Error).message}`);
+      return new Map<string, string>();
+    });
+    this.aliasCache.set(pagePid, { at: Date.now(), map });
+    return map;
+  }
+
+  /**
+   * Bật Meta Business AI trả lời hội thoại Messenger (Smax "Pass control to Meta Business AI").
+   * Tắt = nhân viên gửi tin kèm humanAgent (thẻ HUMAN_AGENT), Smax không có API riêng.
+   */
+  async passControlBizAI(actor: ChatActor, dto: { pagePid: string; tid: string; confirmed?: boolean }) {
+    const tid = this.assertTid(dto.tid);
+    const channel = await this.assertOwnChannel(actor.id, dto.pagePid);
+    if (channel.platform !== 'facebook') throw new BadRequestException('Meta Business AI chỉ có trên fanpage Facebook');
+    const thread = await this.smaxApi.getThread(channel.pid, tid);
+    if (!thread || thread.isComment) throw new BadRequestException('Chỉ bật Meta Business AI cho hội thoại Messenger');
+    if (this.confirmBeforeSend && !dto.confirmed) {
+      throw new BadRequestException('Môi trường thử nghiệm: cần xác nhận trước khi bật Meta Business AI');
+    }
+    this.checkRateLimit(actor.id);
+    await this.smaxApi.passControlBizAI(channel.pid, tid);
+    await this.auditLogs.create({
+      actionType: 'POST',
+      actionCode: 'SMAX_META_AI_ON',
+      entityType: 'smax_threads',
+      entityId: tid,
+      message: `Bật Meta Business AI trả lời hội thoại Messenger "${thread.name}" (kênh "${channel.name}")`,
+      userId: actor.id,
+      userName: actor.name,
+      metadata: { pagePid: channel.pid, tid },
+    });
+    return { ok: true };
+  }
+
+  /** Thu hồi (cả 2 phía) / xoá phía mình 1 tin Zalo, với tư cách tài khoản Zalo của kênh. */
+  async messageAction(
+    actor: ChatActor,
+    dto: { pagePid: string; tid: string; pid: string; action: 'recall' | 'delete'; confirmed?: boolean },
+  ) {
+    const tid = this.assertTid(dto.tid);
+    if (!/^zlw\d{3,25}$/.test(dto.pid)) throw new BadRequestException('Tin nhắn không hợp lệ');
+    const channel = await this.assertOwnChannel(actor.id, dto.pagePid, true);
+    if (channel.connectionError) {
+      throw new ConflictException(`Kênh "${channel.name}" đang mất kết nối — làm mới kết nối trên Smax trước`);
+    }
+    const label = dto.action === 'recall' ? 'thu hồi' : 'xoá';
+    if (this.confirmBeforeSend && !dto.confirmed) {
+      throw new BadRequestException(`Môi trường thử nghiệm: cần xác nhận trước khi ${label} tin`);
+    }
+    this.checkRateLimit(actor.id);
+    await this.smaxApi.messageAction(channel.pid, tid, dto.pid, dto.action);
+    await this.auditLogs.create({
+      actionType: 'POST',
+      actionCode: dto.action === 'recall' ? 'SMAX_CHAT_RECALL' : 'SMAX_CHAT_DELETE',
+      entityType: 'smax_threads',
+      entityId: tid,
+      message: `${dto.action === 'recall' ? 'Thu hồi' : 'Xoá (phía mình)'} tin Zalo qua kênh "${channel.name}"`,
+      userId: actor.id,
+      userName: actor.name,
+      metadata: { pagePid: channel.pid, tid, pid: dto.pid, action: dto.action },
+    });
+    return { ok: true };
+  }
+
+  /** tid hội thoại: tiền tố nền tảng + id (Zalo cá nhân = "zlw" + ID Zalo cá nhân/nhóm). */
   private assertTid(tid: string): string {
-    if (!/^zlw\d{3,25}$/.test(tid || '')) throw new BadRequestException('Hội thoại không hợp lệ');
+    if (!THREAD_TID.test(tid || '')) throw new BadRequestException('Hội thoại không hợp lệ');
     return tid;
+  }
+
+  /** tid của ID đã lưu cho khách, phải đúng loại kênh (Zalo cá nhân / đúng trang của kênh khác). */
+  private contactThread(contact: { zaloId: string; pagePid: string | null }, channel: SmaxPage): string {
+    if (isZaloContact(contact)) {
+      if (channel.platform !== 'zaloweb') {
+        throw new BadRequestException('ID Zalo cá nhân của khách chỉ dùng với kênh Zalo cá nhân');
+      }
+    } else if (contact.pagePid !== channel.pid) {
+      throw new BadRequestException('Hội thoại này thuộc kênh khác — chọn đúng kênh để chat');
+    }
+    return contactTid(contact);
   }
 
   /** Lưu file đính kèm sẽ gửi qua Zalo; ảnh được nén/đổi HEIC → JPEG như upload chung. */
@@ -532,37 +742,160 @@ export class SmaxChatService {
     );
   }
 
-  /** Thông tin Zalo của hội thoại (avatar, tên) + trạng thái kết bạn (chat trực tiếp). */
+  /** Album Thư viện Smax. */
+  libraryAlbums() {
+    return this.smaxApi.listStorageAlbums();
+  }
+
+  /** Tệp Thư viện Smax (lọc album / tên / loại), mỗi trang LIBRARY_PAGE tệp. */
+  async libraryFiles(q: { albumId?: string; keyword?: string; type?: 'image' | 'video'; cursor?: number }) {
+    const rows = await this.smaxApi.listStorage({
+      groupId: q.albumId,
+      name: q.keyword?.trim(),
+      type: q.type,
+      cursor: q.cursor,
+      limit: LIBRARY_PAGE,
+    });
+    const files = rows
+      .filter((r) => typeof r?.url === 'string' && isSmaxLibraryUrl(r.url))
+      .map((r) => ({
+        id: String(r.id),
+        name: String(r.name ?? ''),
+        mime: String(r.mime ?? ''),
+        size: typeof r.size === 'number' ? r.size : null,
+        url: r.url as string,
+        createdAt: r.created_at as string,
+      }));
+    const last = rows.at(-1)?.created_at;
+    return {
+      files,
+      nextCursor: rows.length >= LIBRARY_PAGE && last ? new Date(last).getTime() : null,
+    };
+  }
+
+  /** Tải tệp lên Thư viện Smax (quyền smax_chat:manage_library), vào album đang xem nếu có. */
+  async libraryUpload(actor: ChatActor, files: Express.Multer.File[], albumId?: string) {
+    if (!files?.length) throw new BadRequestException('Chưa chọn tệp');
+    if (files.length > MAX_ATTACHMENTS) {
+      throw new BadRequestException(`Tối đa ${MAX_ATTACHMENTS} tệp mỗi lần tải lên`);
+    }
+    if (albumId && !SMAX_ID.test(albumId)) throw new BadRequestException('Album không hợp lệ');
+    const items = files.map((f) => {
+      const name = repairUploadedFilename(f.originalname);
+      const mime = f.mimetype.toLowerCase();
+      if (!IMAGE_MIMES.has(mime) && !VIDEO_MIMES.has(mime) && !FILE_MIMES.has(mime)) {
+        throw new BadRequestException(`Không hỗ trợ loại tệp "${name}"`);
+      }
+      if (f.size > MAX_ATTACHMENT_BYTES) throw new BadRequestException(`"${name}" vượt quá 25MB`);
+      return { buffer: f.buffer, name, mime };
+    });
+    const saved = await this.smaxApi.uploadStorage(items, albumId);
+    await this.auditLogs.create({
+      actionType: 'POST',
+      actionCode: 'SMAX_LIBRARY_UPLOAD',
+      entityType: 'smax_library',
+      entityId: albumId ?? 'all',
+      message: `Tải ${items.length} tệp lên Thư viện Smax: ${items.map((i) => i.name).join(', ')}`,
+      userId: actor.id,
+      userName: actor.name,
+      metadata: { albumId: albumId ?? null, files: items.map((i) => ({ name: i.name, mime: i.mime, size: i.buffer.length })) },
+    });
+    return { uploaded: saved.length };
+  }
+
+  /** Xoá tệp khỏi Thư viện Smax (quyền smax_chat:manage_library) — xoá hẳn trên Smax. */
+  async libraryDelete(actor: ChatActor, files: { id: string; name?: string }[]) {
+    if (!files?.length) throw new BadRequestException('Chưa chọn tệp');
+    if (files.some((f) => !SMAX_ID.test(f.id))) throw new BadRequestException('Tệp không hợp lệ');
+    const ids = [...new Set(files.map((f) => f.id))];
+    await this.smaxApi.deleteStorage(ids);
+    await this.auditLogs.create({
+      actionType: 'DELETE',
+      actionCode: 'SMAX_LIBRARY_DELETE',
+      entityType: 'smax_library',
+      entityId: ids.join(',').slice(0, 190),
+      message: `Xoá ${ids.length} tệp khỏi Thư viện Smax: ${files.map((f) => f.name || f.id).join(', ')}`,
+      userId: actor.id,
+      userName: actor.name,
+      metadata: { files },
+    });
+    return { deleted: ids.length };
+  }
+
+  /**
+   * Lấy tệp đã chọn từ Thư viện Smax làm tệp đính kèm (tải về /uploads như tệp người dùng tải lên)
+   * → đi chung luồng gửi / xem trước / gửi lại. Chỉ nhận link CDN Thư viện Smax.
+   */
+  async importLibraryFiles(items: { url: string; name: string; mime?: string }[]) {
+    if (!items?.length) throw new BadRequestException('Chưa chọn tệp');
+    if (items.length > MAX_ATTACHMENTS) {
+      throw new BadRequestException(`Tối đa ${MAX_ATTACHMENTS} tệp mỗi lần gửi`);
+    }
+    if (items.some((i) => !isSmaxLibraryUrl(i.url))) {
+      throw new BadRequestException('Chỉ lấy được tệp trong Thư viện Smax');
+    }
+    const files = await Promise.all(
+      items.map(async (i) => {
+        const res = await fetch(i.url, { signal: AbortSignal.timeout(30_000) }).catch(() => null);
+        if (!res?.ok) throw new BadGatewayException(`Không tải được "${i.name}" từ Thư viện Smax`);
+        const buffer = Buffer.from(await res.arrayBuffer());
+        // Smax ghi mime theo lúc tải lên (có khi lệch đuôi tệp) → ưu tiên mime của CDN
+        const cdnMime = (res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+        const mime = cdnMime && cdnMime !== 'application/octet-stream' ? cdnMime : (i.mime || '').toLowerCase();
+        return { buffer, originalname: i.name, mimetype: mime, size: buffer.length } as Express.Multer.File;
+      }),
+    );
+    return this.uploadAttachments(files);
+  }
+
+  /** Thông tin hội thoại (avatar, tên) + trạng thái kết bạn (chat trực tiếp Zalo cá nhân). */
   async getZaloProfile(customerId: number, actorId: number, pagePid: string, contactId: number) {
     const channel = await this.assertOwnChannel(actorId, pagePid);
     const contact = await this.getContact(customerId, contactId);
-    return this.loadProfile(channel, contact.kind as 'user' | 'group', contact.zaloId, contact.name);
+    return this.loadProfile(channel, contact.kind as 'user' | 'group', this.contactThread(contact, channel), contact.name);
   }
 
   /** Avatar / tên / trạng thái kết bạn của hội thoại chưa gắn khách POS. */
   async getThreadProfile(actorId: number, pagePid: string, tid: string, isGroup: boolean) {
     const channel = await this.assertOwnChannel(actorId, pagePid);
-    const zaloId = this.assertTid(tid).slice(ZALOWEB_PREFIX.length);
-    return this.loadProfile(channel, isGroup ? 'group' : 'user', zaloId, null);
+    return this.loadProfile(channel, isGroup ? 'group' : 'user', this.assertTid(tid), null);
   }
 
   private async loadProfile(
     channel: SmaxPage,
     kind: 'user' | 'group',
-    zaloId: string,
+    tid: string,
     fallbackName: string | null,
   ) {
-    const tid = `${ZALOWEB_PREFIX}${zaloId}`;
-    const [thread, friend] = await Promise.all([
+    const zaloweb = channel.platform === 'zaloweb';
+    // Zalo cá nhân: ID Zalo (bỏ "zlw"); kênh khác: tid
+    const zaloId = zaloweb ? tid.slice(ZALOWEB_PREFIX.length) : tid;
+    const [thread, friend, aliases] = await Promise.all([
       this.smaxApi.getThread(channel.pid, tid).catch(() => null),
-      kind === 'user'
+      zaloweb && kind === 'user'
         ? this.smaxApi.getFriendStatus(channel.pid, zaloId).catch(() => null)
         : Promise.resolve(null),
+      zaloweb && kind === 'user' ? this.zaloAliases(channel.pid) : Promise.resolve(null),
     ]);
+    const alias = aliases?.get(tid) ?? null;
     return {
       kind,
       zaloId,
-      name: thread?.name || fallbackName || null,
+      platform: channel.platform,
+      // Smax báo không trả lời được qua API (Facebook ngoài 24h, Shopee…) → client cảnh báo
+      canReply: thread?.canReply ?? true,
+      // Bình luận bài viết: mở thẳng bài viết / bình luận trên Facebook
+      isComment: thread?.isComment ?? false,
+      // Messenger đang do Meta Business AI trả lời (bật/tắt trên POS)
+      controlledBy: thread?.controlledBy ?? null,
+      canPassControlAI: channel.platform === 'facebook' && !!thread && !thread.isComment && this.smaxApi.canReact,
+      commentUrl: thread?.commentUrl ?? null,
+      // Như Smax: tên gợi nhớ trên Zalo của kênh được ưu tiên hơn tên hội thoại trên Smax
+      name: alias || thread?.name || fallbackName || null,
+      // Tên trên Smax (sửa được từ POS) + tên gợi nhớ Zalo — để hộp đổi tên giải thích tên đang hiện
+      smaxName: thread?.name || null,
+      alias,
+      canRename: zaloweb && !!thread && this.smaxApi.canReact,
       avatar: thread?.avatar ?? null,
       memberCount: kind === 'group' ? thread?.memberCount ?? null : null,
       memberPreview: kind === 'group' ? thread?.memberPreview ?? [] : [],
@@ -578,12 +911,12 @@ export class SmaxChatService {
     actor: ChatActor,
     dto: { pagePid: string; contactId: number; action: 'request' | 'accept' | 'undo'; message?: string },
   ) {
-    const channel = await this.assertOwnChannel(actor.id, dto.pagePid);
+    const channel = await this.assertOwnChannel(actor.id, dto.pagePid, true);
     if (channel.connectionError) {
       throw new ConflictException(`Kênh "${channel.name}" đang mất kết nối`);
     }
     const contact = await this.getContact(customerId, dto.contactId);
-    if (contact.kind !== 'user') throw new BadRequestException('Chỉ kết bạn với Zalo cá nhân');
+    if (contact.kind !== 'user' || !isZaloContact(contact)) throw new BadRequestException('Chỉ kết bạn với Zalo cá nhân');
     const message = (dto.message || '').trim().slice(0, 150) || 'Xin chào, mình là ' + channel.name;
     const result =
       dto.action === 'undo'
@@ -615,7 +948,7 @@ export class SmaxChatService {
       where: { id: customerId },
       select: { code: true },
     });
-    return this.deliver(actor, dto, { kind: contact.kind as 'user' | 'group', zaloId: contact.zaloId }, {
+    return this.deliver(actor, dto, { kind: contact.kind as 'user' | 'group', tidFor: (ch) => this.contactThread(contact, ch) }, {
       entityType: 'customers',
       entityId: String(customerId),
       entityCode: customer?.code ?? undefined,
@@ -632,7 +965,7 @@ export class SmaxChatService {
     return this.deliver(
       actor,
       dto,
-      { kind: dto.isGroup ? 'group' : 'user', zaloId: tid.slice(ZALOWEB_PREFIX.length) },
+      { kind: dto.isGroup ? 'group' : 'user', tidFor: () => tid },
       { entityType: 'smax_threads', entityId: tid, label: `hội thoại ${tid} (chưa gắn khách POS)` },
     );
   }
@@ -640,7 +973,8 @@ export class SmaxChatService {
   private async deliver(
     actor: ChatActor,
     dto: SendContent & { pagePid: string },
-    target: { kind: 'user' | 'group'; zaloId: string },
+    // tid theo kênh đã kiểm tra (ID đã lưu phải đúng loại kênh)
+    target: { kind: 'user' | 'group'; tidFor: (channel: SmaxPage) => string },
     audit: { entityType: string; entityId: string; entityCode?: string; label: string },
   ) {
     const text = (dto.text || '').trim();
@@ -663,7 +997,7 @@ export class SmaxChatService {
       throw new BadRequestException('Chỉ chuyển tiếp được ảnh/tệp trên máy chủ Zalo');
     }
     const replyToPid = dto.replyToPid?.trim() || null;
-    if (replyToPid && (!/^zlw\d{3,25}$/.test(replyToPid) || !text)) {
+    if (replyToPid && (!/^[\w-]{3,200}$/.test(replyToPid) || !text)) {
       throw new BadRequestException('Trả lời tin cần có nội dung chữ');
     }
     if (
@@ -693,6 +1027,11 @@ export class SmaxChatService {
         `Kênh "${channel.name}" đang mất kết nối — làm mới kết nối trên Smax trước khi gửi`,
       );
     }
+    const zaloweb = channel.platform === 'zaloweb';
+    const tid = target.tidFor(channel);
+    if (zaloweb && !/^zlw\d{3,25}$/.test(tid)) throw new BadRequestException('Hội thoại không hợp lệ');
+    if (stickerId && !zaloweb) throw new BadRequestException('Sticker chỉ gửi được qua Zalo cá nhân');
+    const humanAgent = !!dto.humanAgent && channel.platform === 'facebook';
     if (this.confirmBeforeSend && !dto.confirmed) {
       throw new BadRequestException(
         'Môi trường thử nghiệm: cần xác nhận trước khi gửi tin tới khách thật',
@@ -700,7 +1039,8 @@ export class SmaxChatService {
     }
     this.checkRateLimit(actor.id);
 
-    const to = target.kind === 'group' ? { grid: target.zaloId } : { uid: target.zaloId };
+    const zaloId = tid.slice(ZALOWEB_PREFIX.length);
+    const to = target.kind === 'group' ? { grid: zaloId } : { uid: zaloId };
     const steps = this.buildSteps(text, attachments, urls, [
       ...slipImageUrls,
       ...productImageUrls,
@@ -711,16 +1051,24 @@ export class SmaxChatService {
       if (m.kind === 'file') steps.push({ label: 'tệp chuyển tiếp', content: { file: m.url } });
     }
     if (stickerId) steps.push({ label: 'sticker', content: { stickerId } });
-    const tid = `${ZALOWEB_PREFIX}${target.zaloId}`;
 
     // Gửi lần lượt; lỗi giữa chừng thì dừng, báo rõ phần nào đã gửi
     let sent = 0;
     let failure: string | null = null;
     for (const step of steps) {
       try {
-        // Trả lời: phần chữ đi qua thread để Zalo hiện trích dẫn
-        if (replyToPid && step.content.message && Object.keys(step.content).length === 1) {
-          await this.sendReply(channel.pid, tid, replyToPid, step.content.message);
+        const isText = !!step.content.message && Object.keys(step.content).length === 1;
+        if (!zaloweb) {
+          // Kênh khác: gửi vào thread; trả lời (trích dẫn) áp cho phần chữ
+          await this.smaxApi.sendThreadMessage(channel.pid, tid, {
+            ...(replyToPid && isText ? { replyToPid } : {}),
+            messages: threadParts(step.content).map((p) =>
+              humanAgent ? { ...p, message_tag: 'HUMAN_AGENT' } : p,
+            ),
+          });
+        } else if (replyToPid && isText) {
+          // Trả lời: phần chữ đi qua thread để Zalo hiện trích dẫn
+          await this.sendReply(channel.pid, tid, replyToPid, step.content.message!);
         } else {
           await this.smaxApi.sendZaloweb(channel.pid, to, step.content);
         }
@@ -738,13 +1086,14 @@ export class SmaxChatService {
       entityType: audit.entityType,
       entityId: audit.entityId,
       entityCode: audit.entityCode,
-      message: `Gửi tin Zalo (${target.kind === 'group' ? 'nhóm' : 'trực tiếp'}) qua kênh "${channel.name}" tới ${audit.label}`,
+      message: `Gửi tin ${zaloweb ? `Zalo (${target.kind === 'group' ? 'nhóm' : 'trực tiếp'})` : channel.platform} qua kênh "${channel.name}" tới ${audit.label}`,
       userId: actor.id,
       userName: actor.name,
       metadata: {
         pagePid: channel.pid,
+        platform: channel.platform,
         contactKind: target.kind,
-        zaloId: target.zaloId,
+        tid,
         text,
         attachments: attachments.map((a, i) => ({ kind: a.kind, name: a.name, url: urls[i] })),
         ...(qrImageUrl ? { qrImageUrl } : {}),
@@ -753,6 +1102,7 @@ export class SmaxChatService {
         ...(stickerId ? { stickerId } : {}),
         ...(replyToPid ? { replyToPid } : {}),
         ...(forwardMedia.length ? { forwardMedia } : {}),
+        ...(humanAgent ? { humanAgent } : {}),
         sentParts: sent,
         totalParts: steps.length,
         ...(failure ? { failure } : {}),
@@ -760,6 +1110,100 @@ export class SmaxChatService {
     });
     if (failure) throw new HttpException(failure, HttpStatus.BAD_GATEWAY);
     return { ok: true, sentParts: sent };
+  }
+
+  /** Kênh + nhóm Zalo nhận tin đặt xe giao hàng (để hiện trong modal trước khi gửi). */
+  async deliveryBookingTarget() {
+    const { pagePid, tid } = this.deliveryBooking;
+    const [channel, thread] = await Promise.all([
+      this.deliveryBookingChannel(),
+      this.smaxApi.getThread(pagePid, tid).catch(() => null),
+    ]);
+    return {
+      channelName: channel.name,
+      groupName: thread?.name ?? null,
+      connectionError: !!channel.connectionError,
+      confirmBeforeSend: this.confirmBeforeSend,
+    };
+  }
+
+  /**
+   * Nhân viên được chọn làm người gửi đặt xe cho chi nhánh (`null` = mọi nhân sự). Lark lỗi
+   * hoặc không khớp ai → `null` để không chặn việc đặt xe.
+   */
+  async deliveryBookingSenders(branchId: number): Promise<{ userIds: number[] | null }> {
+    const branch = await this.prisma.branch.findUnique({ where: { id: branchId }, select: { name: true } });
+    const scope = branch ? DELIVERY_SENDER_SCOPES[branch.name.trim()] : undefined;
+    if (!scope) return { userIds: null };
+    let openIds: Set<string>;
+    try {
+      openIds = await this.larkDirectory.openIdsInDepartments(scope.departments);
+    } catch (error) {
+      this.logger.warn(`Không đọc được phòng ban Lark ${scope.departments.join(', ')}: ${(error as Error).message}`);
+      return { userIds: null };
+    }
+    const users = await this.prisma.user.findMany({
+      where: { isActive: true, OR: [{ larkUserId: { in: [...openIds] } }, { name: { in: scope.users ?? [] } }] },
+      select: { id: true },
+    });
+    return { userIds: users.length ? users.map((u) => u.id) : null };
+  }
+
+  /**
+   * Đặt xe giao hàng cho 1 hoặc nhiều hóa đơn (1 tin, nhiều người nhận): gửi tin vào nhóm
+   * đặt xe qua kênh cố định — không cần kênh liên kết với người bấm (quyền invoices:update),
+   * ghi nhật ký theo từng hóa đơn.
+   */
+  async bookDelivery(
+    actor: ChatActor,
+    dto: { invoiceId?: number; invoiceIds?: number[]; text: string; confirmed?: boolean },
+  ) {
+    const text = dto.text.trim();
+    if (!text) throw new BadRequestException('Nội dung tin nhắn trống');
+    const ids = [...new Set(dto.invoiceIds?.length ? dto.invoiceIds : dto.invoiceId ? [dto.invoiceId] : [])];
+    if (!ids.length) throw new BadRequestException('Chưa chọn hóa đơn');
+    const invoices = await this.prisma.invoice.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, code: true },
+    });
+    if (invoices.length !== ids.length) throw new NotFoundException('Không tìm thấy hóa đơn');
+    const channel = await this.deliveryBookingChannel();
+    if (channel.connectionError) {
+      throw new ConflictException(
+        `Kênh "${channel.name}" đang mất kết nối — làm mới kết nối trên Smax trước khi gửi`,
+      );
+    }
+    if (this.confirmBeforeSend && !dto.confirmed) {
+      throw new BadRequestException('Môi trường thử nghiệm: cần xác nhận trước khi gửi tin');
+    }
+    this.checkRateLimit(actor.id);
+
+    const { tid } = this.deliveryBooking;
+    await this.smaxApi.sendZaloweb(channel.pid, { grid: tid.slice(ZALOWEB_PREFIX.length) }, { message: text });
+    const codes = invoices.map((i) => i.code);
+    for (const invoice of invoices) {
+      const others = codes.filter((c) => c !== invoice.code);
+      await this.auditLogs.create({
+        actionType: 'POST',
+        actionCode: 'SMAX_DELIVERY_BOOKING',
+        entityType: 'invoices',
+        entityId: String(invoice.id),
+        entityCode: invoice.code,
+        message: `Đặt xe giao hàng hóa đơn ${invoice.code}${
+          others.length ? ` (gộp chung chuyến với ${others.join(', ')})` : ''
+        }: gửi tin Zalo qua kênh "${channel.name}" vào nhóm đặt xe`,
+        userId: actor.id,
+        userName: actor.name,
+        metadata: { pagePid: channel.pid, tid, text, invoiceCodes: codes },
+      });
+    }
+    return { ok: true };
+  }
+
+  private async deliveryBookingChannel(): Promise<SmaxPage> {
+    const page = (await this.smaxApi.listPages()).find((p) => p.pid === this.deliveryBooking.pagePid);
+    if (!page) throw new NotFoundException('Kênh Zalo đặt xe không còn trên Smax');
+    return page;
   }
 
   /**
@@ -840,14 +1284,44 @@ export class SmaxChatService {
     return `${this.mediaPublicUrl}/uploads/${path}`;
   }
 
+  /**
+   * Lưu ID hội thoại cho khách: số Zalo (Zalo cá nhân), hoặc tid kênh khác (fb…, zl…, sp…) kèm
+   * pagePid. Mỗi khách 1 ID Zalo cá nhân và 1 hội thoại trực tiếp mỗi kênh khác (gắn lại = thay).
+   */
   async createContact(
     customerId: number,
-    actorId: number,
-    dto: { kind: 'user' | 'group'; zaloId: string; name?: string },
+    actor: { id: number; name: string },
+    dto: { kind: 'user' | 'group'; zaloId: string; name?: string; pagePid?: string },
   ) {
-    const zaloId = (dto.zaloId || '').trim();
-    if (!/^\d{5,25}$/.test(zaloId)) {
+    const contact = await this.saveContact(customerId, actor.id, dto);
+    // Lead chưa gắn có cùng ID Zalo (tra khi chuyển giao) / cùng hội thoại → tự gắn vào khách
+    const linkedLead = await this.leadLink
+      ?.linkByContact(customerId, contact, actor)
+      .catch((e) => {
+        this.logger.warn(`Gắn lead theo ID Zalo khách ${customerId} lỗi: ${(e as Error).message}`);
+        return null;
+      });
+    return { ...contact, linkedLead: linkedLead ?? null };
+  }
+
+  private async saveContact(
+    customerId: number,
+    actorId: number,
+    dto: { kind: 'user' | 'group'; zaloId: string; name?: string; pagePid?: string },
+  ) {
+    // tid Zalo cá nhân ("zlw" + số) → lưu số như ID nhập tay
+    const zaloId = (dto.zaloId || '').trim().replace(/^zlw(?=\d+$)/, '');
+    const isTid = !/^\d+$/.test(zaloId);
+    if (isTid ? !THREAD_TID.test(zaloId) : !/^\d{5,25}$/.test(zaloId)) {
       throw new BadRequestException('ID Zalo chỉ gồm chữ số');
+    }
+    let pagePid: string | null = null;
+    if (isTid) {
+      pagePid = dto.pagePid?.trim() || null;
+      const page = pagePid ? (await this.smaxApi.listPages()).find((p) => p.pid === pagePid) : null;
+      if (!page || page.platform === 'zaloweb') {
+        throw new BadRequestException('Hội thoại cần kèm đúng kênh (không phải Zalo cá nhân) trên Smax');
+      }
     }
     const customer = await this.prisma.customer.findUnique({
       where: { id: customerId },
@@ -855,9 +1329,9 @@ export class SmaxChatService {
     });
     if (!customer) throw new NotFoundException('Khách hàng không tồn tại');
     if (dto.kind === 'user') {
-      const existing = await this.prisma.customerZaloContact.findFirst({
-        where: { customerId, kind: 'user' },
-      });
+      const existing = (
+        await this.prisma.customerZaloContact.findMany({ where: { customerId, kind: 'user' } })
+      ).find((c) => (isTid ? !isZaloContact(c) && c.pagePid === pagePid : isZaloContact(c)));
       if (existing) {
         return this.prisma.customerZaloContact.update({
           where: { id: existing.id },
@@ -871,6 +1345,7 @@ export class SmaxChatService {
           customerId,
           kind: dto.kind,
           zaloId,
+          pagePid,
           name: dto.name?.trim() || null,
           createdById: actorId,
         },
@@ -908,10 +1383,12 @@ export class SmaxChatService {
     pagePid: string,
     refresh = false,
   ) {
-    const channel = await this.assertOwnChannel(actorId, pagePid);
-    const contacts = await this.prisma.customerZaloContact.findMany({
-      where: { customerId },
-    });
+    const channel = await this.assertOwnChannel(actorId, pagePid, true);
+    const contacts = (
+      await this.prisma.customerZaloContact.findMany({
+        where: { customerId },
+      })
+    ).filter(isZaloContact);
     const user = contacts.find((c) => c.kind === 'user');
     if (!user) {
       throw new BadRequestException(
@@ -982,21 +1459,23 @@ export class SmaxChatService {
   }
 
   /**
-   * Hội thoại mới nhất trên các kênh Zalo cá nhân của người gọi, khớp khách POS:
-   * theo ID Zalo đã lưu (mở được ngay), hoặc theo mã khách trong tên nhóm (gợi ý).
+   * Hội thoại mới nhất trên kênh của người gọi, khớp khách POS: theo ID đã lưu (mở được ngay),
+   * hoặc gợi ý theo mã khách trong tên nhóm / SĐT khách Smax thu được (Facebook…).
+   * Không truyền pagePid = mọi kênh Zalo cá nhân; truyền pagePid = đúng kênh đó (mọi nền tảng).
    */
-  async recentChats(actorId: number, pagePid?: string, limit = 30, q?: string) {
+  async recentChats(actorId: number, pagePid?: string, limit = 30, q?: string, fresh = false) {
     // Thanh thu gọn xin thêm khi bấm "…" (Smax: 100 hội thoại ~2s, nên chỉ lấy khi cần)
     const take = Math.min(200, Math.max(10, Math.round(limit)));
     const keyword = q?.trim().slice(0, 100) || undefined;
     const channels = (await this.myChannels(actorId)).filter(
-      (c) => !c.missing && c.platform === 'zaloweb' && (!pagePid || c.pagePid === pagePid),
+      (c) => !c.missing && (pagePid ? c.pagePid === pagePid : c.platform === 'zaloweb'),
     );
     if (!channels.length) return { items: [] };
     const pagePids = channels.map((c) => c.pagePid).sort();
     const key = `${pagePids.join(',')}:${take}:${keyword ?? ''}`;
     let cached = this.recentCache.get(key);
-    if (!cached || Date.now() - cached.at > RECENT_TTL_MS) {
+    // fresh (nút ⟳): lấy mới, nhưng dùng chung kết quả vừa lấy < 2s (bấm liên tục / nhiều người cùng kênh)
+    if (!cached || Date.now() - cached.at > (fresh ? 2_000 : RECENT_TTL_MS)) {
       // Mỗi từ khoá tìm là 1 mục cache → dọn mục hết hạn để map không phình
       for (const [k, v] of this.recentCache) if (Date.now() - v.at > RECENT_TTL_MS) this.recentCache.delete(k);
       cached = { at: Date.now(), threads: this.smaxApi.listRecentThreads(pagePids, take, keyword) };
@@ -1004,20 +1483,55 @@ export class SmaxChatService {
       cached.threads.catch(() => this.recentCache.delete(key));
     }
     let threads = await cached.threads;
+    // Tên gợi nhớ Zalo của kênh ưu tiên hơn tên Smax (như app Smax); không sửa mảng trong cache
+    const zalowebPages = [...new Set(threads.filter((t) => !t.isGroup && /^zlw\d+$/.test(t.tid)).map((t) => t.pagePid))];
+    const aliasByPage = new Map(
+      await Promise.all(zalowebPages.map(async (pid) => [pid, await this.zaloAliases(pid)] as const)),
+    );
+    threads = threads.map((t) => {
+      const alias = t.isGroup ? undefined : aliasByPage.get(t.pagePid)?.get(t.tid);
+      return alias ? { ...t, name: alias } : t;
+    });
     // Smax khớp cả thành viên nhóm & nội dung tin → chỉ giữ hội thoại khớp tên Zalo / tên nhóm
     if (keyword) threads = threads.filter((t) => foldVi(t.name).includes(foldVi(keyword)));
 
-    const zaloIds = threads.map((t) => t.tid.slice(ZALOWEB_PREFIX.length));
+    // ID đã lưu: số Zalo (Zalo cá nhân) hoặc tid (kênh khác)
+    const zalowebTid = (t: SmaxRecentThread) => /^zlw\d+$/.test(t.tid);
+    const idOf = (t: SmaxRecentThread) => (zalowebTid(t) ? t.tid.slice(ZALOWEB_PREFIX.length) : t.tid);
+    const zaloIds = threads.map(idOf);
     const codes = [
       ...new Set(threads.flatMap((t) => t.name.match(CUSTOMER_CODE_IN_NAME) ?? []).map((c) => c.toUpperCase())),
     ];
-    const [contacts, byCode] = await Promise.all([
+    // Hội thoại đã gắn lead (trang Lead) → hiện "Lead · tên", tránh tạo trùng; SĐT lead dùng để gợi ý khách
+    const leadConvs = await this.prisma.leadConversation.findMany({
+      where: { tid: { in: threads.map((t) => t.tid) } },
+      select: {
+        tid: true,
+        pagePid: true,
+        lead: { select: { id: true, name: true, status: true, phoneNormalized: true } },
+      },
+    });
+    const leadOf = (t: SmaxRecentThread) => leadConvs.find((l) => l.tid === t.tid && l.pagePid === t.pagePid)?.lead;
+    // SĐT để gợi ý gắn khách POS (kênh khác Zalo cá nhân): Smax thu được, có trong tin, SĐT lead
+    const phonesOf = (t: SmaxRecentThread): string[] =>
+      zalowebTid(t)
+        ? []
+        : [
+            ...new Set(
+              [...t.phones, ...(t.lastMessage.match(PHONE_IN_TEXT) ?? []), leadOf(t)?.phoneNormalized ?? '']
+                .map((p) => normalizeVnPhone(p))
+                .filter((p): p is string => !!p),
+            ),
+          ];
+    const phones = [...new Set(threads.flatMap(phonesOf))];
+    const [contacts, byCode, byPhone] = await Promise.all([
       this.prisma.customerZaloContact.findMany({
         where: { zaloId: { in: zaloIds } },
         select: {
           id: true,
           kind: true,
           zaloId: true,
+          pagePid: true,
           customer: { select: { id: true, code: true, name: true } },
         },
         orderBy: { createdAt: 'asc' },
@@ -1026,25 +1540,56 @@ export class SmaxChatService {
         where: { code: { in: codes } },
         select: { id: true, code: true, name: true },
       }),
+      // SĐT khách có thể kèm hậu tố trùng (".1") → so đầu chuỗi
+      phones.length
+        ? this.prisma.customer.findMany({
+            where: {
+              OR: phones.flatMap((p) => [{ contactNumber: { startsWith: p } }, { phone: { startsWith: p } }]),
+            },
+            select: { id: true, code: true, name: true, contactNumber: true, phone: true },
+            take: 100,
+          })
+        : Promise.resolve(
+            [] as { id: number; code: string | null; name: string; contactNumber: string | null; phone: string | null }[],
+          ),
     ]);
-    const contactByZalo = new Map<string, (typeof contacts)[number]>();
-    for (const c of contacts) if (!contactByZalo.has(c.zaloId)) contactByZalo.set(c.zaloId, c);
+    // 1 nhóm có thể gắn nhiều khách (vd nhóm chung các chi nhánh) → giữ tất cả, khách gắn trước đứng đầu
+    const contactsByZalo = new Map<string, (typeof contacts)[number][]>();
+    for (const c of contacts) contactsByZalo.set(c.zaloId, [...(contactsByZalo.get(c.zaloId) ?? []), c]);
     const customerByCode = new Map(byCode.map((c) => [c.code!.toUpperCase(), c]));
     const channelName = new Map(channels.map((c) => [c.pagePid, c.name]));
 
     return {
       items: threads.map((t) => {
-        const zaloId = t.tid.slice(ZALOWEB_PREFIX.length);
-        const contact = contactByZalo.get(zaloId);
+        const zaloId = idOf(t);
+        // tid kênh khác chỉ khớp ID lưu cho đúng trang
+        const linked = (contactsByZalo.get(zaloId) ?? []).filter(
+          (c) => zalowebTid(t) || c.pagePid === t.pagePid,
+        );
+        const contact = linked[0];
         const codeMatch = contact
           ? undefined
           : (t.name.match(CUSTOMER_CODE_IN_NAME) ?? [])
               .map((c) => customerByCode.get(c.toUpperCase()))
               .find(Boolean);
+        const tPhones = phonesOf(t);
+        const lead = leadOf(t);
+        const phoneMatch =
+          contact || codeMatch
+            ? undefined
+            : byPhone.find((c) => tPhones.some((p) => (c.contactNumber ?? '').startsWith(p) || (c.phone ?? '').startsWith(p)));
         return {
           tid: t.tid,
           zaloId,
           pagePid: t.pagePid,
+          platform: t.platform,
+          isComment: t.isComment,
+          phones: t.phones,
+          lead: lead ? { id: lead.id, name: lead.name, status: lead.status } : null,
+          // Messenger: bật/tắt Meta Business AI ngay trên danh sách (bật cần SMAX_USER_TOKEN)
+          controlledBy: t.controlledBy,
+          canPassControlAI: t.platform === 'facebook' && !t.isComment && this.smaxApi.canReact,
+          canReply: t.canReply,
           channelName: channelName.get(t.pagePid) ?? '',
           name: t.name,
           isGroup: t.isGroup,
@@ -1055,12 +1600,20 @@ export class SmaxChatService {
           avatar: t.avatar,
           memberPreview: t.memberPreview,
           smaxUrl: `https://smax.ai/bizs/${this.smaxApi.bizAlias}/chats/${t.pagePid}?tid=${t.tid}`,
-          // linked: đã lưu ID Zalo → mở ngay; byCode: đoán theo mã khách trong tên nhóm
+          // linked: đã lưu ID → mở ngay; byCode / byPhone: gợi ý theo mã khách trong tên nhóm / SĐT
           match: contact
-            ? { type: 'linked' as const, customer: contact.customer, contactId: contact.id, kind: contact.kind }
+            ? {
+                type: 'linked' as const,
+                customer: contact.customer,
+                contactId: contact.id,
+                kind: contact.kind,
+                customers: linked.map((c) => ({ ...c.customer, contactId: c.id })),
+              }
             : codeMatch
               ? { type: 'byCode' as const, customer: codeMatch }
-              : null,
+              : phoneMatch
+                ? { type: 'byPhone' as const, customer: { id: phoneMatch.id, code: phoneMatch.code, name: phoneMatch.name } }
+                : null,
         };
       }),
     };
@@ -1075,31 +1628,35 @@ export class SmaxChatService {
     const m = compact.match(pattern) ?? compact.replace(/\./g, '').match(pattern);
     if (!m) throw new BadRequestException('Số điện thoại không hợp lệ');
     const digits = `84${m[1]}`;
-    const channel = await this.assertOwnChannel(actorId, pagePid);
+    const channel = await this.assertOwnChannel(actorId, pagePid, true);
     // Bọc trong object: body rỗng (null) làm client parse JSON lỗi
     return { friend: await this.smaxApi.findFriendByPhone(channel.pid, digits) };
   }
 
   // ───────────────────────────── helpers ─────────────────────────────
 
-  /** Kênh phải liên kết với chính người gọi, còn trên Smax và là Zalo cá nhân. */
+  /**
+   * Kênh phải liên kết với chính người gọi và còn trên Smax. zalowebOnly: thao tác chỉ Zalo cá
+   * nhân có (thả cảm xúc, thu hồi, kết bạn, quét nhóm chung, tra SĐT Zalo).
+   */
   private async assertOwnChannel(
     userId: number,
     pagePid: string,
+    zalowebOnly = false,
   ): Promise<SmaxPage> {
-    if (!pagePid) throw new BadRequestException('Chưa chọn kênh Zalo');
+    if (!pagePid) throw new BadRequestException('Chưa chọn kênh');
     const link = await this.prisma.smaxChannelUser.findUnique({
       where: { pagePid_userId: { pagePid, userId } },
     });
     if (!link) {
-      throw new ForbiddenException('Kênh Zalo này không liên kết với tài khoản của bạn');
+      throw new ForbiddenException('Kênh này không liên kết với tài khoản của bạn');
     }
     const page = (await this.smaxApi.listPages()).find((p) => p.pid === pagePid);
     if (!page) {
-      throw new NotFoundException('Kênh Zalo không còn trên Smax');
+      throw new NotFoundException('Kênh không còn trên Smax');
     }
-    if (page.platform !== 'zaloweb') {
-      throw new BadRequestException('Chưa hỗ trợ chat qua Zalo OA trong POS');
+    if (zalowebOnly && page.platform !== 'zaloweb') {
+      throw new BadRequestException('Thao tác này chỉ có trên kênh Zalo cá nhân');
     }
     return page;
   }
@@ -1112,6 +1669,19 @@ export class SmaxChatService {
       throw new NotFoundException('Không tìm thấy ID Zalo của khách');
     }
     return contact;
+  }
+
+  /**
+   * Kênh Zalo cá nhân đã liên kết với 1 người dùng (vd Sale PIC khi CSKH chuyển giao lead thay
+   * mặt Sale): còn trên Smax, đúng loại Zalo cá nhân.
+   */
+  userZaloChannel(userId: number, pagePid: string): Promise<SmaxPage> {
+    return this.assertOwnChannel(userId, pagePid, true);
+  }
+
+  /** Giới hạn tần suất gửi tin chung cho mọi luồng gửi Zalo của 1 người dùng. */
+  assertSendRate(userId: number) {
+    this.checkRateLimit(userId);
   }
 
   private checkRateLimit(userId: number) {
@@ -1139,6 +1709,8 @@ export class SmaxChatService {
     const seen = new Set<string>();
     return raw
       .filter((m) => {
+        // Đã xoá phía mình → ẩn như trên Zalo
+        if (m.deleted?.at) return false;
         const key = m.pid || m.id;
         if (seen.has(key)) return false;
         seen.add(key);
@@ -1146,6 +1718,15 @@ export class SmaxChatService {
       })
       .map((m) => {
         const fromMe = m.sender_pid === pagePid;
+        // Ảnh/tệp nằm ở phần riêng của nền tảng: m.zaloweb, m.zalo, m.facebook, m.shopee…
+        const part = (m.zaloweb ??
+          (m as unknown as Record<string, { attachments?: NonNullable<SmaxRawMessage['zaloweb']>['attachments'] }>)[
+            m.platform ?? ''
+          ]) as { attachments?: NonNullable<SmaxRawMessage['zaloweb']>['attachments'] } | undefined;
+        // Sticker Zalo OA: Smax lưu thành attachment type "sticker" (link ảnh oasticker)
+        const oaSticker =
+          part?.attachments?.find((a) => a?.type === 'sticker' && a.url)?.url ?? null;
+        const fbSticker = m.facebook?.sticker || oaSticker || null;
         return {
           id: m.pid || m.id,
           text: m.message ?? '',
@@ -1155,16 +1736,18 @@ export class SmaxChatService {
           senderName: fromMe
             ? null
             : (m.sender_pid && members[m.sender_pid]) || null,
-          attachments: (m.zaloweb?.attachments ?? [])
+          // Sticker Facebook / Zalo OA đã hiện qua stickerImage → bỏ attachment trùng
+          attachments: (fbSticker ? [] : (part?.attachments ?? []))
             .filter((a) => a?.url)
             .map((a) => ({
               url: a.url as string,
-              thumbnail: a.thumbnail ?? null,
-              title: a.title ?? '',
-              type: a.type ?? 'file',
+              thumbnail: a.thumbnail ?? a.url_preview ?? null,
+              title: a.title ?? a.name ?? '',
+              type: a.type ?? mimeKind(a.mime_type),
             })),
           albumId: m.zaloweb?.group_layout_id ?? null,
           stickerId: m.zaloweb?.sticker_id ? String(m.zaloweb.sticker_id) : null,
+          stickerImage: fbSticker,
           quote: m.zaloweb?.quote
             ? {
                 pid: m.zaloweb.quote.global_msg_id ? `${ZALOWEB_PREFIX}${m.zaloweb.quote.global_msg_id}` : null,
@@ -1173,6 +1756,7 @@ export class SmaxChatService {
               }
             : null,
           reactions: groupReactions(m.zaloweb?.customer_reactions, pagePid, avatars),
+          recalled: m.status === 'deleted',
           createdAt: m.created_at,
         };
       })
@@ -1181,6 +1765,12 @@ export class SmaxChatService {
           new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
       );
   }
+}
+
+/** Loại tệp theo mime_type Facebook ("image", "image/png", "video/mp4"…) → image | video | audio | file. */
+function mimeKind(mime?: string): string {
+  const kind = mime?.split('/')[0];
+  return kind === 'image' || kind === 'video' || kind === 'audio' ? kind : 'file';
 }
 
 /** Tên tệp an toàn cho URL: bỏ dấu tiếng Việt, ký tự lạ → "-", giữ đuôi. */
