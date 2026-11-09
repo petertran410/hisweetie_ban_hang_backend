@@ -592,6 +592,14 @@ export class InvoicesService {
       if (toUpdatedDate) where.updatedAt.lte = new Date(toUpdatedDate);
     }
 
+    if (query.fromMisaSyncedDate || query.toMisaSyncedDate) {
+      where.misaSyncedAt = {};
+      if (query.fromMisaSyncedDate)
+        where.misaSyncedAt.gte = new Date(query.fromMisaSyncedDate);
+      if (query.toMisaSyncedDate)
+        where.misaSyncedAt.lte = new Date(query.toMisaSyncedDate);
+    }
+
     // Filter theo người tạo (chỉ áp dụng khi user có quyền xem data người khác)
     if (query.createdByIds?.length && !where.createdBy) {
       where.createdBy = { in: query.createdByIds };
@@ -6654,6 +6662,14 @@ export class InvoicesService {
         where.updatedAt.gte = new Date(query.fromUpdatedDate);
       if (query.toUpdatedDate)
         where.updatedAt.lte = new Date(query.toUpdatedDate);
+    }
+
+    if (query.fromMisaSyncedDate || query.toMisaSyncedDate) {
+      where.misaSyncedAt = {};
+      if (query.fromMisaSyncedDate)
+        where.misaSyncedAt.gte = new Date(query.fromMisaSyncedDate);
+      if (query.toMisaSyncedDate)
+        where.misaSyncedAt.lte = new Date(query.toMisaSyncedDate);
     }
 
     if (query.createdByIds?.length) {

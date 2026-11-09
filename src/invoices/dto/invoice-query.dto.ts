@@ -134,6 +134,15 @@ export class InvoiceQueryDto {
   @IsDateString()
   toUpdatedDate?: string;
 
+  /** Lọc theo thời gian hóa đơn được đẩy lên Misa (misaSyncedAt) */
+  @IsOptional()
+  @IsDateString()
+  fromMisaSyncedDate?: string;
+
+  @IsOptional()
+  @IsDateString()
+  toMisaSyncedDate?: string;
+
   @IsOptional()
   @IsString()
   invoiceCodeSearch?: string;
