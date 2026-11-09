@@ -1,5 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 import { CustomerDemandService } from './customer-demand.service';
+import { LarkCustomerDemandNotificationService } from './lark-customer-demand-notification.service';
 
 describe('CustomerDemandService', () => {
   const repository = {
@@ -8,16 +9,20 @@ describe('CustomerDemandService', () => {
     findMonthById: jest.fn(),
     findCustomer: jest.fn(),
     createConfirmed: jest.fn(),
+    updateDemand: jest.fn(),
     updateMonth: jest.fn(),
+    cancelMonth: jest.fn(),
     findById: jest.fn(),
     findSummaryMonths: jest.fn(),
     findExportMonths: jest.fn(),
     searchCustomerIds: jest.fn(),
   };
   const auditLogs = { create: jest.fn() };
+  const larkNotification = { notifyDemandSavedAsync: jest.fn() };
   const service = new CustomerDemandService(
     repository as any,
     auditLogs as any,
+    larkNotification as any,
   );
 
   beforeEach(() => {
@@ -666,6 +671,156 @@ describe('CustomerDemandService', () => {
           expect.objectContaining({ productId: 1, inputUnit: 'CARTON' }),
         ],
       }),
+    );
+  });
+
+  describe('thông báo Lark sau khi lưu', () => {
+    const input = {
+      customerId: 1,
+      note: 'Ghi chú mới',
+      months: [{
+        month: '2026-10',
+        lines: [{ productId: 1, quantity: 10, unit: 'BASE' as const }],
+      }],
+    };
+    const saved = () => ({
+      id: 99,
+      customer: { id: 1, code: 'KH001', name: 'Khách OEM' },
+      note: input.note,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      months: [{
+        id: 10,
+        demandMonth: new Date('2026-10-01T00:00:00.000Z'),
+        status: 'CONFIRMED',
+        lines: [{
+          id: 100,
+          productId: 1,
+          product: { id: 1, name: 'Sản phẩm 1', unit: 'gói' },
+          inputQuantity: 10,
+          inputUnit: 'BASE',
+          quantityBase: 10,
+          conversionValue: 1,
+        }],
+      }],
+    });
+
+    beforeEach(() => {
+      repository.findCustomer.mockResolvedValue({ id: 1 });
+      repository.createConfirmed.mockResolvedValue(99);
+      repository.updateDemand.mockResolvedValue(99);
+      repository.updateMonth.mockResolvedValue(10);
+      repository.findById.mockImplementation(async () => saved());
+      const row = saved();
+      repository.findMonthById.mockResolvedValue({
+        ...row.months[0],
+        demandId: row.id,
+        demand: { id: row.id, customerId: 1, note: row.note },
+      });
+    });
+
+    it.each(['tạo mới', 'sao chép thành phiếu mới'])('%s gửi đúng một snapshot đã lưu', async () => {
+      const result = await service.create(input, 7);
+      expect(larkNotification.notifyDemandSavedAsync).toHaveBeenCalledTimes(1);
+      expect(larkNotification.notifyDemandSavedAsync).toHaveBeenCalledWith(result, 'CREATED');
+      expect(result.months[0].lines[0].quantityBase).toBe(10);
+    });
+
+    it('không gửi trước khi giao dịch lưu và đọc chi tiết hoàn tất', async () => {
+      let finishSave!: (id: number) => void;
+      repository.createConfirmed.mockReturnValueOnce(
+        new Promise<number>((resolve) => { finishSave = resolve; }),
+      );
+      const pending = service.create(input, 7);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(larkNotification.notifyDemandSavedAsync).not.toHaveBeenCalled();
+      expect(repository.findById).not.toHaveBeenCalled();
+      finishSave(99);
+      const result = await pending;
+      expect(larkNotification.notifyDemandSavedAsync).toHaveBeenCalledWith(result, 'CREATED');
+    });
+
+    it('cập nhật phiếu gửi đúng một thông báo cập nhật', async () => {
+      const result = await service.update(99, {
+        note: input.note,
+        months: [{ ...input.months[0], id: 10 }],
+      }, 7);
+      expect(larkNotification.notifyDemandSavedAsync).toHaveBeenCalledTimes(1);
+      expect(larkNotification.notifyDemandSavedAsync).toHaveBeenCalledWith(result, 'UPDATED');
+    });
+
+    it('cập nhật tháng chỉ thông báo snapshot tháng vừa sửa, không gửi tháng khác', async () => {
+      const row = saved();
+      row.months.push({ ...row.months[0], id: 11, demandMonth: new Date('2026-11-01') });
+      repository.findById.mockResolvedValueOnce(row);
+      const result = await service.updateMonth(10, {
+        note: input.note,
+        lines: input.months[0].lines,
+      }, 7);
+      expect(result.months).toHaveLength(2);
+      expect(larkNotification.notifyDemandSavedAsync).toHaveBeenCalledTimes(1);
+      expect(larkNotification.notifyDemandSavedAsync).toHaveBeenCalledWith({
+        ...result,
+        months: [result.months[0]],
+      }, 'UPDATED');
+    });
+
+    it('validation hoặc lưu tạo mới thất bại không gửi', async () => {
+      repository.findCustomer.mockResolvedValueOnce(null);
+      await expect(service.create(input, 7)).rejects.toBeInstanceOf(BadRequestException);
+      repository.createConfirmed.mockRejectedValueOnce(new Error('save failed'));
+      await expect(service.create(input, 7)).rejects.toThrow('save failed');
+      expect(larkNotification.notifyDemandSavedAsync).not.toHaveBeenCalled();
+    });
+
+    it('lưu cập nhật phiếu hoặc tháng thất bại không gửi', async () => {
+      repository.updateDemand.mockRejectedValueOnce(new Error('update failed'));
+      await expect(service.update(99, {
+        months: [{ ...input.months[0], id: 10 }],
+      }, 7)).rejects.toThrow('update failed');
+      repository.updateMonth.mockRejectedValueOnce(new Error('month failed'));
+      await expect(service.updateMonth(10, {
+        lines: input.months[0].lines,
+      }, 7)).rejects.toThrow('month failed');
+      expect(larkNotification.notifyDemandSavedAsync).not.toHaveBeenCalled();
+    });
+
+    it('hủy tháng không gửi thông báo', async () => {
+      repository.cancelMonth.mockResolvedValueOnce({ id: 10, status: 'CANCELLED' });
+      await service.cancelMonth(10, {}, 7);
+      expect(larkNotification.notifyDemandSavedAsync).not.toHaveBeenCalled();
+    });
+
+    it.each(['missing-config', 'api-error', 'exception', 'pending'])(
+      'tạo và sửa vẫn trả thành công khi Lark %s',
+      async (mode) => {
+        const createMessage = jest.fn();
+        if (mode === 'api-error') {
+          createMessage.mockResolvedValue({ code: 230002, msg: 'Bot not in chat' });
+        } else if (mode === 'exception') {
+          createMessage.mockRejectedValue(new Error('network unavailable'));
+        } else {
+          createMessage.mockReturnValue(new Promise(() => {}));
+        }
+        const notifier = new LarkCustomerDemandNotificationService(
+          { im: { message: { create: createMessage } } } as any,
+          { get: () => mode === 'missing-config' ? '' : 'oc_demand_test' } as any,
+        );
+        const warn = jest.spyOn((notifier as any).logger, 'warn').mockImplementation();
+        const integrated = new CustomerDemandService(repository as any, auditLogs as any, notifier);
+        try {
+          await expect(integrated.create(input, 7)).resolves.toMatchObject({ id: 99 });
+          await expect(integrated.update(99, {
+            months: [{ ...input.months[0], id: 10 }],
+          }, 7)).resolves.toMatchObject({ id: 99 });
+          await expect(integrated.updateMonth(10, {
+            lines: input.months[0].lines,
+          }, 7)).resolves.toMatchObject({ id: 99 });
+          expect(createMessage).toHaveBeenCalledTimes(mode === 'missing-config' ? 0 : 3);
+        } finally {
+          warn.mockRestore();
+        }
+      },
     );
   });
 });

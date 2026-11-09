@@ -16,6 +16,7 @@ import {
 } from '../dto';
 import * as ExcelJS from 'exceljs';
 import { Response } from 'express';
+import { LarkCustomerDemandNotificationService } from './lark-customer-demand-notification.service';
 
 const LEGACY_LARK_DEMAND_NOTE = 'Đồng bộ tự động từ LarkBase';
 
@@ -24,6 +25,7 @@ export class CustomerDemandService {
   constructor(
     private readonly repository: CustomerDemandRepository,
     private readonly auditLogs: AuditLogsService,
+    private readonly larkNotification: LarkCustomerDemandNotificationService,
   ) {}
 
   async list(query: CustomerDemandQueryDto) {
@@ -571,7 +573,9 @@ export class CustomerDemandService {
       userName: 'System',
       snapshot: { customerId: dto.customerId, months },
     });
-    return this.get(id);
+    const demand = await this.get(id);
+    this.larkNotification.notifyDemandSavedAsync(demand, 'CREATED');
+    return demand;
   }
 
   async update(id: number, dto: UpdateCustomerDemandDto, userId: number) {
@@ -599,7 +603,9 @@ export class CustomerDemandService {
       updatedBy: userId,
       months,
     });
-    return this.get(id);
+    const demand = await this.get(id);
+    this.larkNotification.notifyDemandSavedAsync(demand, 'UPDATED');
+    return demand;
   }
 
   async updateMonth(
@@ -655,7 +661,15 @@ export class CustomerDemandService {
       updatedBy: userId,
       confirmedChange,
     });
-    return this.get(current.demandId);
+    const demand = await this.get(current.demandId);
+    this.larkNotification.notifyDemandSavedAsync(
+      {
+        ...demand,
+        months: demand.months.filter((month) => month.id === id),
+      },
+      'UPDATED',
+    );
+    return demand;
   }
 
   async cancelMonth(
