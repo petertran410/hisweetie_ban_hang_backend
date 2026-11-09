@@ -11,6 +11,10 @@ import * as ExcelJS from 'exceljs';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
+  findInvoiceQuantityMismatches,
+  InvoiceQuantityMismatchItem,
+} from './invoice-quantity-mismatch';
+import {
   CreateInvoiceDto,
   UpdateInvoiceDto,
   InvoiceQueryDto,
@@ -62,6 +66,10 @@ import { PackingSlipsService } from '../packing-slips/packing-slips.service';
 import { mapColdCargoInvoice } from '../common/cold-cargo.util';
 import { PromotionsService } from '../promotions/promotions.service';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
+import {
+  LarkInvoiceQuantityNotificationService,
+  quantityMismatchSignature,
+} from '../lark-sync/services/lark-invoice-quantity-notification.service';
 import { MetaPurchaseOutboxService } from '../meta-purchase/meta-purchase-outbox.service';
 import { TiktokEventsOutboxService } from '../tiktok-events/tiktok-events-outbox.service';
 import {
@@ -194,6 +202,19 @@ const INVOICE_LIST_SELECT = {
   },
 } as const;
 
+/** Lý do cảnh báo của một hóa đơn trên danh sách (tooltip icon ⚠). */
+interface InvoiceListWarnings {
+  price: {
+    productCode: string;
+    productName: string;
+    price: number;
+    listPrice: number;
+  }[];
+  quantity: InvoiceQuantityMismatchItem[];
+  orderCode: string | null;
+  previousInvoiceCodes: string[];
+}
+
 @Injectable()
 export class InvoicesService {
   constructor(
@@ -207,6 +228,8 @@ export class InvoicesService {
     private metaPurchaseOutbox: MetaPurchaseOutboxService,
     private tiktokOutbox: TiktokEventsOutboxService,
     @Optional() private realtime?: RealtimeService,
+    @Optional()
+    private invoiceQtyNotifier?: LarkInvoiceQuantityNotificationService,
   ) {}
 
   async resolveScan(
@@ -1083,42 +1106,92 @@ export class InvoicesService {
     return summaries;
   }
 
+  /**
+   * Cảnh báo trên danh sách hóa đơn (icon ⚠ + tooltip lý do):
+   * - Lệch giá: bảng giá 2/3, dòng có (price - discount) < giá niêm yết đang active.
+   * - Lệch số lượng: xem findInvoiceQuantityMismatches (đơn tách giao so với SL còn lại).
+   * Bỏ qua hóa đơn đã hủy.
+   */
   private async attachPriceBookWarnings<T extends { id: number }>(
     invoices: T[],
-  ): Promise<(T & { hasPriceBookWarning: boolean })[]> {
+  ): Promise<
+    (T & {
+      hasPriceBookWarning: boolean;
+      hasQuantityWarning: boolean;
+      warnings: InvoiceListWarnings | null;
+    })[]
+  > {
     if (invoices.length === 0) return [];
 
-    const candidates = invoices.filter(
+    const active = invoices.filter(
       (invoice) =>
-        ![INVOICE_STATUS.CANCELLED].includes((invoice as any).status) &&
-        [2, 3].includes(Number((invoice as any).priceBookId)),
+        ![INVOICE_STATUS.CANCELLED].includes((invoice as any).status),
     );
-    const candidateIds = candidates.map((invoice) => invoice.id);
-    const warningIds = new Set<number>();
+    const priceIds = active
+      .filter((invoice) => [2, 3].includes(Number((invoice as any).priceBookId)))
+      .map((invoice) => invoice.id);
+    const activeIds = active.map((invoice) => invoice.id);
+    const warnings = new Map<number, InvoiceListWarnings>();
+    const entry = (id: number) => {
+      let w = warnings.get(id);
+      if (!w) {
+        w = { price: [], quantity: [], orderCode: null, previousInvoiceCodes: [] };
+        warnings.set(id, w);
+      }
+      return w;
+    };
 
-    if (candidateIds.length > 0) {
-      const rows = await this.prisma.$queryRaw<{ id: number }[]>`
-        SELECT DISTINCT i.id
+    const [priceRows, quantityMismatches] = await Promise.all([
+      priceIds.length > 0
+        ? this.prisma.$queryRaw<
+            {
+              id: number;
+              productCode: string;
+              productName: string;
+              price: Prisma.Decimal;
+              listPrice: Prisma.Decimal;
+            }[]
+          >`
+        SELECT DISTINCT i.id, d."productCode", d."productName",
+               (d.price - d.discount) AS price, pbd.price AS "listPrice"
          FROM invoices i
-         WHERE i.id IN (${Prisma.join(candidateIds)})
+         JOIN invoice_details d ON d."invoiceId" = i.id
+         JOIN price_book_details pbd
+           ON pbd."productId" = d."productId"
+          AND pbd."priceBookId" = i."priceBookId"
+          AND pbd."isActive" = true
+         WHERE i.id IN (${Prisma.join(priceIds)})
            AND i.status <> 2
            AND i."priceBookId" IN (2, 3)
-           AND EXISTS (
-             SELECT 1 FROM invoice_details d
-             JOIN price_book_details pbd
-               ON pbd."productId" = d."productId"
-              AND pbd."priceBookId" = i."priceBookId"
-              AND pbd."isActive" = true
-             WHERE d."invoiceId" = i.id
-               AND (d.price - d.discount) < pbd.price
-           )`;
-      rows.forEach((row) => warningIds.add(Number(row.id)));
+           AND (d.price - d.discount) < pbd.price`
+        : Promise.resolve([]),
+      findInvoiceQuantityMismatches(this.prisma, activeIds),
+    ]);
+
+    for (const row of priceRows) {
+      entry(Number(row.id)).price.push({
+        productCode: row.productCode,
+        productName: row.productName,
+        price: Number(row.price),
+        listPrice: Number(row.listPrice),
+      });
+    }
+    for (const [id, m] of quantityMismatches) {
+      const w = entry(id);
+      w.orderCode = m.orderCode;
+      w.previousInvoiceCodes = m.previousInvoiceCodes;
+      w.quantity = m.items;
     }
 
-    return invoices.map((invoice) => ({
-      ...invoice,
-      hasPriceBookWarning: warningIds.has(invoice.id),
-    }));
+    return invoices.map((invoice) => {
+      const w = warnings.get(invoice.id) ?? null;
+      return {
+        ...invoice,
+        hasPriceBookWarning: (w?.price.length ?? 0) > 0,
+        hasQuantityWarning: (w?.quantity.length ?? 0) > 0,
+        warnings: w,
+      };
+    });
   }
 
   private async getInvoiceStatusCounts(where: any) {
@@ -2368,6 +2441,14 @@ export class InvoicesService {
       this.larkProductSync.enqueueSync(productId);
     }
 
+    // Hóa đơn gắn đơn đặt mà SL lệch → báo nhóm Lark kho (fire-and-forget)
+    if (result?.orderId) {
+      this.invoiceQtyNotifier?.notifyAsync(result.id, {
+        action: 'create',
+        actorId: userId,
+      });
+    }
+
     return result;
   }
 
@@ -2957,6 +3038,13 @@ export class InvoicesService {
   ) {
     await this.findOne(id);
     this.assertCancellationAuthorized(dto, options);
+
+    // Lệch SL trước khi sửa: sửa xong mà lệch y như cũ thì không báo Lark lại
+    const qtySignatureBefore = this.invoiceQtyNotifier
+      ? quantityMismatchSignature(
+          (await findInvoiceQuantityMismatches(this.prisma, [id])).get(id),
+        )
+      : '';
 
     // Danh sách packing slip (giao-hang) bị ảnh hưởng bởi versioning để gửi lại Zalo
     // sau khi transaction commit (fire-and-forget).
@@ -4069,6 +4157,11 @@ export class InvoicesService {
         orderId: result.orderId,
         branchId: result.branchId,
       });
+      this.invoiceQtyNotifier?.notifyAsync(result.id, {
+        action: 'update',
+        actorId: userId,
+        previousSignature: qtySignatureBefore,
+      });
     }
 
     return result;
@@ -4982,6 +5075,12 @@ export class InvoicesService {
       orderId,
       branchId: created?.branchId,
     });
+    if (created) {
+      this.invoiceQtyNotifier?.notifyAsync(created.id, {
+        action: 'create',
+        actorId: userId,
+      });
+    }
     return created;
   }
 
