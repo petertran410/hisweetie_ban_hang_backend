@@ -9,6 +9,9 @@ const toNumberArray = ({ value }: { value: any }) => {
 
 export class ProductionQueryDto {
   @IsOptional()
+  @Transform(toNumberArray)
+  manufacturerIds?: number[];
+  @IsOptional()
   @Transform(({ value }) => {
     if (!value) return undefined;
     if (Array.isArray(value)) return value.map(Number);

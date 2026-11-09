@@ -33,6 +33,7 @@ import {
 import { recalcSupplierDebt } from '../common/supplier-debt.util';
 import { PurchaseOrdersService } from '../purchase-orders/purchase-orders.service';
 import { CreatePurchaseOrderDto } from '../purchase-orders/dto';
+import { ExternalProductionsService } from '../manufacturers/external-productions.service';
 import {
   PRODUCTION_STATUS,
   computeWeightedAverageCost,
@@ -42,6 +43,8 @@ import {
 // Quan hệ đọc kèm phiếu để hiển thị nhà máy / NCC / phiếu nhập nhận hàng
 // của phiếu Gửi sản xuất.
 const PRODUCTION_PARTNER_INCLUDE = {
+  manufacturer: { select: { id: true, code: true, name: true, supplierId: true } },
+  manufacturerMaterials: true,
   factory: { select: { id: true, code: true, name: true } },
   supplier: { select: { id: true, code: true, name: true } },
   purchaseOrders: {
@@ -57,6 +60,7 @@ export class ProductionsService {
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
     private purchaseOrdersService: PurchaseOrdersService,
+    private externalProductions?: ExternalProductionsService,
   ) {}
 
   // Bộ lọc dùng chung cho findAll + export (tổng quan/chi tiết) để file xuất
@@ -95,6 +99,9 @@ export class ProductionsService {
     }
     if (query.supplierIds?.length) {
       where.supplierId = { in: query.supplierIds };
+    }
+    if (query.manufacturerIds?.length) {
+      where.manufacturerId = { in: query.manufacturerIds };
     }
     if (query.createdByIds?.length) {
       where.createdById = { in: query.createdByIds };
@@ -289,9 +296,13 @@ export class ProductionsService {
       { header: 'Công thức', key: 'formulaName', width: 18 },
       { header: 'Mã nguyên liệu', key: 'componentCode', width: 16 },
       { header: 'Tên nguyên liệu', key: 'componentName', width: 30 },
-      { header: 'SL nguyên liệu (g)', key: 'actualGrams', width: 16 },
+      { header: 'SL nguyên liệu', key: 'actualGrams', width: 16 },
       { header: 'Định lượng (g)', key: 'formulaGrams', width: 14 },
       { header: 'SL trừ kho', key: 'unitsDeducted', width: 14 },
+      { header: 'Nguồn nguyên liệu', key: 'materialSource', width: 20 },
+      { header: 'Đơn vị', key: 'materialUnit', width: 12 },
+      { header: 'Tiền nguyên liệu NSX', key: 'materialAmount', width: 20 },
+      { header: 'Tiền tệ', key: 'currency', width: 10 },
     ];
 
     const headerRow = sheet.getRow(1);
@@ -313,7 +324,7 @@ export class ProductionsService {
         skip: cursor,
         take: BATCH_SIZE,
         orderBy: { createdAt: 'desc' },
-        include: { components: true },
+        include: { components: true, manufacturerMaterials: true },
       });
 
       if (batch.length === 0) break;
@@ -342,7 +353,6 @@ export class ProductionsService {
             unitsDeducted: 0,
           });
           row.commit();
-          continue;
         }
 
         for (const c of p.components) {
@@ -353,8 +363,18 @@ export class ProductionsService {
             formulaGrams: Number(c.formulaGrams) || 0,
             actualGrams: Number(c.actualGrams) || 0,
             unitsDeducted: Number(c.unitsDeducted) || 0,
+            materialSource: p.manufacturerId ? 'Của mình' : '',
+            materialUnit: c.unit ?? 'g',
           });
           row.commit();
+        }
+        for (const c of p.manufacturerMaterials) {
+          sheet.addRow({
+            ...base, componentCode: c.productCode ?? '', componentName: c.description,
+            actualGrams: c.quantity == null ? '' : Number(c.quantity), unitsDeducted: 0,
+            materialSource: 'NSX bổ sung', materialUnit: c.unit ?? '',
+            materialAmount: Number(c.amount), currency: p.feeCurrency,
+          }).commit();
         }
       }
 
@@ -379,6 +399,13 @@ export class ProductionsService {
   }
 
   async create(dto: CreateProductionDto, userId: number) {
+    if (dto.isExternal) {
+      if (!dto.manufacturerId) throw new BadRequestException('Vui lòng chọn nhà sản xuất');
+      return this.externalProductions!.save(dto, userId);
+    }
+    if (dto.manufacturerId || dto.ownMaterials || dto.manufacturerMaterials) {
+      throw new BadRequestException('Nguyên liệu ngoài chỉ dùng cho phiếu gửi sản xuất');
+    }
     const { product, formula } = await this.loadProductWithFormula(
       this.prisma,
       dto.productId,
@@ -538,6 +565,26 @@ export class ProductionsService {
 
   async update(id: number, dto: UpdateProductionDto, userId?: number) {
     const production = await this.findOne(id);
+    if (production.manufacturerId) {
+      return this.externalProductions!.save({
+        ...production, ...dto,
+        manufacturerId: dto.manufacturerId ?? production.manufacturerId,
+        quantity: dto.quantity ?? Number(production.quantity),
+        processingFee: dto.processingFee ?? Number(production.processingFee),
+        feeForeignAmount: dto.feeForeignAmount ?? Number(production.feeForeignAmount ?? 0),
+        feeExchangeRate: dto.feeExchangeRate ?? Number(production.feeExchangeRate ?? 1),
+        ownMaterials: dto.ownMaterials ?? production.components.map((line) => ({
+          productId: line.componentProductId, quantity: Number(line.actualGrams), unit: line.unit ?? 'unit',
+        })),
+        manufacturerMaterials: dto.manufacturerMaterials ?? production.manufacturerMaterials.map((line) => ({
+          productId: line.productId, description: line.description, quantity: line.quantity == null ? null : Number(line.quantity),
+          unit: line.unit, pricingMode: line.pricingMode as 'UNIT_PRICE' | 'TOTAL', unitPrice: Number(line.unitPrice), amount: Number(line.amount),
+        })),
+      } as CreateProductionDto, userId!, id);
+    }
+    if (dto.manufacturerId || dto.ownMaterials || dto.manufacturerMaterials) {
+      throw new BadRequestException('Không được chuyển loại phiếu cũ sang luồng gửi sản xuất mới');
+    }
 
     const updateData: any = {};
 
@@ -826,6 +873,9 @@ export class ProductionsService {
 
     if (!production) {
       throw new NotFoundException(`Production with id ${id} not found`);
+    }
+    if (production.manufacturerId) {
+      return production.status === 3 ? production : this.externalProductions!.cancel(id, userId!);
     }
 
     if (
@@ -1270,6 +1320,7 @@ export class ProductionsService {
   /** Phiếu tạm → Đã gửi: xuất nguyên liệu khỏi kho, gửi sang nhà máy. */
   async sendToFactory(id: number, dto: SendProductionDto, userId: number) {
     const production = await this.loadExternalProduction(this.prisma, id);
+    if (production.manufacturerId) return this.externalProductions!.send(id, dto.sentDate, userId);
     if (production.status !== PRODUCTION_STATUS.DRAFT) {
       throw new BadRequestException('Chỉ gửi hàng được từ phiếu tạm');
     }
@@ -1362,6 +1413,7 @@ export class ProductionsService {
     userId: number,
   ) {
     const production = await this.loadExternalProduction(this.prisma, id);
+    if (production.manufacturerId) return this.externalProductions!.receive(id, dto, userId);
     if (production.status !== PRODUCTION_STATUS.SENT) {
       throw new BadRequestException('Chỉ nhận hàng cho phiếu đã gửi');
     }
@@ -1491,6 +1543,7 @@ export class ProductionsService {
     processingFee?: number,
   ) {
     const production = await this.loadExternalProduction(this.prisma, id);
+    if (production.manufacturerId) return this.externalProductions!.preview(id, receivedQuantity, processingFee);
     const completed = production.status === PRODUCTION_STATUS.COMPLETED;
     if (!completed && production.status !== PRODUCTION_STATUS.SENT) {
       throw new BadRequestException(
@@ -1558,6 +1611,8 @@ export class ProductionsService {
     dto: ApplyProductionCostDto,
     userId: number,
   ) {
+    const external = await this.prisma.production.findUnique({ where: { id }, select: { manufacturerId: true } });
+    if (external?.manufacturerId) return this.externalProductions!.applyCost(id, dto.newCost, dto.scope, dto.expectedOldCost, userId);
     if (dto.newCost <= 0) {
       throw new BadRequestException('Giá vốn mới phải lớn hơn 0');
     }
@@ -1616,6 +1671,7 @@ export class ProductionsService {
     userId: number,
   ) {
     const production = await this.loadExternalProduction(this.prisma, id);
+    if (production.manufacturerId) return this.externalProductions!.cancel(id, userId);
     if (production.status === PRODUCTION_STATUS.CANCELLED) {
       throw new BadRequestException('Phiếu đã hủy');
     }

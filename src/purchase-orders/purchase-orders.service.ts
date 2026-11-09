@@ -5,6 +5,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { Response } from 'express';
+import { assertNoManagedPayable, lockPurchaseOrderAccount } from '../common/payable-guard.util';
 import * as ExcelJS from 'exceljs';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -1396,6 +1397,8 @@ export class PurchaseOrdersService {
   async update(id: number, dto: UpdatePurchaseOrderDto, userId: number) {
     const touchedProductIds = new Set<number>();
     const result = await this.prisma.$transaction(async (tx) => {
+      await lockPurchaseOrderAccount(tx, id);
+      await assertNoManagedPayable(tx, 'purchase_order', id);
       const existing = await tx.purchaseOrder.findUnique({
         where: { id },
         include: { items: true, payments: true },
@@ -2082,6 +2085,8 @@ export class PurchaseOrdersService {
   async remove(id: number, userId: number) {
     const touchedProductIds = new Set<number>();
     const result = await this.prisma.$transaction(async (tx) => {
+      await lockPurchaseOrderAccount(tx, id);
+      await assertNoManagedPayable(tx, 'purchase_order', id);
       const purchaseOrder = await tx.purchaseOrder.findUnique({
         where: { id },
         include: {
@@ -2222,6 +2227,8 @@ export class PurchaseOrdersService {
   ) {
     const touchedProductIds = new Set<number>();
     const result = await this.prisma.$transaction(async (tx) => {
+      await lockPurchaseOrderAccount(tx, id);
+      await assertNoManagedPayable(tx, 'purchase_order', id);
       const purchaseOrder = await tx.purchaseOrder.findUnique({
         where: { id },
         include: {

@@ -110,6 +110,7 @@ export async function assertProductionPurchaseOrder(
       id: true,
       code: true,
       isExternal: true,
+      manufacturerId: true,
       status: true,
       supplierId: true,
       destinationBranchId: true,
@@ -121,6 +122,9 @@ export async function assertProductionPurchaseOrder(
   });
   if (!production || !production.isExternal) {
     throw new BadRequestException('Không tìm thấy phiếu gửi sản xuất');
+  }
+  if (production.manufacturerId) {
+    throw new BadRequestException('Phiếu gửi sản xuất mới nhận trực tiếp trên phiếu, không tạo phiếu nhập mua hàng');
   }
   if (input.excludePurchaseOrderId == null) {
     if (production.status !== PRODUCTION_STATUS.SENT) {

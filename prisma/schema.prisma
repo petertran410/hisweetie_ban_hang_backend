@@ -611,6 +611,7 @@ model Supplier {
   supplierGroupDetails       SupplierGroupDetail[]
   supplierReturns            SupplierReturn[]
   productions                Production[]
+  manufacturers              Manufacturer[]
   branch                     Branch?               @relation(fields: [branchId], references: [id])
   creator                    User?                 @relation("SupplierCreator", fields: [createdBy], references: [id])
   staffUsers                 User[]                @relation("SupplierStaff")
@@ -1032,6 +1033,15 @@ model Production {
   /// Gửi sản xuất ở nhà máy ngoài (false = sản xuất nội bộ).
   /// Phiếu gửi: 1 Phiếu tạm → 4 Đã gửi → 2 Hoàn thành; 3 Đã hủy.
   isExternal            Boolean               @default(false)
+  manufacturerId        Int?
+  externalTemplateId    Int?
+  externalTemplateName  String?
+  externalTemplateSnapshot Json?
+  manufacturerMaterialCost Decimal            @default(0) @db.Decimal(18, 2)
+  totalPayable          Decimal               @default(0) @db.Decimal(18, 2)
+  totalForeignPayable   Decimal?              @db.Decimal(18, 2)
+  paidAmount            Decimal               @default(0) @db.Decimal(18, 2)
+  debtAmount            Decimal               @default(0) @db.Decimal(18, 2)
   factoryId             Int?
   supplierId            Int?
   /// Phí sản xuất cả lô quy VND. Vào nợ NCC qua phiếu nhập (PN) nhận hàng.
@@ -1051,6 +1061,10 @@ model Production {
   createdAt             DateTime              @default(now())
   updatedAt             DateTime              @updatedAt
   components            ProductionComponent[]
+  manufacturerMaterials ProductionManufacturerMaterial[]
+  payableAllocations    PayableAllocation[]
+  manufacturer          Manufacturer?         @relation(fields: [manufacturerId], references: [id])
+  externalTemplate      ExternalProductionTemplate? @relation(fields: [externalTemplateId], references: [id], onDelete: SetNull)
   purchaseOrders        PurchaseOrder[]
   formula               ProductFormula?       @relation(fields: [formulaId], references: [id], onDelete: SetNull)
   factory               Factory?              @relation(fields: [factoryId], references: [id])
@@ -1067,6 +1081,7 @@ model Production {
   @@index([manufacturedDate])
   @@index([supplierId])
   @@index([isExternal])
+  @@index([manufacturerId, status])
   @@map("productions")
 }
 
@@ -1080,11 +1095,134 @@ model ProductionComponent {
   actualGrams        Decimal    @db.Decimal(18, 4)
   unitsDeducted      Decimal    @db.Decimal(18, 4)
   inputMode          String?
+  unit               String?
+  conversionFactor   Decimal?   @db.Decimal(18, 8)
+  unitCost           Decimal?   @db.Decimal(18, 6)
   componentProduct   Product    @relation(fields: [componentProductId], references: [id])
   production         Production @relation(fields: [productionId], references: [id], onDelete: Cascade)
 
   @@index([productionId])
   @@map("production_components")
+}
+
+model Manufacturer {
+  id             Int      @id @default(autoincrement())
+  code           String   @unique
+  name           String
+  contactNumber  String?
+  email          String?
+  address        String?
+  note           String?
+  currency       String   @default("VND")
+  supplierId     Int?
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  supplier       Supplier? @relation(fields: [supplierId], references: [id])
+  productions    Production[]
+  templates      ExternalProductionTemplate[]
+
+  @@index([supplierId])
+  @@map("manufacturers")
+}
+
+model ExternalProductionTemplate {
+  id             Int      @id @default(autoincrement())
+  name           String
+  manufacturerId Int
+  productId      Int
+  baseQuantity   Decimal  @db.Decimal(18, 4)
+  currency       String   @default("VND")
+  processingFee  Decimal  @default(0) @db.Decimal(18, 2)
+  exchangeRate   Decimal  @default(1) @db.Decimal(18, 6)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  manufacturer   Manufacturer @relation(fields: [manufacturerId], references: [id])
+  lines          ExternalProductionTemplateLine[]
+  productions    Production[]
+
+  @@index([manufacturerId, productId])
+  @@map("external_production_templates")
+}
+
+model ExternalProductionTemplateLine {
+  id             Int      @id @default(autoincrement())
+  templateId     Int
+  source         String
+  productId      Int?
+  description    String
+  quantity       Decimal? @db.Decimal(18, 4)
+  unit           String?
+  pricingMode    String   @default("UNIT_PRICE")
+  unitPrice      Decimal  @default(0) @db.Decimal(18, 6)
+  amount         Decimal  @default(0) @db.Decimal(18, 2)
+  sortOrder      Int      @default(0)
+  template       ExternalProductionTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@index([templateId])
+  @@map("external_production_template_lines")
+}
+
+model ProductionManufacturerMaterial {
+  id             Int      @id @default(autoincrement())
+  productionId   Int
+  productId      Int?
+  productCode    String?
+  description    String
+  quantity       Decimal? @db.Decimal(18, 4)
+  unit           String?
+  pricingMode    String   @default("UNIT_PRICE")
+  unitPrice      Decimal  @default(0) @db.Decimal(18, 6)
+  amount         Decimal  @default(0) @db.Decimal(18, 2)
+  production     Production @relation(fields: [productionId], references: [id], onDelete: Cascade)
+
+  @@index([productionId])
+  @@map("production_manufacturer_materials")
+}
+
+model PayablePaymentBatch {
+  id             Int      @id @default(autoincrement())
+  requestKey     String   @unique
+  fingerprint    String
+  accountType    String
+  accountId      Int
+  cashFlowId     Int?     @unique
+  totalAmount    Decimal  @db.Decimal(18, 2)
+  status         Int      @default(1)
+  createdBy      Int
+  transDate      DateTime @default(now())
+  createdAt      DateTime @default(now())
+  cancelledAt    DateTime?
+  cashFlow       CashFlow? @relation(fields: [cashFlowId], references: [id])
+  allocations    PayableAllocation[]
+
+  @@index([accountType, accountId, status])
+  @@map("payable_payment_batches")
+}
+
+model PayableAllocation {
+  id                     Int      @id @default(autoincrement())
+  batchId                Int
+  targetType             String
+  targetId               Int
+  targetCode             String
+  source                 String
+  productionId           Int?
+  purchaseOrderPaymentId Int?     @unique
+  amount                 Decimal  @db.Decimal(18, 2)
+  settledAmount          Decimal  @db.Decimal(18, 2)
+  foreignAmount          Decimal? @db.Decimal(18, 2)
+  exchangeRate           Decimal? @db.Decimal(18, 6)
+  fxAdjustment           Decimal  @default(0) @db.Decimal(18, 2)
+  status                 Int      @default(1)
+  createdAt              DateTime @default(now())
+  batch                  PayablePaymentBatch @relation(fields: [batchId], references: [id])
+  production             Production? @relation(fields: [productionId], references: [id])
+  purchaseOrderPayment   PurchaseOrderPayment? @relation(fields: [purchaseOrderPaymentId], references: [id], onDelete: SetNull)
+
+  @@index([targetType, targetId, status])
+  @@map("payable_allocations")
 }
 
 model Inventory {
@@ -2218,6 +2356,7 @@ model PurchaseOrderPayment {
   foreignAmount   Decimal?      @map("foreign_amount") @db.Decimal(18, 2)
   account         BankAccount?  @relation(fields: [accountId], references: [id])
   cashFlow        CashFlow?     @relation(fields: [cashFlowId], references: [id])
+  payableAllocation PayableAllocation?
   purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
 
   @@unique([code, purchaseOrderId])
@@ -2470,6 +2609,7 @@ model CashFlow {
   supplierReturns           SupplierReturn[]
   approvalRequest            ApprovalRequest?
   internalFinanceEntry      InternalFinanceEntry?
+  payableBatch              PayablePaymentBatch?
 
   @@index([branchId, transDate])
   @@index([createdBy, transDate])

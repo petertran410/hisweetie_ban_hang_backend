@@ -10,6 +10,7 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ProductionComponentDto } from './create-production.dto';
+import { ManufacturerMaterialDto } from '../../manufacturers/dto';
 
 /** Phiếu tạm → Đã gửi: xuất nguyên liệu khỏi kho, gửi sang nhà máy. */
 export class SendProductionDto {
@@ -27,6 +28,10 @@ export class SendProductionDto {
 
 /** Đã gửi → Hoàn thành: nhà máy giao thành phẩm. */
 export class ReceiveProductionDto {
+  @IsOptional() @IsNumber() @Min(0)
+  expectedOldCost?: number;
+  @IsOptional() @IsArray() @ValidateNested({ each: true })
+  @Type(() => ManufacturerMaterialDto) manufacturerMaterials?: ManufacturerMaterialDto[];
   @IsOptional()
   @IsDateString()
   completedDate?: string;
