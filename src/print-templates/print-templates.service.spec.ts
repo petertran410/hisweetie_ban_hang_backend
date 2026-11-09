@@ -325,6 +325,65 @@ describe('PrintTemplatesService', () => {
     });
   });
 
+  describe.each([
+    ['order', 'mapOrder'],
+    ['invoice', 'mapInvoice'],
+  ])('%s payment QR', (_type, mapper) => {
+    const bank = {
+      bankCode: 'TESTBANK',
+      bankName: 'Test Bank',
+      accountNumber: '1234567890',
+      accountHolder: 'TEST ACCOUNT',
+    };
+
+    it.each([
+      ['unpaid including shipping', 100, 30, 0, 130],
+      ['fully paid', 100, 30, 130, 0],
+      ['partially paid', 100, 30, 30, 100],
+      ['items added after full payment', 150, 30, 130, 50],
+      ['overpaid', 100, 30, 150, 0],
+      ['items removed after full payment', 80, 30, 130, 0],
+    ])(
+      'encodes the remaining amount when %s',
+      async (_scenario, totalAmount, shippingFee, paidAmount, expectedAmount) => {
+        const grandTotal = totalAmount + shippingFee;
+        const debtAmount = grandTotal - paidAmount;
+        const entity = {
+          code: 'TEST QR 001',
+          soldBy: { bankAccountMapping: { bankAccount: bank } },
+          totalAmount,
+          shippingFee,
+          grandTotal,
+          paidAmount,
+          debtAmount,
+        };
+        const data = await (createService() as any)[mapper](entity);
+        const src = data.Ma_QR_Code.match(/src="([^"]+)"/)?.[1];
+        expect(src).toBeDefined();
+        const url = new URL(src!);
+
+        expect(url.searchParams.get('amount')).toBe(String(expectedAmount));
+        expect(url.searchParams.get('addInfo')).toBe(entity.code);
+        expect(url.searchParams.get('accountName')).toBe(bank.accountHolder);
+        expect(url.pathname).toBe(
+          '/image/TESTBANK-1234567890-compact1.png',
+        );
+        expect(data.Tong_Can_Thanh_Toan).toBe(String(grandTotal));
+        expect(data.Da_Thanh_Toan).toBe(String(paidAmount));
+        expect(entity.debtAmount).toBe(debtAmount);
+      },
+    );
+
+    it('keeps the QR empty when no bank account is mapped', async () => {
+      const data = await (createService() as any)[mapper]({
+        soldBy: null,
+        debtAmount: 130,
+      });
+
+      expect(data.Ma_QR_Code).toBe('');
+    });
+  });
+
   describe('shipping fee print variables', () => {
     const baseEntity = {
       code: '',

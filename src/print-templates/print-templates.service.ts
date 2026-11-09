@@ -904,7 +904,12 @@ export class PrintTemplatesService {
       ...this.staffVars(o.soldBy, o.creator),
       ...this.deliveryVars(o.delivery, o.customer),
       ...this.shippingFeeVars(o.shippingFee),
-      ...this.qrVars(o.soldBy, o.grandTotal, o.code),
+      ...this.qrVars(
+        o.soldBy,
+        Math.max(0, Number(o.debtAmount || 0)),
+        o.code,
+        true,
+      ),
       Ma_Don_Hang: o.code || '',
       Ghi_Chu: o.description || '',
       Tong_Tien_Hang: this.money(o.totalAmount),
