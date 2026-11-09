@@ -405,7 +405,7 @@ export class LeadFormsService {
     const fromForm = f?.enabled && (f.hidden ? !!f.defaultValue : f.required);
     if (!fromForm && !category)
       throw new BadRequestException(
-        'Chọn phân loại mặc định (form không bắt buộc khách chọn phân loại)',
+        'Trường phân loại lead cần bật bắt buộc, hoặc ẩn kèm giá trị mặc định',
       );
   }
 
