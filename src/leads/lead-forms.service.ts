@@ -47,14 +47,19 @@ const DEFAULT_SUCCESS =
 const OPEN_LEAD = { notIn: ['converted', 'cancelled'] };
 
 /**
- * Form công khai thu thập lead: CSKH tạo form (trường Lead + câu hỏi thêm, nguồn / kênh / CSKH
- * mặc định), chia sẻ link / iframe / QR. Khách gửi → tạo lead mới, hoặc gộp vào lead đang mở
- * trùng SĐT; báo Lark cho CSKH phụ trách. Chống spam: honeypot + giới hạn tần suất theo IP / SĐT.
+ * Form công khai thu thập lead: CSKH tạo form (trường Lead + câu hỏi thêm, nguồn / kênh mặc định),
+ * chia sẻ link / iframe / QR. Khách gửi → tạo lead mới (chưa giao CSKH), hoặc gộp vào lead đang mở
+ * trùng SĐT; báo vào nhóm Lark nhận lead (LARK_LEAD_CHAT_ID). Chống spam: honeypot + giới hạn
+ * tần suất theo IP / SĐT.
  */
+const DEFAULT_LEAD_CHAT_ID = 'oc_1109627e172997978b63cbbcda6cbf3e';
+
 @Injectable()
 export class LeadFormsService {
   private readonly logger = new Logger(LeadFormsService.name);
   private readonly frontendUrl: string;
+  // Nhóm Lark nhận báo lead mới / khách gửi lại form
+  private readonly leadChatId: string;
   /** key giới hạn ("ip:…" / "phone:…") → mốc thời gian các lượt gửi gần đây */
   private readonly hits = new Map<string, number[]>();
 
@@ -67,6 +72,8 @@ export class LeadFormsService {
     this.frontendUrl = (
       config.get<string>('FRONTEND_URL') || 'http://localhost:3050'
     ).replace(/\/$/, '');
+    this.leadChatId =
+      config.get<string>('LARK_LEAD_CHAT_ID') || DEFAULT_LEAD_CHAT_ID;
   }
 
   // ---------- Quản lý form (CSKH) ----------
@@ -78,7 +85,7 @@ export class LeadFormsService {
     });
     const userIds = [
       ...new Set(
-        forms.flatMap((f) => [f.cskhUserId, f.createdById]).filter(Boolean),
+        forms.map((f) => f.createdById).filter(Boolean),
       ),
     ] as number[];
     const users = userIds.length
@@ -91,7 +98,6 @@ export class LeadFormsService {
     return forms.map(({ _count, ...f }) => ({
       ...f,
       submissionCount: _count.submissions,
-      cskhUserName: f.cskhUserId ? (nameOf.get(f.cskhUserId) ?? null) : null,
       createdByName: nameOf.get(f.createdById) ?? null,
     }));
   }
@@ -114,8 +120,6 @@ export class LeadFormsService {
         channelPid: dto.channelPid?.trim() || null,
         channelName: dto.channelName?.trim() || null,
         category,
-        // null = không giao CSKH (không báo Lark); bỏ trống = người tạo
-        cskhUserId: dto.cskhUserId === undefined ? actor.id : dto.cskhUserId,
         successMessage: dto.successMessage?.trim() || null,
         isActive: dto.isActive ?? true,
         createdById: actor.id,
@@ -156,7 +160,6 @@ export class LeadFormsService {
         channelPid: opt(dto.channelPid),
         channelName: opt(dto.channelName),
         category,
-        cskhUserId: dto.cskhUserId,
         successMessage: opt(dto.successMessage),
         isActive: dto.isActive,
       },
@@ -296,7 +299,6 @@ export class LeadFormsService {
           ...v.province,
           need: v.need,
           status: 'new',
-          cskhUserId: form.cskhUserId,
           createdById: form.createdById,
           formSubmissions: { create: submission },
         },
@@ -310,8 +312,7 @@ export class LeadFormsService {
       );
     }
 
-    await this.notifyCskh(
-      lead.cskhUserId ?? form.cskhUserId,
+    await this.notifyLeadChat(
       [
         `📝 ${existing ? 'Khách gửi lại' : 'Lead mới từ'} form "${form.name}"`,
         ...v.answers.map((a) => `${a.label}: ${a.value}`),
@@ -596,18 +597,12 @@ export class LeadFormsService {
           this.hits.delete(k);
   }
 
-  private async notifyCskh(userId: number | null, text: string) {
-    if (!userId) return;
+  private async notifyLeadChat(text: string) {
     try {
-      const user = await this.prisma.user.findUnique({
-        where: { id: userId },
-        select: { larkUserId: true },
-      });
-      if (!user?.larkUserId) return;
       const res = await this.larkClient.im.message.create({
-        params: { receive_id_type: 'open_id' },
+        params: { receive_id_type: 'chat_id' },
         data: {
-          receive_id: user.larkUserId,
+          receive_id: this.leadChatId,
           msg_type: 'text',
           content: JSON.stringify({ text }),
         },
@@ -615,7 +610,7 @@ export class LeadFormsService {
       if (res?.code) throw new Error(`Lark ${res.code}: ${res.msg}`);
     } catch (e) {
       this.logger.warn(
-        `Không báo được Lark cho CSKH #${userId}: ${(e as Error).message}`,
+        `Không báo được lead mới vào nhóm Lark ${this.leadChatId}: ${(e as Error).message}`,
       );
     }
   }
