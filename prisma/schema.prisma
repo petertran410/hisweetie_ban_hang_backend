@@ -2314,6 +2314,19 @@ model Settings {
   @@map("settings")
 }
 
+/// Token đăng nhập Smax (API nội bộ app Smax: thả cảm xúc, thu hồi/xoá tin, đổi tên, Thư viện,
+/// Meta AI, tên gợi nhớ Zalo) — sửa ở /cai-dat/smax, dùng thay SMAX_USER_TOKEN trong .env.
+/// Lưu mã hoá AES-256-GCM (src/smax/smax-secret.util.ts). Chỉ 1 dòng (id = 1); tách khỏi
+/// bảng settings vì GET /settings trả nguyên dòng cho mọi người dùng.
+model SmaxUserToken {
+  id          Int      @id @default(1)
+  token       String
+  updatedAt   DateTime @updatedAt @map("updated_at")
+  updatedById Int?     @map("updated_by_id")
+
+  @@map("smax_user_tokens")
+}
+
 model Transfer {
   id                Int              @id @default(autoincrement())
   code              String           @unique

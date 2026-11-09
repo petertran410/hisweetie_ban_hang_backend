@@ -1,17 +1,111 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { SmaxApiService } from './smax-api.service';
+import { decryptSmaxToken, encryptSmaxToken, jwtExpiry } from './smax-secret.util';
 
 @Injectable()
-export class SmaxService {
+export class SmaxService implements OnModuleInit {
+  private readonly logger = new Logger(SmaxService.name);
+  // Có dòng token trên POS nhưng không giải mã được (đổi khoá mã hoá) → báo nhập lại
+  private storedTokenUnreadable = false;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly smaxApi: SmaxApiService,
+    private readonly auditLogs: AuditLogsService,
   ) {}
+
+  async onModuleInit() {
+    try {
+      await this.loadUserToken();
+    } catch (e) {
+      // Bảng chưa tạo (chưa db push) → dùng .env như cũ
+      this.logger.warn(`Không đọc được token Smax lưu trên POS: ${(e as Error).message}`);
+    }
+  }
+
+  /** Nạp token đăng nhập Smax lưu trên POS (ưu tiên hơn SMAX_USER_TOKEN trong .env). */
+  private async loadUserToken() {
+    const row = await this.prisma.smaxUserToken.findUnique({ where: { id: 1 } });
+    const plain = row ? decryptSmaxToken(row.token) : null;
+    this.storedTokenUnreadable = !!row && !plain;
+    this.smaxApi.useStoredUserToken(plain);
+    return row;
+  }
+
+  /**
+   * Tình trạng token đăng nhập Smax cho trang /cai-dat/smax: nguồn, vài ký tự cuối, hạn (JWT),
+   * còn dùng được không (thử 1 API chỉ đọc). Không bao giờ trả nguyên token.
+   */
+  async userTokenStatus() {
+    // Đọc lại DB: backend chạy nhiều tiến trình thì tiến trình này cũng thấy token mới
+    const row = await this.loadUserToken();
+    const token = this.smaxApi.activeUserToken;
+    const check = token ? await this.smaxApi.checkUserToken(token) : null;
+    const updatedBy = row?.updatedById
+      ? await this.prisma.user.findUnique({ where: { id: row.updatedById }, select: { name: true } })
+      : null;
+    return {
+      source: this.smaxApi.userTokenSource,
+      envConfigured: this.smaxApi.hasEnvUserToken,
+      last4: token ? token.slice(-4) : null,
+      expiresAt: token ? jwtExpiry(token) : null,
+      updatedAt: row?.updatedAt ?? null,
+      updatedBy: updatedBy?.name ?? null,
+      valid: check ? check.ok : null,
+      error: this.storedTokenUnreadable
+        ? 'Token đã lưu không giải mã được (khoá mã hoá đã đổi) — nhập lại token'
+        : (check?.message ?? null),
+    };
+  }
+
+  /** Lưu token mới (kiểm tra với Smax trước, sai thì không lưu); dùng ngay, không cần khởi động lại. */
+  async setUserToken(raw: string, actor: { id: number; name?: string }) {
+    const token = raw.trim().replace(/^Bearer\s+/i, '');
+    if (!token) throw new BadRequestException('Nhập token');
+    const check = await this.smaxApi.checkUserToken(token);
+    if (!check.ok) throw new BadRequestException(check.message);
+    const data = { token: encryptSmaxToken(token), updatedById: actor.id };
+    await this.prisma.smaxUserToken.upsert({ where: { id: 1 }, create: { id: 1, ...data }, update: data });
+    this.storedTokenUnreadable = false;
+    this.smaxApi.useStoredUserToken(token);
+    await this.auditLogs.create({
+      actionType: 'PUT',
+      actionCode: 'SMAX_USER_TOKEN_UPDATE',
+      entityType: 'smax_user_tokens',
+      entityId: '1',
+      message: 'Cập nhật token đăng nhập Smax',
+      userId: actor.id,
+      userName: actor.name || 'Người dùng',
+      // Không ghi token; chỉ hạn (nếu là JWT) để tra cứu
+      metadata: { expiresAt: jwtExpiry(token) },
+    });
+    return this.userTokenStatus();
+  }
+
+  /** Xoá token lưu trên POS → quay về SMAX_USER_TOKEN trong .env (nếu có). */
+  async clearUserToken(actor: { id: number; name?: string }) {
+    await this.prisma.smaxUserToken.deleteMany({});
+    this.storedTokenUnreadable = false;
+    this.smaxApi.useStoredUserToken(null);
+    await this.auditLogs.create({
+      actionType: 'DELETE',
+      actionCode: 'SMAX_USER_TOKEN_CLEAR',
+      entityType: 'smax_user_tokens',
+      entityId: '1',
+      message: 'Xoá token đăng nhập Smax lưu trên POS (dùng lại token trong .env)',
+      userId: actor.id,
+      userName: actor.name || 'Người dùng',
+    });
+    return this.userTokenStatus();
+  }
 
   /**
    * Mọi kênh của biz trên Smax (Zalo cá nhân, Zalo OA, Facebook, TikTok, Shopee,

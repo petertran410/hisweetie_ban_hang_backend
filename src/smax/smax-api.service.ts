@@ -161,8 +161,11 @@ export class SmaxApiService {
   private readonly baseUrl: string;
   readonly bizAlias: string;
   private readonly token?: string;
-  // Token đăng nhập 1 tài khoản Smax (JWT) — chỉ dùng cho API nội bộ Partner API chưa có (thả cảm xúc)
-  private readonly userToken?: string;
+  // Token đăng nhập 1 tài khoản Smax (JWT) — chỉ dùng cho API nội bộ Partner API chưa có (thả cảm xúc…)
+  // Ưu tiên token lưu trên POS (/cai-dat/smax, SmaxService nạp lúc khởi động), không có thì .env
+  private readonly envUserToken?: string;
+  private userToken?: string;
+  userTokenSource: 'db' | 'env' | null = null;
 
   constructor(
     private readonly http: HttpService,
@@ -173,7 +176,51 @@ export class SmaxApiService {
       .replace(/\/+$/, '');
     this.bizAlias = config.get<string>('SMAX_BIZ_ALIAS', 'dieptra');
     this.token = config.get<string>('SMAX_API_TOKEN');
-    this.userToken = config.get<string>('SMAX_USER_TOKEN')?.trim() || undefined;
+    this.envUserToken = config.get<string>('SMAX_USER_TOKEN')?.trim() || undefined;
+    this.useStoredUserToken(null);
+  }
+
+  /** Dùng token lưu trên POS; null = bỏ, quay về SMAX_USER_TOKEN trong .env. */
+  useStoredUserToken(token: string | null) {
+    this.userToken = token || this.envUserToken;
+    this.userTokenSource = token ? 'db' : this.envUserToken ? 'env' : null;
+  }
+
+  /** Token đang dùng (chỉ để kiểm tra / hiện vài ký tự cuối ở trang cấu hình — không trả nguyên ra ngoài). */
+  get activeUserToken(): string | undefined {
+    return this.userToken;
+  }
+
+  get hasEnvUserToken(): boolean {
+    return !!this.envUserToken;
+  }
+
+  /**
+   * Thử token đăng nhập Smax bằng 1 API nội bộ chỉ đọc (album Thư viện).
+   * invalid = Smax từ chối token (401/403); lỗi khác (mạng, 5xx) = chưa kết luận được.
+   */
+  async checkUserToken(token = this.userToken): Promise<{ ok: boolean; invalid?: boolean; message?: string }> {
+    if (!token) return { ok: false, message: 'Chưa có token' };
+    try {
+      await firstValueFrom(
+        this.http.get(`${this.baseUrl}/bizs/${this.bizAlias}/groups?type=STORAGE`, {
+          headers: { Authorization: `Bearer ${token}` },
+          timeout: 15000,
+        }),
+      );
+      return { ok: true };
+    } catch (error: any) {
+      const status = error?.response?.status;
+      const smaxMessage = error?.response?.data?.message;
+      if (status === 401 || status === 403) {
+        return {
+          ok: false,
+          invalid: true,
+          message: `Token không hợp lệ hoặc đã hết hạn${typeof smaxMessage === 'string' && smaxMessage.trim() ? ` (Smax: ${smaxMessage.trim()})` : ''}`,
+        };
+      }
+      return { ok: false, message: `Không kiểm tra được với Smax (${status ?? error?.code ?? 'lỗi mạng'}) — thử lại sau` };
+    }
   }
 
   /** Thả cảm xúc được không (đã cấu hình SMAX_USER_TOKEN). */
