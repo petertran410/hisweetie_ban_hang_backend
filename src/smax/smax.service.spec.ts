@@ -174,6 +174,58 @@ describe('SmaxApiService', () => {
     expect(threads.map((t) => t.controlledBy)).toEqual([null, null, 'META_AI', null]);
   });
 
+  describe('danh sách hội thoại: Partner lỗi/rỗng → fallback SMAX_USER_TOKEN', () => {
+    const { of, throwError } = require('rxjs');
+    const userThread = { tid: 'zlw9', page_pid: 'zlw1', platform: 'zaloweb', customer: { name: 'Khách U' } };
+    const makeApi = (partner: () => unknown, user: () => unknown, userToken = 'utok') => {
+      const http = {
+        request: jest.fn((req: { url: string; data?: unknown; headers: Record<string, string> }) => (req.url.includes('/partner/') ? partner() : user())),
+      };
+      const config = {
+        get: (key: string, def?: string) =>
+          key === 'SMAX_API_TOKEN' ? 'tok' : key === 'SMAX_USER_TOKEN' ? userToken : def,
+      };
+      return { api: new SmaxApiService(http as any, config as any), http };
+    };
+    const fail = (status: number) => () => throwError(() => ({ response: { status, data: {} } }));
+
+    it('Partner trả rỗng → gọi API nội bộ bằng user token, cùng body', async () => {
+      const { api, http } = makeApi(() => of({ data: { data: [] } }), () => of({ data: { data: [userThread] } }));
+      const threads = await api.listRecentThreads(['zlw1'], 5, 'an');
+      expect(threads.map((t) => t.tid)).toEqual(['zlw9']);
+      const userCall = http.request.mock.calls[1][0];
+      expect(userCall.url).toBe('https://api.smax.ai/bizs/dieptra/threads');
+      expect(userCall.data).toEqual({ page_pids: ['zlw1'], limit: 5, keyword: 'an' });
+      expect(userCall.headers.Authorization).toBe('Bearer utok');
+    });
+
+    it('Partner lỗi → fallback; nhóm Zalo cũng dùng fallback', async () => {
+      const { api } = makeApi(fail(500), () => of({ data: { data: [userThread] } }));
+      expect((await api.listRecentThreads(['zlw1'])).map((t) => t.tid)).toEqual(['zlw9']);
+      expect((await api.listGroupThreads('zlw1')).map((g) => g.zaloId)).toEqual(['9']);
+    });
+
+    it('Partner có dữ liệu → không gọi user token', async () => {
+      const { api, http } = makeApi(() => of({ data: { data: [userThread] } }), fail(500));
+      await api.listRecentThreads(['zlw1']);
+      expect(http.request).toHaveBeenCalledTimes(1);
+    });
+
+    it('cả hai lỗi → báo lỗi của Partner; Partner rỗng mà fallback lỗi → rỗng', async () => {
+      await expect(makeApi(fail(401), fail(500)).api.listRecentThreads(['zlw1'])).rejects.toThrow(
+        'token không hợp lệ',
+      );
+      expect(await makeApi(() => of({ data: { data: [] } }), fail(500)).api.listRecentThreads(['zlw1'])).toEqual([]);
+    });
+
+    it('không có user token → giữ hành vi cũ (rỗng / lỗi Partner)', async () => {
+      const { api, http } = makeApi(() => of({ data: { data: [] } }), fail(500), '');
+      expect(await api.listRecentThreads(['zlw1'])).toEqual([]);
+      expect(http.request).toHaveBeenCalledTimes(1);
+      await expect(makeApi(fail(500), fail(500), '').api.listRecentThreads(['zlw1'])).rejects.toThrow();
+    });
+  });
+
   it('getFriendStatus: đọc is_friend / is_requested / is_requesting', async () => {
     const { of } = require('rxjs');
     const http = {
