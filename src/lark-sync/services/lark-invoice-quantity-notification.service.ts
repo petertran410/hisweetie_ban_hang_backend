@@ -8,8 +8,7 @@ import {
   InvoiceQuantityMismatch,
 } from '../../invoices/invoice-quantity-mismatch';
 
-const CHAT_SG = 'oc_9779a03a5df2dd1954287479867211b0';
-const CHAT_HN = 'oc_0e3dd987a81729d805d993b20cd71ecf';
+const CHAT_ID = 'oc_2db07103de151dd3ca22fa3eef34e5f2';
 const MAX_ROWS = 30;
 
 /** Dấu vân tay của các dòng lệch — sửa hóa đơn mà lệch y như cũ thì không báo lại. */
@@ -26,10 +25,8 @@ export function quantityMismatchSignature(
  * Gửi card cảnh báo vào nhóm Lark khi SL hóa đơn khác đơn đặt hàng
  * (đơn tách giao: so với SL còn lại, xem findInvoiceQuantityMismatches).
  *
- * Chi nhánh → nhóm (env ghi đè được):
- *   - Kho Sài Gòn (1)                         → LARK_INVOICE_QTY_CHAT_ID_SG
- *   - Kho Hà Nội (6), Văn phòng Hà Nội (4)    → LARK_INVOICE_QTY_CHAT_ID_HN
- * Chi nhánh khác: bỏ qua.
+ * Hóa đơn Kho Sài Gòn (1), Kho Hà Nội (6), Văn phòng Hà Nội (4) → một nhóm chung
+ * (env LARK_INVOICE_QTY_CHAT_ID ghi đè được). Chi nhánh khác: bỏ qua.
  */
 @Injectable()
 export class LarkInvoiceQuantityNotificationService {
@@ -44,11 +41,8 @@ export class LarkInvoiceQuantityNotificationService {
   ) {}
 
   private chatIdFor(branchId: number | null): string | null {
-    if (branchId === 1)
-      return this.config.get<string>('LARK_INVOICE_QTY_CHAT_ID_SG') || CHAT_SG;
-    if (branchId === 6 || branchId === 4)
-      return this.config.get<string>('LARK_INVOICE_QTY_CHAT_ID_HN') || CHAT_HN;
-    return null;
+    if (branchId !== 1 && branchId !== 6 && branchId !== 4) return null;
+    return this.config.get<string>('LARK_INVOICE_QTY_CHAT_ID') || CHAT_ID;
   }
 
   /** Fire-and-forget — không throw, không chặn response. */
