@@ -203,7 +203,7 @@ export class LeadsService {
         const zalo = ZALOWEB_TID.test(conv.tid);
         for (const ct of contacts) {
           const match = zalo
-            ? ct.zaloId === zaloIdOf(conv.tid) && !ct.pagePid
+            ? ct.zaloId === zaloIdOf(conv.tid) && (!ct.pagePid || ct.pagePid === conv.pagePid)
             : ct.zaloId === conv.tid && ct.pagePid === conv.pagePid;
           if (match && !list.some((c) => c.id === ct.customer.id))
             list.push(ct.customer);

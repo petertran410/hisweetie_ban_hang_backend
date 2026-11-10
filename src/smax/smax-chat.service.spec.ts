@@ -647,6 +647,37 @@ describe('SmaxChatService', () => {
       });
       expect(ctx.contacts.groups[0].sharedWith).toEqual([{ id: 6, code: 'KH6', name: 'Chi nhánh 2', contactId: 13 }]);
     });
+
+    it('gắn nhóm: ghi tài khoản Zalo thấy ID nhóm (kênh gửi kèm, không thì dò Smax); getContext kèm tên tài khoản', async () => {
+      const { service, api } = makeService();
+      const prisma = (service as any).prisma;
+      prisma.customer.findUnique = jest.fn().mockResolvedValue({ id: 5 });
+      prisma.customerZaloContact.create = jest.fn(({ data }) => Promise.resolve({ id: 99, ...data }));
+      (api as any).findThreadPages = jest.fn().mockResolvedValue(new Map([['zlw7770001', PAGE]]));
+      const actorA = { id: 1, name: 'A' };
+
+      await expect(service.createContact(5, actorA, { kind: 'group', zaloId: '7770001', pagePid: PAGE })).resolves.toMatchObject({ pagePid: PAGE });
+      expect((api as any).findThreadPages).not.toHaveBeenCalled();
+      // Không gửi kèm / kênh không phải Zalo cá nhân → dò trên Smax qua các kênh Zalo cá nhân
+      await expect(service.createContact(5, actorA, { kind: 'group', zaloId: '7770001', pagePid: 'zlOA' })).resolves.toMatchObject({ pagePid: PAGE });
+      expect((api as any).findThreadPages).toHaveBeenCalledWith([PAGE, 'zlwBROKEN'], ['zlw7770001']);
+      // Smax lỗi → vẫn lưu, chưa rõ tài khoản
+      (api as any).findThreadPages.mockRejectedValueOnce(new Error('down'));
+      await expect(service.createContact(5, actorA, { kind: 'group', zaloId: '7770001' })).resolves.toMatchObject({ pagePid: null });
+
+      activityMocks(prisma);
+      prisma.smaxChannelUser.findMany = jest.fn().mockResolvedValue([]);
+      prisma.customer.findUnique = jest.fn().mockResolvedValue({
+        id: 5, code: 'KH5', name: 'Khách', contactNumber: null, phone: null, totalDebt: 0, debtPolicy: null,
+        zaloContacts: [
+          { id: 11, customerId: 5, kind: 'group', zaloId: '7770001', name: 'Nhóm', pagePid: PAGE },
+          { id: 12, customerId: 5, kind: 'group', zaloId: '888', name: 'Nhóm', pagePid: null },
+        ],
+      });
+      prisma.customerZaloContact.findMany = jest.fn().mockResolvedValue([]);
+      const ctx = await service.getContext(5, actor);
+      expect(ctx.contacts.groups.map((g: any) => g.pageName)).toEqual(['Diệp Trà Cs', null]);
+    });
   });
 
   describe('kênh khác Zalo cá nhân (Zalo OA, Facebook, Shopee…)', () => {

@@ -412,7 +412,8 @@ describe('LeadsService', () => {
         customerId: 5,
         kind: 'group',
         zaloId: '777',
-        pagePid: null,
+        // ID nhóm Zalo khác nhau theo tài khoản → ghi kèm kênh
+        pagePid: 'zlwSALE',
       }),
       expect.objectContaining({
         customerId: 5,

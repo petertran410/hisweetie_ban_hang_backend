@@ -413,6 +413,13 @@ export class SmaxChatService {
       ...c,
       sharedWith: shared.filter((s) => s.zaloId === c.zaloId).map((s) => ({ ...s.customer, contactId: s.id })),
     });
+    // Tên tài khoản Zalo thấy từng ID nhóm (cùng 1 nhóm, mỗi tài khoản 1 ID)
+    const groupContacts = zaloContacts.filter((c) => c.kind === 'group');
+    const pageNames = new Map<string, string>(
+      groupContacts.some((c) => c.pagePid)
+        ? (await this.smaxApi.listPages().catch(() => [])).map((p) => [p.pid, p.name] as [string, string])
+        : [],
+    );
     return {
       customer: {
         id: customer.id,
@@ -425,7 +432,10 @@ export class SmaxChatService {
       myChannels: channels,
       contacts: {
         user: zaloContacts.find((c) => c.kind === 'user') ?? null,
-        groups: zaloContacts.filter((c) => c.kind === 'group').map(withShared),
+        groups: groupContacts.map((c) => ({
+          ...withShared(c),
+          pageName: c.pagePid ? (pageNames.get(c.pagePid) ?? null) : null,
+        })),
         // Hội thoại trên kênh khác Zalo cá nhân (mỗi cái gắn với 1 kênh — pagePid)
         others: otherContacts.map(withShared),
       },
@@ -1322,6 +1332,9 @@ export class SmaxChatService {
       if (!page || page.platform === 'zaloweb') {
         throw new BadRequestException('Hội thoại cần kèm đúng kênh (không phải Zalo cá nhân) trên Smax');
       }
+    } else if (dto.kind === 'group') {
+      // Cùng 1 nhóm, mỗi tài khoản Zalo thấy 1 ID khác → ghi tài khoản (kênh) thấy ID này
+      pagePid = await this.groupPagePid(zaloId, dto.pagePid);
     }
     const customer = await this.prisma.customer.findUnique({
       where: { id: customerId },
@@ -1355,6 +1368,20 @@ export class SmaxChatService {
         throw new ConflictException('ID Zalo này đã được thêm cho khách');
       }
       throw e;
+    }
+  }
+
+  /** Kênh Zalo cá nhân thấy nhóm: kênh gửi kèm nếu hợp lệ, không thì dò trên Smax; lỗi → null (như cũ). */
+  private async groupPagePid(zaloId: string, hint?: string): Promise<string | null> {
+    try {
+      const pids = (await this.smaxApi.listPages()).filter((p) => p.platform === 'zaloweb').map((p) => p.pid);
+      const h = hint?.trim();
+      if (h && pids.includes(h)) return h;
+      const tid = `${ZALOWEB_PREFIX}${zaloId}`;
+      return (await this.smaxApi.findThreadPages(pids, [tid])).get(tid) ?? null;
+    } catch (e) {
+      this.logger.warn(`Không dò được kênh của nhóm Zalo ${zaloId}: ${(e as Error).message}`);
+      return null;
     }
   }
 
