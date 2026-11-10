@@ -525,18 +525,48 @@ export class SmaxApiService {
   }
 
   /**
+   * Danh sách hội thoại: Partner API trước; lỗi hoặc trả rỗng (đã gặp: Partner trả 0
+   * hội thoại trong khi web Smax vẫn có) → fallback API nội bộ web Smax bằng
+   * SMAX_USER_TOKEN (POST /bizs/{biz}/threads, cùng body & cấu trúc thread, nặng ~2 lần,
+   * không có controlled_by). Không có user token → giữ nguyên kết quả/lỗi Partner.
+   */
+  private async listThreadsRaw(body: Record<string, unknown>, timeout: number): Promise<any[]> {
+    let partnerError: unknown = null;
+    try {
+      const res = await this.request('POST', `/partner/bizs/${this.bizAlias}/threads/threads`, body, {
+        timeout,
+        silent: !!this.userToken,
+      });
+      const data = Array.isArray(res?.data) ? res.data : [];
+      if (data.length > 0 || !this.userToken) return data;
+    } catch (error) {
+      if (!this.userToken) throw error;
+      partnerError = error;
+    }
+    try {
+      const res = await this.request('POST', `/bizs/${this.bizAlias}/threads`, body, {
+        timeout,
+        token: this.userToken,
+      });
+      return Array.isArray(res?.data) ? res.data : [];
+    } catch (error) {
+      // Cả hai cùng lỗi → báo lỗi Partner (nguồn chính). Partner chỉ trả rỗng → giữ rỗng như cũ
+      if (partnerError) throw partnerError;
+      return [];
+    }
+  }
+
+  /**
    * Các nhóm Zalo kênh đang tham gia, kèm thành viên. Smax không phân trang
    * được (cursor/before bị bỏ qua) → chỉ lấy tối đa 500 nhóm có tin gần nhất.
    * Response rất nặng (~20KB/nhóm, ~15s cho 470 nhóm) — nơi gọi nên cache.
    */
   async listGroupThreads(pagePid: string): Promise<SmaxGroupThread[]> {
-    const body = await this.request(
-      'POST',
-      `/partner/bizs/${this.bizAlias}/threads/threads`,
+    const threads = await this.listThreadsRaw(
       { page_pids: [pagePid], is_group: 'true', limit: GROUP_SCAN_LIMIT },
-      { timeout: 60000 },
+      60000,
     );
-    return (body?.data ?? [])
+    return threads
       .filter((t: any) => t?.tid?.startsWith('zlw'))
       .map((t: any) => ({
         zaloId: t.tid.slice(3),
@@ -550,14 +580,12 @@ export class SmaxApiService {
 
   /** Hội thoại mới nhất của các kênh, mọi nền tảng (mới → cũ). Response nặng (~20KB/thread) → nơi gọi nên cache. */
   async listRecentThreads(pagePids: string[], limit = 30, keyword?: string): Promise<SmaxRecentThread[]> {
-    const body = await this.request(
-      'POST',
-      `/partner/bizs/${this.bizAlias}/threads/threads`,
+    const threads = await this.listThreadsRaw(
       // keyword: Smax tìm trên mọi hội thoại (tên khách/nhóm, cả thành viên & nội dung) — ~2-3s
       { page_pids: pagePids, limit, ...(keyword ? { keyword } : {}) },
-      { timeout: 30000 },
+      30000,
     );
-    return (body?.data ?? [])
+    return threads
       .filter((t: any) => t?.tid && t?.page_pid)
       .map((t: any) => ({
         tid: t.tid,
