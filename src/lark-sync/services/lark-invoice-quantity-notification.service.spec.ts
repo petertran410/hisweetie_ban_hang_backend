@@ -46,11 +46,11 @@ function makeService(
 }
 
 describe('LarkInvoiceQuantityNotificationService', () => {
-  it('gửi card vào nhóm Sài Gòn với hóa đơn chi nhánh 1', async () => {
+  it('gửi card vào nhóm cảnh báo với hóa đơn chi nhánh 1', async () => {
     const { service, create } = makeService();
     await expect(service.notify(10, { action: 'create' })).resolves.toBe(true);
     const arg = create.mock.calls[0][0];
-    expect(arg.data.receive_id).toBe('oc_9779a03a5df2dd1954287479867211b0');
+    expect(arg.data.receive_id).toBe('oc_2db07103de151dd3ca22fa3eef34e5f2');
     expect(arg.data.msg_type).toBe('interactive');
     const content = arg.data.content as string;
     expect(content).toContain('HD1');
@@ -59,11 +59,11 @@ describe('LarkInvoiceQuantityNotificationService', () => {
     expect(content).toContain('**Người bán:** <at id=ou_sale></at>');
   });
 
-  it.each([6, 4])('chi nhánh %i gửi vào nhóm Hà Nội', async (branchId) => {
+  it.each([6, 4])('chi nhánh %i gửi vào cùng nhóm', async (branchId) => {
     const { service, create } = makeService({ branchId });
     await service.notify(10, { action: 'create' });
     expect(create.mock.calls[0][0].data.receive_id).toBe(
-      'oc_0e3dd987a81729d805d993b20cd71ecf',
+      'oc_2db07103de151dd3ca22fa3eef34e5f2',
     );
   });
 
