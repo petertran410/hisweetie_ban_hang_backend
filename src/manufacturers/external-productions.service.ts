@@ -12,6 +12,7 @@ import { buildInventoryLogBase } from '../common/inventory-log.util';
 import { computeWeightedAverageCost, ensureInventoryRow } from '../common/production-factory.util';
 import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
 import { recalcSupplierDebt } from '../common/supplier-debt.util';
+import { outputSpec } from '../productions/production-cost.util';
 
 export const EXTERNAL_INCLUDE = {
   components: true, manufacturerMaterials: true,
@@ -149,12 +150,15 @@ export class ExternalProductionsService {
   }
 
   async receive(id: number, dto: ReceiveProductionDto, userId: number) {
+    if (dto.newCost != null || dto.costScope != null || dto.expectedOldCost != null || dto.expectedCosts != null) {
+      throw new BadRequestException('Nhận hàng không áp giá vốn. Hãy dùng thao tác Áp dụng giá vốn sau khi hoàn thành');
+    }
     await this.internal(userId);
     const result = await this.prisma.$transaction(async (tx) => {
       await this.lockAccount(tx, id);
       const row = await this.locked(tx, id);
       if (row.status !== 4) throw new ConflictException('Chỉ nhận được phiếu đã gửi, chưa nhận');
-      const quantity = dto.receivedQuantity ?? Number(row.quantity);
+      const quantity = new Prisma.Decimal(dto.receivedQuantity ?? row.quantity).toDecimalPlaces(4).toNumber();
       if (!(quantity > 0)) throw new BadRequestException('Số lượng nhận phải lớn hơn 0');
       const date = dto.completedDate ? new Date(dto.completedDate) : new Date();
       if (row.sentDate && date.toISOString().slice(0, 10) < row.sentDate.toISOString().slice(0, 10)) throw new BadRequestException('Ngày nhận không được trước ngày gửi');
@@ -166,28 +170,28 @@ export class ExternalProductionsService {
       const rate = dto.feeExchangeRate ?? Number(row.feeExchangeRate ?? 1);
       const fee = row.feeCurrency === 'CNY' ? dto.feeForeignAmount ?? Number(row.feeForeignAmount ?? 0) : dto.processingFee ?? Number(row.processingFee);
       const costs = externalCosts(supplied, fee, row.feeCurrency, rate, Number(row.materialValue));
+      await tx.$queryRaw`SELECT id FROM products WHERE id = ${row.productId} FOR UPDATE`;
+      const product = await tx.product.findUniqueOrThrow({ where: { id: row.productId } });
+      if (![2, 4].includes(product.type)) throw new BadRequestException('Thành phẩm không còn là hàng hóa quản lý tồn');
+      const batchUnitCost = new Prisma.Decimal(costs.totalCost).div(quantity).toDecimalPlaces(6);
       await ensureInventoryRow(tx, row.productId, row.destinationBranchId);
       await tx.$queryRaw`SELECT id FROM inventories WHERE "productId" = ${row.productId} AND "branchId" = ${row.destinationBranchId} FOR UPDATE`;
-      if (dto.newCost != null && dto.expectedOldCost != null) {
-        const inv = await tx.inventory.findUnique({ where: { productId_branchId: { productId: row.productId, branchId: row.destinationBranchId } } });
-        if (Math.abs(Number(inv?.cost ?? 0) - dto.expectedOldCost) > 0.005) throw new ConflictException('Giá vốn đã thay đổi; vui lòng mở lại bước nhận hàng');
-      }
       const user = await tx.user.findUnique({ where: { id: userId } });
       await tx.inventoryLog.create({ data: {
         productId: row.productId, productCode: row.productCode, productName: row.productName,
         branchId: row.destinationBranchId, branchName: row.destinationBranchName,
         transactionType: 'PRODUCTION_IN', refType: 'production', refId: row.id, refCode: row.code,
-        quantity, costPrice: costs.totalCost / quantity, transactionDate: date,
+        quantity, costPrice: batchUnitCost, transactionDate: date,
         ...buildInventoryLogBase({ userId, userName: user?.name ?? user?.email }),
       } });
       await tx.production.update({ where: { id }, data: {
         status: 2, receivedQuantity: quantity, completedDate: date, ...costs, debtAmount: costs.totalPayable,
+        batchUnitCost, outputSpecSnapshot: { ...outputSpec(product) }, costSnapshotAt: new Date(),
         feeExchangeRate: row.feeCurrency === 'CNY' ? rate : null,
         feeForeignAmount: row.feeCurrency === 'CNY' ? fee : null,
         manufacturerMaterials: { deleteMany: {}, create: rows.supplied },
       } });
       await recalcOnHandForPairs(tx, [{ productId: row.productId, branchId: row.destinationBranchId }]);
-      if (dto.newCost != null) await this.applyCostTx(tx, row, dto.newCost, dto.costScope);
       if (row.supplierId) await recalcSupplierDebt(tx, row.supplierId);
       return tx.production.findUniqueOrThrow({ where: { id }, include: EXTERNAL_INCLUDE });
     }, { timeout: 60000 });
@@ -214,28 +218,6 @@ export class ExternalProductionsService {
       ...computeWeightedAverageCost({ otherQuantity: row.status === 2 ? onHand - received : onHand, oldCost, receivedQuantity: received, unitCost }),
       applied: !!row.costAppliedAt, appliedUnitCost: row.appliedUnitCost == null ? null : Number(row.appliedUnitCost),
     };
-  }
-
-  private async applyCostTx(tx: Prisma.TransactionClient, row: { id: number; productId: number; destinationBranchId: number }, cost: number, scope?: string) {
-    if (!(cost > 0)) throw new BadRequestException('Giá vốn phải lớn hơn 0');
-    await tx.inventory.updateMany({ where: { productId: row.productId, ...(scope === 'allBranches' ? {} : { branchId: row.destinationBranchId }) }, data: { cost } });
-    await tx.production.update({ where: { id: row.id }, data: { costAppliedAt: new Date(), appliedUnitCost: cost } });
-  }
-
-  async applyCost(id: number, cost: number, scope: string | undefined, expectedOldCost: number | undefined, userId: number) {
-    await this.internal(userId);
-    const result = await this.prisma.$transaction(async (tx) => {
-      const row = await this.locked(tx, id);
-      if (row.status !== 2 || row.costAppliedAt) throw new BadRequestException('Chỉ áp giá vốn một lần cho phiếu đã hoàn thành');
-      await tx.$queryRaw`SELECT id FROM inventories WHERE "productId" = ${row.productId} AND "branchId" = ${row.destinationBranchId} FOR UPDATE`;
-      const inv = await tx.inventory.findUnique({ where: { productId_branchId: { productId: row.productId, branchId: row.destinationBranchId } } });
-      if (!inv) throw new BadRequestException('Không tìm thấy tồn kho thành phẩm');
-      if (expectedOldCost != null && Math.abs(Number(inv.cost) - expectedOldCost) > 0.005) throw new ConflictException('Giá vốn đã thay đổi, vui lòng xem lại');
-      await this.applyCostTx(tx, row, cost, scope);
-      return tx.production.findUniqueOrThrow({ where: { id }, include: EXTERNAL_INCLUDE });
-    });
-    await this.log('PRODUCTION_FACTORY_APPLY_COST', result, userId);
-    return result;
   }
 
   async cancel(id: number, userId: number) {

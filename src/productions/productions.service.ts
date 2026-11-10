@@ -34,6 +34,7 @@ import { recalcSupplierDebt } from '../common/supplier-debt.util';
 import { PurchaseOrdersService } from '../purchase-orders/purchase-orders.service';
 import { CreatePurchaseOrderDto } from '../purchase-orders/dto';
 import { ExternalProductionsService } from '../manufacturers/external-productions.service';
+import { ProductionCostService } from './production-cost.service';
 import {
   PRODUCTION_STATUS,
   computeWeightedAverageCost,
@@ -61,6 +62,7 @@ export class ProductionsService {
     private auditLogsService: AuditLogsService,
     private purchaseOrdersService: PurchaseOrdersService,
     private externalProductions?: ExternalProductionsService,
+    private costService?: ProductionCostService,
   ) {}
 
   // Bộ lọc dùng chung cho findAll + export (tổng quan/chi tiết) để file xuất
@@ -1414,6 +1416,7 @@ export class ProductionsService {
   ) {
     const production = await this.loadExternalProduction(this.prisma, id);
     if (production.manufacturerId) return this.externalProductions!.receive(id, dto, userId);
+    if (dto.newCost != null) await this.costService!.authorize(production.productId, production.destinationBranchId, dto.costScope, userId);
     if (production.status !== PRODUCTION_STATUS.SENT) {
       throw new BadRequestException('Chỉ nhận hàng cho phiếu đã gửi');
     }
@@ -1487,6 +1490,9 @@ export class ProductionsService {
     const touchedProductIds = new Set<number>();
     const { updated, purchaseOrder } = await this.prisma.$transaction(
       async (tx) => {
+        await tx.$queryRaw`SELECT id FROM productions WHERE id = ${id} FOR UPDATE`;
+        const locked = await this.loadExternalProduction(tx, id);
+        if (locked.status !== PRODUCTION_STATUS.SENT) throw new ConflictException('Phiếu đã được nhận hoặc hủy');
         const purchaseOrder = await this.purchaseOrdersService.createTx(
           tx,
           poDto,
@@ -1495,13 +1501,11 @@ export class ProductionsService {
         );
 
         const costData =
-          dto.newCost != null && dto.newCost > 0
-            ? await this.writeFinishedCost(
-                tx,
-                production,
-                dto.newCost,
-                dto.costScope,
-              )
+          dto.newCost != null
+            ? await this.costService!.write(tx, locked, {
+                newCost: dto.newCost, scope: dto.costScope,
+                expectedOldCost: dto.expectedOldCost, expectedCosts: dto.expectedCosts,
+              }, userId, true)
             : {};
 
         const updated = await tx.production.update({
@@ -1611,51 +1615,12 @@ export class ProductionsService {
     dto: ApplyProductionCostDto,
     userId: number,
   ) {
-    const external = await this.prisma.production.findUnique({ where: { id }, select: { manufacturerId: true } });
-    if (external?.manufacturerId) return this.externalProductions!.applyCost(id, dto.newCost, dto.scope, dto.expectedOldCost, userId);
-    if (dto.newCost <= 0) {
-      throw new BadRequestException('Giá vốn mới phải lớn hơn 0');
-    }
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const production = await this.loadExternalProduction(tx, id);
-      if (production.status !== PRODUCTION_STATUS.COMPLETED) {
-        throw new BadRequestException('Chỉ áp giá vốn cho phiếu đã hoàn thành');
-      }
-      if (production.costAppliedAt) {
-        throw new BadRequestException('Phiếu này đã áp giá vốn rồi');
-      }
-      if (dto.expectedOldCost != null) {
-        const dest = await tx.inventory.findUnique({
-          where: {
-            productId_branchId: {
-              productId: production.productId,
-              branchId: production.destinationBranchId,
-            },
-          },
-          select: { cost: true },
-        });
-        if (Math.abs(Number(dest?.cost ?? 0) - dto.expectedOldCost) > 0.005) {
-          throw new ConflictException(
-            'Giá vốn hiện tại đã thay đổi, vui lòng xem lại trước khi áp',
-          );
-        }
-      }
-      const costData = await this.writeFinishedCost(
-        tx,
-        production,
-        dto.newCost,
-        dto.scope,
-      );
-      return tx.production.update({
-        where: { id },
-        data: costData,
-        include: { components: true, ...PRODUCTION_PARTNER_INCLUDE },
-      });
-    });
+    const updated = await this.costService!.apply(id, dto, userId);
 
     await this.auditFactory('PRODUCTION_FACTORY_APPLY_COST', updated, userId, {
-      newCostAmount: dto.newCost,
+      newCostAmount: Number(updated.appliedUnitCost),
       scope: dto.scope || 'receiveBranch',
+      costApplication: updated.costApplicationSnapshot,
     });
     return updated;
   }
@@ -1734,36 +1699,6 @@ export class ProductionsService {
       costWasApplied: !!production.costAppliedAt,
     });
     return updated;
-  }
-
-  /** Ghi giá vốn thành phẩm (kho nhận hoặc mọi chi nhánh). Trả cột cần lưu. */
-  private async writeFinishedCost(
-    tx: any,
-    production: {
-      productId: number;
-      destinationBranchId: number;
-    },
-    newCost: number,
-    scope: 'receiveBranch' | 'allBranches' | undefined,
-  ) {
-    const where =
-      scope === 'allBranches'
-        ? { productId: production.productId }
-        : {
-            productId: production.productId,
-            branchId: production.destinationBranchId,
-          };
-    const { count } = await tx.inventory.updateMany({
-      where,
-      data: { cost: newCost },
-    });
-    if (count === 0) {
-      throw new BadRequestException('Thành phẩm chưa có tồn kho tại kho nhận');
-    }
-    return {
-      costAppliedAt: new Date(),
-      appliedUnitCost: newCost,
-    };
   }
 
   /** Dòng ProductionComponent theo công thức + số thực tế (nếu có). */

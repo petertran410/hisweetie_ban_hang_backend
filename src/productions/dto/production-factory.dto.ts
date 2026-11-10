@@ -2,15 +2,25 @@ import {
   IsArray,
   IsDateString,
   IsIn,
+  IsInt,
   IsNumber,
   IsOptional,
   IsString,
   Min,
   ValidateNested,
+  ValidateIf,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ProductionComponentDto } from './create-production.dto';
 import { ManufacturerMaterialDto } from '../../manufacturers/dto';
+
+export class ExpectedInventoryCostDto {
+  @IsInt() @Min(1) @Type(() => Number)
+  branchId: number;
+
+  @IsNumber() @Min(0) @Type(() => Number)
+  cost: number;
+}
 
 /** Phiếu tạm → Đã gửi: xuất nguyên liệu khỏi kho, gửi sang nhà máy. */
 export class SendProductionDto {
@@ -28,6 +38,9 @@ export class SendProductionDto {
 
 /** Đã gửi → Hoàn thành: nhà máy giao thành phẩm. */
 export class ReceiveProductionDto {
+  @IsOptional() @IsArray() @ValidateNested({ each: true })
+  @Type(() => ExpectedInventoryCostDto)
+  expectedCosts?: ExpectedInventoryCostDto[];
   @IsOptional() @IsNumber() @Min(0)
   expectedOldCost?: number;
   @IsOptional() @IsArray() @ValidateNested({ each: true })
@@ -76,10 +89,19 @@ export class ReceiveProductionDto {
 }
 
 export class ApplyProductionCostDto {
+  @IsOptional()
+  @IsIn(['batch'])
+  basis?: 'batch';
+
+  @ValidateIf((dto) => dto.basis !== 'batch' || dto.newCost != null)
   @IsNumber()
   @Min(0)
   @Type(() => Number)
-  newCost: number;
+  newCost?: number;
+
+  @IsOptional() @IsArray() @ValidateNested({ each: true })
+  @Type(() => ExpectedInventoryCostDto)
+  expectedCosts?: ExpectedInventoryCostDto[];
 
   @IsOptional()
   @IsIn(['receiveBranch', 'allBranches'])
@@ -90,6 +112,11 @@ export class ApplyProductionCostDto {
   @IsNumber()
   @Type(() => Number)
   expectedOldCost?: number;
+}
+
+export class CostApplicationPreviewQueryDto {
+  @IsOptional() @IsIn(['receiveBranch', 'allBranches'])
+  scope?: 'receiveBranch' | 'allBranches';
 }
 
 export class CostPreviewQueryDto {

@@ -21,18 +21,26 @@ import {
   ReceiveProductionDto,
   ApplyProductionCostDto,
   CostPreviewQueryDto,
+  CostApplicationPreviewQueryDto,
   CancelSentProductionDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { RequirePermissions } from 'src/auth/decorators/permissions.decorator';
+import { ProductionCostHistoryService } from './production-cost-history.service';
+import { ProductionCostService } from './production-cost.service';
+import { ProductionCostHistoryQueryDto } from './dto/production-cost-history.dto';
 
 @ApiTags('Productions')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard)
 @Controller('productions')
 export class ProductionsController {
-  constructor(private productionsService: ProductionsService) {}
+  constructor(
+    private productionsService: ProductionsService,
+    private costHistory: ProductionCostHistoryService,
+    private costService: ProductionCostService,
+  ) {}
 
   @Get()
   @RequirePermissions('productions:view')
@@ -76,6 +84,18 @@ export class ProductionsController {
     );
 
     await this.productionsService.exportProductionsDetail(query, res);
+  }
+
+  @Get('cost-history')
+  @RequirePermissions('productions:view')
+  history(@Query() query: ProductionCostHistoryQueryDto) {
+    return this.costHistory.history(query);
+  }
+
+  @Get('cost-history/chart')
+  @RequirePermissions('productions:view')
+  historyChart(@Query() query: ProductionCostHistoryQueryDto) {
+    return this.costHistory.history(query, true);
   }
 
   @Get(':id')
@@ -138,7 +158,7 @@ export class ProductionsController {
   }
 
   @Post(':id/apply-cost')
-  @RequirePermissions('productions:update')
+  @RequirePermissions('productions:apply_cost')
   applyCost(
     @Param('id') id: string,
     @Body() dto: ApplyProductionCostDto,
@@ -149,6 +169,12 @@ export class ProductionsController {
       dto,
       req.user?.id || 1,
     );
+  }
+
+  @Get(':id/cost-application-preview')
+  @RequirePermissions('productions:apply_cost')
+  applicationPreview(@Param('id') id: string, @Query() query: CostApplicationPreviewQueryDto, @Req() req: any) {
+    return this.costService.preview(+id, query.scope, req.user.id);
   }
 
   // Phiếu đã gửi / hoàn thành chỉ admin hủy được: dùng quyền Xóa phiếu sản

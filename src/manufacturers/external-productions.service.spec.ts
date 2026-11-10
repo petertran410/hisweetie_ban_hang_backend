@@ -1,4 +1,5 @@
 import { ExternalProductionsService } from './external-productions.service';
+import { Prisma } from '@prisma/client';
 import { ManufacturersService } from './manufacturers.service';
 import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
 import { recalcSupplierDebt } from '../common/supplier-debt.util';
@@ -32,7 +33,10 @@ function fixture(status = 1) {
     inventoryLog: { create: jest.fn().mockResolvedValue({}) },
     productionComponent: { update: jest.fn().mockResolvedValue({}) },
     payableAllocation: { count: jest.fn().mockResolvedValue(0) },
-    product: { findMany: jest.fn().mockResolvedValue([]) },
+    product: {
+      findMany: jest.fn().mockResolvedValue([]),
+      findUniqueOrThrow: jest.fn().mockResolvedValue({ type: 2, unit: 'kg', weight: null, weightUnit: 'kg', conversionValue: new Prisma.Decimal(1), masterUnitId: null, isPieceUnit: false }),
+    },
   };
   const prisma: any = { $transaction: jest.fn((callback) => callback(tx)), user: { findUnique: jest.fn().mockResolvedValue({ supplierId: null }) } };
   const manufacturers = new ManufacturersService(prisma);
@@ -63,6 +67,10 @@ describe('external production lifecycle', () => {
     expect(tx.inventoryLog.create.mock.calls[0][0].data).toMatchObject({ productId: 10, quantity: 160, transactionType: 'PRODUCTION_IN', refType: 'production' });
     expect(recalcSupplierDebt).toHaveBeenCalledWith(tx, 9);
     expect(recalcOnHandForPairs).toHaveBeenCalled();
+    expect(Number(row.batchUnitCost)).toBe(206.25);
+    expect(row.outputSpecSnapshot).toEqual({ unit: 'kg', weight: null, weightUnit: null, conversionValue: '1', masterUnitId: null, isPieceUnit: false });
+    expect(row.costSnapshotAt).toBeInstanceOf(Date);
+    expect(tx.inventory.updateMany).not.toHaveBeenCalled();
   });
 
   it('rejects repeated receipt before creating a second stock entry', async () => {
@@ -71,10 +79,43 @@ describe('external production lifecycle', () => {
     expect(tx.inventoryLog.create).not.toHaveBeenCalled();
   });
 
-  it('rejects receipt with stale confirmed cost', async () => {
+  it('rejects inline cost application even with a valid cost before any stock/debt write', async () => {
     const { service, tx } = fixture(4);
-    await expect(service.receive(1, { newCost: 150, expectedOldCost: 90 }, 7)).rejects.toThrow('Giá vốn đã thay đổi');
+    await expect(service.receive(1, { newCost: 150, expectedOldCost: 100 }, 7)).rejects.toThrow('Nhận hàng không áp giá vốn');
     expect(tx.inventoryLog.create).not.toHaveBeenCalled();
+    expect(tx.production.update).not.toHaveBeenCalled();
+  });
+
+  it('snapshots 700/300 with zero machining and actual shrinkage, without inferring secret quantities', async () => {
+    const { service, tx, row } = fixture(4);
+    row.materialValue = 70000;
+    await service.receive(1, { receivedQuantity: 950, processingFee: 0, manufacturerMaterials: [{ pricingMode: 'TOTAL', amount: 60000 }] }, 7);
+    expect(Number(row.batchUnitCost)).toBe(136.842105);
+    expect(row).toMatchObject({ totalCost: 130000, debtAmount: 60000 });
+    expect(tx.production.update.mock.calls[0][0].data.manufacturerMaterials.create[0].quantity).toBeNull();
+  });
+
+  it('freezes the CNY settlement rate and zero fee without overwriting inventory cost', async () => {
+    const { service, tx, row } = fixture(4);
+    row.feeCurrency = 'CNY';
+    await service.receive(1, { receivedQuantity: 160, feeForeignAmount: 0, feeExchangeRate: 3500, manufacturerMaterials: [{ pricingMode: 'UNIT_PRICE', quantity: 80, unit: 'kg', unitPrice: 2 }] }, 7);
+    expect(row).toMatchObject({ totalCost: 568000, totalPayable: 560000, feeExchangeRate: 3500, processingFee: 0 });
+    expect(Number(row.batchUnitCost)).toBe(3550);
+    expect(tx.inventory.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('values known and confidential NSX inputs together without moving either through owned stock', async () => {
+    const { service, tx, row } = fixture(4);
+    tx.product.findMany.mockResolvedValue([{ id: 11, code: 'NSX-B', name: 'Trà B', type: 2 }]);
+    await service.receive(1, { receivedQuantity: 160, processingFee: 0, manufacturerMaterials: [
+      { productId: 11, pricingMode: 'UNIT_PRICE', quantity: 40, unit: 'kg', unitPrice: 200 },
+      { pricingMode: 'TOTAL', amount: 10000 },
+    ] }, 7);
+    expect(row).toMatchObject({ totalCost: 26000, totalPayable: 18000 });
+    expect(Number(row.batchUnitCost)).toBe(162.5);
+    expect(tx.inventoryLog.create).toHaveBeenCalledTimes(1);
+    expect(tx.inventoryLog.create.mock.calls[0][0].data.productId).toBe(10);
+    expect(tx.productionComponent.update).not.toHaveBeenCalled();
   });
 
   it('rejects cancellation while a payment allocation is active', async () => {

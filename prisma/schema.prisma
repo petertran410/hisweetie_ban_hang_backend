@@ -1055,9 +1055,17 @@ model Production {
   receivedQuantity      Decimal?              @db.Decimal(18, 4)
   sentDate              DateTime?
   completedDate         DateTime?
+  /// Immutable receipt-time batch valuation; null for historical documents.
+  batchUnitCost         Decimal?              @db.Decimal(18, 6)
+  outputSpecSnapshot    Json?
+  costSnapshotAt        DateTime?
   /// Giá vốn thành phẩm chỉ ghi khi người dùng xác nhận.
   costAppliedAt         DateTime?
   appliedUnitCost       Decimal?              @db.Decimal(18, 6)
+  costAppliedById       Int?
+  costAppliedByName     String?
+  costAppliedScope      String?
+  costApplicationSnapshot Json?
   createdAt             DateTime              @default(now())
   updatedAt             DateTime              @updatedAt
   components            ProductionComponent[]
@@ -1082,6 +1090,7 @@ model Production {
   @@index([supplierId])
   @@index([isExternal])
   @@index([manufacturerId, status])
+  @@index([productId, status, completedDate, id])
   @@map("productions")
 }
 
