@@ -7,6 +7,7 @@ import {
 } from '../audit-logs/audit-templates';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { recalcSupplierDebt } from '../common/supplier-debt.util';
+import { lockPurchaseOrderAccount } from '../common/payable-guard.util';
 
 export class CreatePurchaseOrderPaymentDto {
   purchaseOrderId: number;
@@ -28,6 +29,7 @@ export class PurchaseOrderPaymentsService {
 
   async create(dto: CreatePurchaseOrderPaymentDto, userId: number) {
     return this.prisma.$transaction(async (tx) => {
+      await lockPurchaseOrderAccount(tx, dto.purchaseOrderId);
       const purchaseOrder = await tx.purchaseOrder.findUnique({
         where: { id: dto.purchaseOrderId },
         include: {
@@ -221,6 +223,9 @@ export class PurchaseOrderPaymentsService {
 
   async remove(id: number, userId?: number) {
     return this.prisma.$transaction(async (tx) => {
+      if (await tx.payableAllocation.findUnique({ where: { purchaseOrderPaymentId: id } })) {
+        throw new Error('Thanh toán thuộc lần phân bổ chung; hãy hủy lần phân bổ thay vì xóa riêng dòng này');
+      }
       const payment = await tx.purchaseOrderPayment.findUnique({
         where: { id },
         include: {

@@ -2,14 +2,25 @@ import {
   IsArray,
   IsDateString,
   IsIn,
+  IsInt,
   IsNumber,
   IsOptional,
   IsString,
   Min,
   ValidateNested,
+  ValidateIf,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ProductionComponentDto } from './create-production.dto';
+import { ManufacturerMaterialDto } from '../../manufacturers/dto';
+
+export class ExpectedInventoryCostDto {
+  @IsInt() @Min(1) @Type(() => Number)
+  branchId: number;
+
+  @IsNumber() @Min(0) @Type(() => Number)
+  cost: number;
+}
 
 /** Phiếu tạm → Đã gửi: xuất nguyên liệu khỏi kho, gửi sang nhà máy. */
 export class SendProductionDto {
@@ -27,6 +38,13 @@ export class SendProductionDto {
 
 /** Đã gửi → Hoàn thành: nhà máy giao thành phẩm. */
 export class ReceiveProductionDto {
+  @IsOptional() @IsArray() @ValidateNested({ each: true })
+  @Type(() => ExpectedInventoryCostDto)
+  expectedCosts?: ExpectedInventoryCostDto[];
+  @IsOptional() @IsNumber() @Min(0)
+  expectedOldCost?: number;
+  @IsOptional() @IsArray() @ValidateNested({ each: true })
+  @Type(() => ManufacturerMaterialDto) manufacturerMaterials?: ManufacturerMaterialDto[];
   @IsOptional()
   @IsDateString()
   completedDate?: string;
@@ -48,13 +66,42 @@ export class ReceiveProductionDto {
   @IsOptional()
   @IsIn(['receiveBranch', 'allBranches'])
   costScope?: 'receiveBranch' | 'allBranches';
-}
 
-export class ApplyProductionCostDto {
+  // Phí chốt lúc nhận (= giá trị phiếu nhập). Bỏ trống → phí ước tính trên
+  // phiếu. Phí VND dùng `processingFee`; phí CNY dùng số CNY + tỷ giá.
+  @IsOptional()
   @IsNumber()
   @Min(0)
   @Type(() => Number)
-  newCost: number;
+  processingFee?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  feeForeignAmount?: number;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  feeExchangeRate?: number;
+}
+
+export class ApplyProductionCostDto {
+  @IsOptional()
+  @IsIn(['batch'])
+  basis?: 'batch';
+
+  @ValidateIf((dto) => dto.basis !== 'batch' || dto.newCost != null)
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  newCost?: number;
+
+  @IsOptional() @IsArray() @ValidateNested({ each: true })
+  @Type(() => ExpectedInventoryCostDto)
+  expectedCosts?: ExpectedInventoryCostDto[];
 
   @IsOptional()
   @IsIn(['receiveBranch', 'allBranches'])
@@ -67,12 +114,24 @@ export class ApplyProductionCostDto {
   expectedOldCost?: number;
 }
 
+export class CostApplicationPreviewQueryDto {
+  @IsOptional() @IsIn(['receiveBranch', 'allBranches'])
+  scope?: 'receiveBranch' | 'allBranches';
+}
+
 export class CostPreviewQueryDto {
   @IsOptional()
   @IsNumber()
   @Min(0)
   @Type(() => Number)
   receivedQuantity?: number;
+
+  // Phí (VND) người dùng đang nhập ở modal Nhận hàng — để xem trước đúng.
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  processingFee?: number;
 }
 
 export class CancelSentProductionDto {

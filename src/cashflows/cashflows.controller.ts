@@ -5,6 +5,7 @@ import {
   Put,
   Delete,
   Body,
+  ForbiddenException,
   Param,
   Query,
   Req,
@@ -156,6 +157,7 @@ export class CashFlowsController {
     @Req() req: any,
   ) {
     const userId = req.user?.id || 1;
+    if (dto.allocations && req.user?.supplierId) throw new ForbiddenException('Thanh toán phân bổ chỉ dành cho nhân viên nội bộ');
     return this.cashFlowsService.createSupplierPayment(dto, userId);
   }
 

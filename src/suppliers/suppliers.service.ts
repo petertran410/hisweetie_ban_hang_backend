@@ -15,10 +15,7 @@ import {
 import { buildChanges } from '../audit-logs/audit-diff.utils';
 import { ImportSupplierBalanceAdjustmentsDto } from './dto/import-supplier-balance-adjustment.dto';
 import { recalcSupplierDebt } from '../common/supplier-debt.util';
-import {
-  getHeldMaterialValue,
-  getProductionFeeDebtItems,
-} from '../common/production-factory.util';
+import { getHeldMaterialValue } from '../common/production-factory.util';
 import {
   SUPPLIER_DEBT_PO_WHERE,
   SUPPLIER_DEBT_SR_WHERE,
@@ -1016,32 +1013,29 @@ export class SuppliersService {
       });
     }
 
-    // Phí sản xuất (Gửi sản xuất đã hoàn thành) → cộng nợ. Dùng
-    // getProductionFeeDebtItems — CÙNG nguồn với Formula B.
-    const productionFeeItems = await getProductionFeeDebtItems(
-      this.prisma,
-      supplierId,
-    );
-    for (const item of productionFeeItems) {
-      timeline.push({
-        type: 'production_fee',
-        id: item.id,
-        code: item.code,
-        date: item.date,
-        createdAt: item.createdAt,
-        amount: item.amount,
-        method: null,
-        description: item.description,
-        debtSnapshot: 0,
-        branch: item.branch,
-        user: null,
-      });
-    }
-
+    const productions = await this.prisma.production.findMany({
+      where: { supplierId, manufacturerId: { not: null }, isExternal: true, status: 2 },
+      include: { destinationBranch: { select: { id: true, name: true } }, creator: { select: { id: true, name: true } } },
+    });
+    for (const row of productions) timeline.push({
+      type: 'production_fee', id: row.id, code: row.code, date: row.completedDate ?? row.updatedAt,
+      createdAt: row.createdAt, amount: Number(row.totalPayable), description: `Sản xuất ${row.code}`,
+      debtSnapshot: 0, branch: row.destinationBranch, user: row.creator,
+    });
+    const adjustments = await this.prisma.payableAllocation.findMany({
+      where: { status: 1, fxAdjustment: { not: 0 }, batch: { accountType: 'S', accountId: supplierId, status: 1 } },
+      include: { batch: { include: { cashFlow: { include: { branch: { select: { id: true, name: true } } } } } } },
+    });
+    for (const row of adjustments) timeline.push({
+      type: 'fx_adjustment', id: row.id, code: row.batch.cashFlow?.code ?? `CT${row.batchId}`,
+      date: row.batch.transDate, createdAt: row.createdAt, amount: Number(row.fxAdjustment),
+      description: `Chênh lệch tỷ giá ${row.targetCode}`, debtSnapshot: 0, branch: row.batch.cashFlow?.branch ?? null, user: null,
+    });
     // 3. Sort tăng dần
     const calcOrder: Record<string, number> = {
       purchase: 0,
       production_fee: 0,
+      fx_adjustment: 2,
       balance_adjustment: 1,
       supplier_return: 2,
       payment: 3,
@@ -1063,7 +1057,7 @@ export class SuppliersService {
     // 4. Tính debtSnapshot
     let runningDebt = 0;
     for (const item of timeline) {
-      if (item.type === 'purchase' || item.type === 'production_fee') {
+      if (item.type === 'purchase' || item.type === 'production_fee' || item.type === 'fx_adjustment') {
         runningDebt += item.amount;
       } else if (item.type === 'balance_adjustment') {
         runningDebt += item.amount; // ← đối xứng KH "expense": cashflow thu S tăng debt
@@ -1115,7 +1109,8 @@ export class SuppliersService {
 
     const TYPE_LABEL: Record<string, string> = {
       purchase: 'Nhập hàng',
-      production_fee: 'Phí sản xuất',
+      production_fee: 'Sản xuất',
+      fx_adjustment: 'Chênh lệch tỷ giá',
       payment: 'Thanh toán',
       balance_adjustment: 'Cân bằng nợ',
       supplier_return: 'Trả hàng nhập',
@@ -1233,9 +1228,7 @@ export class SuppliersService {
     //   cân bằng nợ (cashflow thu S). Ghi CÓ (credit) = giảm nợ: thanh toán +
     //   trả hàng nhập. Đối xứng Formula B.
     const isItemDebit = (item: any): boolean =>
-      item.type === 'purchase' ||
-      item.type === 'production_fee' ||
-      item.type === 'balance_adjustment';
+      item.type === 'purchase' || item.type === 'production_fee' || item.type === 'fx_adjustment' || item.type === 'balance_adjustment';
 
     // ── 2. Nợ đầu kỳ / cuối kỳ — lấy từ debtSnapshot ─────────────────────
     let noDauKy = 0;
@@ -1356,7 +1349,8 @@ export class SuppliersService {
 
     const TYPE_LABEL: Record<string, string> = {
       purchase: 'Nhập hàng',
-      production_fee: 'Phí sản xuất',
+      production_fee: 'Sản xuất',
+      fx_adjustment: 'Chênh lệch tỷ giá',
       payment: 'Thanh toán',
       balance_adjustment: 'Cân bằng nợ',
       supplier_return: 'Trả hàng nhập',

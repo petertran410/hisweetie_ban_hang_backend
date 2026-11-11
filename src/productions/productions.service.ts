@@ -31,16 +31,28 @@ import {
   InventoryLogActor,
 } from '../common/inventory-log.util';
 import { recalcSupplierDebt } from '../common/supplier-debt.util';
+import { PurchaseOrdersService } from '../purchase-orders/purchase-orders.service';
+import { CreatePurchaseOrderDto } from '../purchase-orders/dto';
+import { ExternalProductionsService } from '../manufacturers/external-productions.service';
+import { ProductionCostService } from './production-cost.service';
 import {
   PRODUCTION_STATUS,
   computeWeightedAverageCost,
   productionFeeInVnd,
 } from '../common/production-factory.util';
 
-// Quan hệ đọc kèm phiếu để hiển thị nhà máy / NCC của phiếu Gửi sản xuất.
+// Quan hệ đọc kèm phiếu để hiển thị nhà máy / NCC / phiếu nhập nhận hàng
+// của phiếu Gửi sản xuất.
 const PRODUCTION_PARTNER_INCLUDE = {
+  manufacturer: { select: { id: true, code: true, name: true, supplierId: true } },
+  manufacturerMaterials: true,
   factory: { select: { id: true, code: true, name: true } },
   supplier: { select: { id: true, code: true, name: true } },
+  purchaseOrders: {
+    where: { status: { not: 2 } },
+    select: { id: true, code: true, status: true, isDraft: true },
+    orderBy: { id: 'desc' as const },
+  },
 };
 
 @Injectable()
@@ -48,6 +60,9 @@ export class ProductionsService {
   constructor(
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
+    private purchaseOrdersService: PurchaseOrdersService,
+    private externalProductions?: ExternalProductionsService,
+    private costService?: ProductionCostService,
   ) {}
 
   // Bộ lọc dùng chung cho findAll + export (tổng quan/chi tiết) để file xuất
@@ -86,6 +101,9 @@ export class ProductionsService {
     }
     if (query.supplierIds?.length) {
       where.supplierId = { in: query.supplierIds };
+    }
+    if (query.manufacturerIds?.length) {
+      where.manufacturerId = { in: query.manufacturerIds };
     }
     if (query.createdByIds?.length) {
       where.createdById = { in: query.createdByIds };
@@ -280,9 +298,13 @@ export class ProductionsService {
       { header: 'Công thức', key: 'formulaName', width: 18 },
       { header: 'Mã nguyên liệu', key: 'componentCode', width: 16 },
       { header: 'Tên nguyên liệu', key: 'componentName', width: 30 },
-      { header: 'SL nguyên liệu (g)', key: 'actualGrams', width: 16 },
+      { header: 'SL nguyên liệu', key: 'actualGrams', width: 16 },
       { header: 'Định lượng (g)', key: 'formulaGrams', width: 14 },
       { header: 'SL trừ kho', key: 'unitsDeducted', width: 14 },
+      { header: 'Nguồn nguyên liệu', key: 'materialSource', width: 20 },
+      { header: 'Đơn vị', key: 'materialUnit', width: 12 },
+      { header: 'Tiền nguyên liệu NSX', key: 'materialAmount', width: 20 },
+      { header: 'Tiền tệ', key: 'currency', width: 10 },
     ];
 
     const headerRow = sheet.getRow(1);
@@ -304,7 +326,7 @@ export class ProductionsService {
         skip: cursor,
         take: BATCH_SIZE,
         orderBy: { createdAt: 'desc' },
-        include: { components: true },
+        include: { components: true, manufacturerMaterials: true },
       });
 
       if (batch.length === 0) break;
@@ -333,7 +355,6 @@ export class ProductionsService {
             unitsDeducted: 0,
           });
           row.commit();
-          continue;
         }
 
         for (const c of p.components) {
@@ -344,8 +365,18 @@ export class ProductionsService {
             formulaGrams: Number(c.formulaGrams) || 0,
             actualGrams: Number(c.actualGrams) || 0,
             unitsDeducted: Number(c.unitsDeducted) || 0,
+            materialSource: p.manufacturerId ? 'Của mình' : '',
+            materialUnit: c.unit ?? 'g',
           });
           row.commit();
+        }
+        for (const c of p.manufacturerMaterials) {
+          sheet.addRow({
+            ...base, componentCode: c.productCode ?? '', componentName: c.description,
+            actualGrams: c.quantity == null ? '' : Number(c.quantity), unitsDeducted: 0,
+            materialSource: 'NSX bổ sung', materialUnit: c.unit ?? '',
+            materialAmount: Number(c.amount), currency: p.feeCurrency,
+          }).commit();
         }
       }
 
@@ -370,6 +401,13 @@ export class ProductionsService {
   }
 
   async create(dto: CreateProductionDto, userId: number) {
+    if (dto.isExternal) {
+      if (!dto.manufacturerId) throw new BadRequestException('Vui lòng chọn nhà sản xuất');
+      return this.externalProductions!.save(dto, userId);
+    }
+    if (dto.manufacturerId || dto.ownMaterials || dto.manufacturerMaterials) {
+      throw new BadRequestException('Nguyên liệu ngoài chỉ dùng cho phiếu gửi sản xuất');
+    }
     const { product, formula } = await this.loadProductWithFormula(
       this.prisma,
       dto.productId,
@@ -529,6 +567,26 @@ export class ProductionsService {
 
   async update(id: number, dto: UpdateProductionDto, userId?: number) {
     const production = await this.findOne(id);
+    if (production.manufacturerId) {
+      return this.externalProductions!.save({
+        ...production, ...dto,
+        manufacturerId: dto.manufacturerId ?? production.manufacturerId,
+        quantity: dto.quantity ?? Number(production.quantity),
+        processingFee: dto.processingFee ?? Number(production.processingFee),
+        feeForeignAmount: dto.feeForeignAmount ?? Number(production.feeForeignAmount ?? 0),
+        feeExchangeRate: dto.feeExchangeRate ?? Number(production.feeExchangeRate ?? 1),
+        ownMaterials: dto.ownMaterials ?? production.components.map((line) => ({
+          productId: line.componentProductId, quantity: Number(line.actualGrams), unit: line.unit ?? 'unit',
+        })),
+        manufacturerMaterials: dto.manufacturerMaterials ?? production.manufacturerMaterials.map((line) => ({
+          productId: line.productId, description: line.description, quantity: line.quantity == null ? null : Number(line.quantity),
+          unit: line.unit, pricingMode: line.pricingMode as 'UNIT_PRICE' | 'TOTAL', unitPrice: Number(line.unitPrice), amount: Number(line.amount),
+        })),
+      } as CreateProductionDto, userId!, id);
+    }
+    if (dto.manufacturerId || dto.ownMaterials || dto.manufacturerMaterials) {
+      throw new BadRequestException('Không được chuyển loại phiếu cũ sang luồng gửi sản xuất mới');
+    }
 
     const updateData: any = {};
 
@@ -817,6 +875,9 @@ export class ProductionsService {
 
     if (!production) {
       throw new NotFoundException(`Production with id ${id} not found`);
+    }
+    if (production.manufacturerId) {
+      return production.status === 3 ? production : this.externalProductions!.cancel(id, userId!);
     }
 
     if (
@@ -1261,6 +1322,7 @@ export class ProductionsService {
   /** Phiếu tạm → Đã gửi: xuất nguyên liệu khỏi kho, gửi sang nhà máy. */
   async sendToFactory(id: number, dto: SendProductionDto, userId: number) {
     const production = await this.loadExternalProduction(this.prisma, id);
+    if (production.manufacturerId) return this.externalProductions!.send(id, dto.sentDate, userId);
     if (production.status !== PRODUCTION_STATUS.DRAFT) {
       throw new BadRequestException('Chỉ gửi hàng được từ phiếu tạm');
     }
@@ -1342,8 +1404,10 @@ export class ProductionsService {
   }
 
   /**
-   * Đã gửi → Hoàn thành: nhập thành phẩm vào kho đích, phí sản xuất vào nợ
-   * NCC. Có `newCost` (người dùng đã xác nhận) thì ghi luôn giá vốn.
+   * Nhận hàng = tạo 1 phiếu nhập (PN) đã nhập kho: 1 dòng thành phẩm, giá trị
+   * = phí sản xuất. PN cộng tồn thành phẩm và cộng phí vào nợ NCC; phiếu tự
+   * chuyển Hoàn thành qua `syncProductionFromPurchaseOrders`. Có `newCost`
+   * (người dùng đã xác nhận) thì ghi luôn giá vốn — cùng 1 transaction.
    */
   async receiveFromFactory(
     id: number,
@@ -1351,6 +1415,8 @@ export class ProductionsService {
     userId: number,
   ) {
     const production = await this.loadExternalProduction(this.prisma, id);
+    if (production.manufacturerId) return this.externalProductions!.receive(id, dto, userId);
+    if (dto.newCost != null) await this.costService!.authorize(production.productId, production.destinationBranchId, dto.costScope, userId);
     if (production.status !== PRODUCTION_STATUS.SENT) {
       throw new BadRequestException('Chỉ nhận hàng cho phiếu đã gửi');
     }
@@ -1371,64 +1437,98 @@ export class ProductionsService {
       throw new BadRequestException('Ngày nhận không được trước ngày gửi');
     }
 
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      select: { name: true, email: true },
-    });
-    const actor = buildInventoryLogActor(userId, user?.name || user?.email);
+    // Phí chốt lúc nhận — mặc định là phí ước tính trên phiếu.
+    const isCny = production.feeCurrency === 'CNY';
+    const feeForeignAmount = isCny
+      ? Number(dto.feeForeignAmount ?? production.feeForeignAmount ?? 0)
+      : null;
+    const feeExchangeRate = isCny
+      ? Number(dto.feeExchangeRate ?? production.feeExchangeRate ?? 0)
+      : null;
+    if (isCny && !(Number(feeExchangeRate) > 0)) {
+      throw new BadRequestException('Tỷ giá phí CNY phải lớn hơn 0');
+    }
+    const fee = isCny
+      ? productionFeeInVnd({
+          currency: 'CNY',
+          foreignAmount: feeForeignAmount,
+          exchangeRate: feeExchangeRate,
+        })
+      : Math.round(Number(dto.processingFee ?? production.processingFee ?? 0));
 
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const product = await tx.product.findUnique({
-        where: { id: production.productId },
-        select: { id: true, code: true, name: true },
-      });
-      if (!product) throw new NotFoundException('Không tìm thấy thành phẩm');
-
-      const pair = await this.writeFinishedInLog(
-        tx,
-        product,
-        production.destinationBranchId,
-        receivedQuantity,
+    const poDto: CreatePurchaseOrderDto = {
+      productionId: production.id,
+      supplierId: production.supplierId,
+      branchId: production.destinationBranchId,
+      purchaseDate: completedDate.toISOString(),
+      isDraft: false,
+      currency: isCny ? 'CNY' : 'VND',
+      exchangeRate: isCny ? Number(feeExchangeRate) : 1,
+      description: `Nhận hàng sản xuất ${production.code}`,
+      items: [
         {
-          id: production.id,
-          code: production.code,
-          transactionDate: completedDate,
+          productId: production.productId,
+          quantity: receivedQuantity,
+          // Đơn giá chỉ để hiển thị; thành tiền chốt đúng bằng phí.
+          price: Math.round((fee / receivedQuantity) * 1000) / 1000,
+          totalPrice: fee,
+          lineNumber: 1,
+          conditionType: 'normal',
+          ...(isCny
+            ? {
+                factoryPrice:
+                  Math.round(
+                    (Number(feeForeignAmount) / receivedQuantity) * 10000,
+                  ) / 10000,
+                factorySubTotal: Number(feeForeignAmount),
+              }
+            : {}),
         },
-        actor,
-      );
-      await recalcOnHandForPairs(tx, [pair]);
+      ],
+    };
 
-      const costData =
-        dto.newCost != null && dto.newCost > 0
-          ? await this.writeFinishedCost(
-              tx,
-              production,
-              dto.newCost,
-              dto.costScope,
-            )
-          : {};
+    const touchedProductIds = new Set<number>();
+    const { updated, purchaseOrder } = await this.prisma.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT id FROM productions WHERE id = ${id} FOR UPDATE`;
+        const locked = await this.loadExternalProduction(tx, id);
+        if (locked.status !== PRODUCTION_STATUS.SENT) throw new ConflictException('Phiếu đã được nhận hoặc hủy');
+        const purchaseOrder = await this.purchaseOrdersService.createTx(
+          tx,
+          poDto,
+          userId,
+          touchedProductIds,
+        );
 
-      const result = await tx.production.update({
-        where: { id },
-        data: {
-          status: PRODUCTION_STATUS.COMPLETED,
-          completedDate,
-          receivedQuantity,
-          totalCost:
-            Number(production.materialValue) + Number(production.processingFee),
-          ...costData,
-        },
-        include: { components: true, ...PRODUCTION_PARTNER_INCLUDE },
-      });
+        const costData =
+          dto.newCost != null
+            ? await this.costService!.write(tx, locked, {
+                newCost: dto.newCost, scope: dto.costScope,
+                expectedOldCost: dto.expectedOldCost, expectedCosts: dto.expectedCosts,
+              }, userId, true)
+            : {};
 
-      // Phí sản xuất bắt đầu tính vào nợ NCC từ lúc hoàn thành.
-      await recalcSupplierDebt(tx, production.supplierId);
-      return result;
-    });
+        const updated = await tx.production.update({
+          where: { id },
+          data: costData,
+          include: { components: true, ...PRODUCTION_PARTNER_INCLUDE },
+        });
+        if (updated.status !== PRODUCTION_STATUS.COMPLETED) {
+          throw new ConflictException(
+            'Không chuyển được phiếu sang Hoàn thành, vui lòng thử lại',
+          );
+        }
+        return { updated, purchaseOrder };
+      },
+      { timeout: 60000, maxWait: 10000 },
+    );
+
+    this.purchaseOrdersService.enqueueLarkSync(touchedProductIds);
 
     await this.auditFactory('PRODUCTION_FACTORY_RECEIVE', updated, userId, {
       receivedQuantity,
       processingFee: Number(updated.processingFee),
+      purchaseOrderCode: purchaseOrder?.code ?? null,
       appliedUnitCost:
         updated.appliedUnitCost != null
           ? Number(updated.appliedUnitCost)
@@ -1441,8 +1541,13 @@ export class ProductionsService {
    * Xem trước giá thành + giá vốn bình quân đề xuất. Dùng được cả TRƯỚC khi
    * nhận hàng (phiếu Đã gửi, truyền SL dự kiến nhận) lẫn sau khi hoàn thành.
    */
-  async getFactoryCostPreview(id: number, receivedQuantity?: number) {
+  async getFactoryCostPreview(
+    id: number,
+    receivedQuantity?: number,
+    processingFee?: number,
+  ) {
     const production = await this.loadExternalProduction(this.prisma, id);
+    if (production.manufacturerId) return this.externalProductions!.preview(id, receivedQuantity, processingFee);
     const completed = production.status === PRODUCTION_STATUS.COMPLETED;
     if (!completed && production.status !== PRODUCTION_STATUS.SENT) {
       throw new BadRequestException(
@@ -1453,8 +1558,13 @@ export class ProductionsService {
     const received = completed
       ? Number(production.receivedQuantity ?? production.quantity)
       : (receivedQuantity ?? Number(production.quantity));
-    const totalCost =
-      Number(production.materialValue) + Number(production.processingFee);
+    // Trước khi nhận: phí người dùng đang nhập ở modal (nếu có). Sau khi
+    // nhận: phí đã chốt theo phiếu nhập.
+    const fee =
+      !completed && processingFee != null
+        ? processingFee
+        : Number(production.processingFee);
+    const totalCost = Number(production.materialValue) + fee;
     const unitCost =
       received > 0 ? Math.round((totalCost / received) * 1e6) / 1e6 : 0;
 
@@ -1482,7 +1592,7 @@ export class ProductionsService {
       receiveBranchId: production.destinationBranchId,
       receiveBranchName: production.destinationBranchName,
       materialValue: Number(production.materialValue),
-      processingFee: Number(production.processingFee),
+      processingFee: fee,
       totalCost,
       receivedQuantity: received,
       unitCost,
@@ -1505,49 +1615,12 @@ export class ProductionsService {
     dto: ApplyProductionCostDto,
     userId: number,
   ) {
-    if (dto.newCost <= 0) {
-      throw new BadRequestException('Giá vốn mới phải lớn hơn 0');
-    }
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const production = await this.loadExternalProduction(tx, id);
-      if (production.status !== PRODUCTION_STATUS.COMPLETED) {
-        throw new BadRequestException('Chỉ áp giá vốn cho phiếu đã hoàn thành');
-      }
-      if (production.costAppliedAt) {
-        throw new BadRequestException('Phiếu này đã áp giá vốn rồi');
-      }
-      if (dto.expectedOldCost != null) {
-        const dest = await tx.inventory.findUnique({
-          where: {
-            productId_branchId: {
-              productId: production.productId,
-              branchId: production.destinationBranchId,
-            },
-          },
-          select: { cost: true },
-        });
-        if (Math.abs(Number(dest?.cost ?? 0) - dto.expectedOldCost) > 0.005) {
-          throw new ConflictException(
-            'Giá vốn hiện tại đã thay đổi, vui lòng xem lại trước khi áp',
-          );
-        }
-      }
-      const costData = await this.writeFinishedCost(
-        tx,
-        production,
-        dto.newCost,
-        dto.scope,
-      );
-      return tx.production.update({
-        where: { id },
-        data: costData,
-        include: { components: true, ...PRODUCTION_PARTNER_INCLUDE },
-      });
-    });
+    const updated = await this.costService!.apply(id, dto, userId);
 
     await this.auditFactory('PRODUCTION_FACTORY_APPLY_COST', updated, userId, {
-      newCostAmount: dto.newCost,
+      newCostAmount: Number(updated.appliedUnitCost),
       scope: dto.scope || 'receiveBranch',
+      costApplication: updated.costApplicationSnapshot,
     });
     return updated;
   }
@@ -1563,8 +1636,20 @@ export class ProductionsService {
     userId: number,
   ) {
     const production = await this.loadExternalProduction(this.prisma, id);
+    if (production.manufacturerId) return this.externalProductions!.cancel(id, userId);
     if (production.status === PRODUCTION_STATUS.CANCELLED) {
       throw new BadRequestException('Phiếu đã hủy');
+    }
+    // Đã nhận hàng qua phiếu nhập → hủy phiếu nhập trước (trả tồn thành
+    // phẩm, bỏ phí khỏi nợ), phiếu sẽ về Đã gửi rồi mới hủy được.
+    const activePurchaseOrder = await this.prisma.purchaseOrder.findFirst({
+      where: { productionId: id, status: { not: 2 } },
+      select: { code: true },
+    });
+    if (activePurchaseOrder) {
+      throw new BadRequestException(
+        `Phiếu đang có phiếu nhập ${activePurchaseOrder.code}. Hãy hủy phiếu nhập đó trước.`,
+      );
     }
     const previousStatus = production.status;
 
@@ -1600,6 +1685,8 @@ export class ProductionsService {
         }
       }
 
+      // Dẫn xuất lại nợ NCC (giữ đồng bộ cột cache, kể cả phiếu cũ nhận
+      // hàng trước khi có phiếu nhập).
       if (production.supplierId) {
         await recalcSupplierDebt(tx, production.supplierId);
       }
@@ -1612,36 +1699,6 @@ export class ProductionsService {
       costWasApplied: !!production.costAppliedAt,
     });
     return updated;
-  }
-
-  /** Ghi giá vốn thành phẩm (kho nhận hoặc mọi chi nhánh). Trả cột cần lưu. */
-  private async writeFinishedCost(
-    tx: any,
-    production: {
-      productId: number;
-      destinationBranchId: number;
-    },
-    newCost: number,
-    scope: 'receiveBranch' | 'allBranches' | undefined,
-  ) {
-    const where =
-      scope === 'allBranches'
-        ? { productId: production.productId }
-        : {
-            productId: production.productId,
-            branchId: production.destinationBranchId,
-          };
-    const { count } = await tx.inventory.updateMany({
-      where,
-      data: { cost: newCost },
-    });
-    if (count === 0) {
-      throw new BadRequestException('Thành phẩm chưa có tồn kho tại kho nhận');
-    }
-    return {
-      costAppliedAt: new Date(),
-      appliedUnitCost: newCost,
-    };
   }
 
   /** Dòng ProductionComponent theo công thức + số thực tế (nếu có). */

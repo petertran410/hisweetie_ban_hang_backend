@@ -11,6 +11,7 @@ import {
   Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { ManufacturerMaterialDto, OwnMaterialDto } from '../../manufacturers/dto';
 
 export class ProductionComponentDto {
   @IsInt()
@@ -27,6 +28,12 @@ export class ProductionComponentDto {
 }
 
 export class CreateProductionDto {
+  @IsOptional() @IsInt() @Min(1) manufacturerId?: number;
+  @IsOptional() @IsInt() @Min(1) externalTemplateId?: number | null;
+  @IsOptional() @IsArray() @ValidateNested({ each: true })
+  @Type(() => OwnMaterialDto) ownMaterials?: OwnMaterialDto[];
+  @IsOptional() @IsArray() @ValidateNested({ each: true })
+  @Type(() => ManufacturerMaterialDto) manufacturerMaterials?: ManufacturerMaterialDto[];
   @IsOptional()
   @IsString()
   code?: string;

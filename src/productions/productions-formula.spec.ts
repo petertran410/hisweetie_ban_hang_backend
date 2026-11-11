@@ -10,7 +10,7 @@ describe('ProductionsService — chọn công thức', () => {
         findUnique: jest.fn().mockResolvedValue({ cost: 1000 }),
       },
     };
-    const service = new ProductionsService(prisma as any, {} as any) as any;
+    const service = new ProductionsService(prisma as any, {} as any, {} as any) as any;
     return { service, findUnique, prisma };
   };
 

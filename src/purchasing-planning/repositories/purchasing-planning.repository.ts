@@ -442,6 +442,9 @@ export class PurchasingPlanningRepository {
             branchId: { in: branchIds },
             isDraft: false,
             status: { not: 2 },
+            // PN nhận hàng gửi sản xuất có đơn giá = phí gia công / SL, không
+            // phải giá mua thành phẩm → không dùng làm "giá nhập gần nhất".
+            productionId: null,
           },
         },
         select: {

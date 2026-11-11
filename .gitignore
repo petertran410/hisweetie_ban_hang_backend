@@ -26,7 +26,8 @@ AGENTS.md
 /uploads
 
 /prisma/scripts
-/prisma/seeds
+/prisma/seeds/*
+!/prisma/seeds/add-productions-apply-cost-permission.ts
 
 # Logs
 logs

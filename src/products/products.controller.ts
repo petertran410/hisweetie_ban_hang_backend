@@ -23,6 +23,7 @@ import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { AuthService } from '../auth/auth.service';
 import { PermissionCacheService } from '../permission-cache/permission-cache.service';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import { filterInventoryLogPrices } from './product-inventory-log-visibility.util';
 
 const SUPER_ADMIN_ROLE = 'Super Admin';
 
@@ -240,36 +241,60 @@ export class ProductsController {
 
   @Get(':id/inventory-logs')
   @RequirePermissions('products:view')
-  findInventoryLogs(
+  async findInventoryLogs(
     @Param('id') id: string,
+    @Req() req: any,
     @Query('branchId') branchId?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    return this.productsService.findInventoryLogs(
+    const { isSuperAdmin, permissions } = await this.resolvePermissions(req);
+    const canViewCostPrice =
+      isSuperAdmin || permissions.includes('products:view_cost_price');
+    const canViewSalePrice =
+      isSuperAdmin || permissions.includes('products:view_sale_price');
+    const result = await this.productsService.findInventoryLogs(
       +id,
       branchId ? +branchId : undefined,
       page ? +page : 1,
       limit ? +limit : 5,
     );
+    return {
+      ...result,
+      data: result.data.map((log) =>
+        filterInventoryLogPrices(log, canViewCostPrice, canViewSalePrice),
+      ),
+    };
   }
 
   @Get(':id/condition-logs')
   @RequirePermissions('products:view')
-  findConditionLogs(
+  async findConditionLogs(
     @Param('id') id: string,
+    @Req() req: any,
     @Query('bucket') bucket: string,
     @Query('branchId') branchId?: string,
     @Query('page') page?: string,
     @Query('limit') limit?: string,
   ) {
-    return this.productsService.findConditionLogs(
+    const { isSuperAdmin, permissions } = await this.resolvePermissions(req);
+    const canViewCostPrice =
+      isSuperAdmin || permissions.includes('products:view_cost_price');
+    const canViewSalePrice =
+      isSuperAdmin || permissions.includes('products:view_sale_price');
+    const result = await this.productsService.findConditionLogs(
       +id,
       bucket,
       branchId ? +branchId : undefined,
       page ? +page : 1,
       limit ? +limit : 15,
     );
+    return {
+      ...result,
+      data: result.data.map((log) =>
+        filterInventoryLogPrices(log, canViewCostPrice, canViewSalePrice),
+      ),
+    };
   }
 
   @Get('pos-near-expiry-lots/:id')
