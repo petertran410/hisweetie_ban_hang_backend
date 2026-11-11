@@ -5,11 +5,11 @@
 1. Review va dong bo cac cot nullable moi cua `Production` theo quy trinh DB cua
    he thong. Khong backfill snapshot, khong reset du lieu.
 2. Sinh Prisma Client va build/restart backend, frontend sau khi schema san sang.
-3. Review `prisma/maintenance/register-production-apply-cost-permission.ts`.
+3. Review `prisma/seeds/add-productions-apply-cost-permission.ts`.
    Nguoi van hanh co the chay:
 
    ```sh
-   yarn ts-node prisma/maintenance/register-production-apply-cost-permission.ts --execute
+   yarn seed:productions-apply-cost
    ```
 
    Lenh nay ghi/upsert duy nhat dinh nghia `productions:apply_cost`. Khong xoa

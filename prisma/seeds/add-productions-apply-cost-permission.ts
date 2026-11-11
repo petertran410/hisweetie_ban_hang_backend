@@ -1,6 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 
-// Operator-only, definition-only registration. Never assigns roles or users.
+// Definition-only seed, run explicitly by the operator. Never assigns roles or users.
 async function main() {
   if (!process.argv.includes('--execute')) {
     throw new Error(
