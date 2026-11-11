@@ -148,7 +148,6 @@ type DailyDetail = {
   total_rev: number | null;
 };
 
-
 /** % Hiệu Quả của Bảng Thu Nhập, cùng KPI tháng dùng cho cột Còn Lại. */
 export function incomeEfficiency(
   kpi: number | null,
@@ -552,7 +551,6 @@ export class AnalyticsKpiSaleService {
 
     const finish = (r: Omit<IncomeRow, 'code' | 'ym'>) => ({
       ...r,
-      // Cùng mẫu số với Còn Lại: KPI tháng của team, không phải tổng KPI nhóm hàng.
       pct: incomeEfficiency(r.kpi, r.revenue),
       remain:
         r.kpi === null && r.revenue === null
