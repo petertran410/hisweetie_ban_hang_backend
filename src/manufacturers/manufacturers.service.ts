@@ -1,5 +1,6 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ExternalTemplateDto, ManufacturerDto, ManufacturerMaterialDto, OwnMaterialDto } from './dto';
 import { materialAmount, ownConversion } from './external-production.util';
@@ -8,10 +9,26 @@ import { materialAmount, ownConversion } from './external-production.util';
 export class ManufacturersService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async list(search = '', includeInactive = false, pageSize = 30, currentItem = 0) {
+  async list(
+    search = '', includeInactive = false, pageSize = 30, currentItem = 0, isActive?: boolean,
+    filters: { hasInProgress?: boolean; hasDebt?: boolean } = {},
+  ) {
     const take = Math.max(1, Math.min(Number(pageSize) || 30, 100));
-    const where = {
-      ...(includeInactive ? {} : { isActive: true }),
+    const and: Prisma.ManufacturerWhereInput[] = [];
+    // Independent predicates may match different batches of the same manufacturer.
+    if (filters.hasInProgress !== undefined) {
+      and.push({ productions: {
+        [filters.hasInProgress ? 'some' : 'none']: { isExternal: true, status: 4 },
+      } });
+    }
+    if (filters.hasDebt !== undefined) {
+      and.push({ productions: {
+        [filters.hasDebt ? 'some' : 'none']: { isExternal: true, status: 2, debtAmount: { gt: 0.005 } },
+      } });
+    }
+    const where: Prisma.ManufacturerWhereInput = {
+      ...(isActive !== undefined ? { isActive } : includeInactive ? {} : { isActive: true }),
+      ...(and.length ? { AND: and } : {}),
       ...(search.trim() ? { OR: [
         { name: { contains: search.trim(), mode: 'insensitive' as const } },
         { code: { contains: search.trim(), mode: 'insensitive' as const } },

@@ -275,6 +275,12 @@ export class InvoiceQueryDto {
   @IsBoolean()
   priceWarning?: boolean;
 
+  // Cùng điều kiện với biểu tượng cảnh báo: lệch giá hoặc lệch số lượng.
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true' || value === '1')
+  @IsBoolean()
+  hasWarning?: boolean;
+
   // Hóa đơn đã hủy vẫn còn phiếu giao hàng chưa được chuyển sang
   // hóa đơn kế tiếp cùng gốc (.xx). Không xét đóng hàng hay loading.
   @IsOptional()

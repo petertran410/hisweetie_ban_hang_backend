@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, ForbiddenException, Get, Param, ParseIntPipe, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, ForbiddenException, Get, Param, ParseIntPipe, Post, Put, Query, Req, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { ManufacturersService } from './manufacturers.service';
@@ -18,7 +18,19 @@ export class ManufacturersController {
   @RequirePermissions('productions:view')
   list(@Query() query: any, @Req() req: any) {
     this.internal(req);
-    return this.service.list(query.search, query.includeInactive === 'true', query.pageSize, query.currentItem);
+    const readBoolean = (key: 'isActive' | 'hasInProgress' | 'hasDebt') => {
+      const value = query[key];
+      if (value === undefined) return undefined;
+      if (value !== 'true' && value !== 'false') {
+        throw new BadRequestException(`Bộ lọc ${key} phải là true hoặc false`);
+      }
+      return value === 'true';
+    };
+    return this.service.list(
+      query.search, query.includeInactive === 'true', query.pageSize, query.currentItem,
+      readBoolean('isActive'),
+      { hasInProgress: readBoolean('hasInProgress'), hasDebt: readBoolean('hasDebt') },
+    );
   }
 
   @Get('templates')
