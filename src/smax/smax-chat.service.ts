@@ -527,11 +527,18 @@ export class SmaxChatService {
     ]);
     const raw = states ? fetched.map((m) => ({ ...m, ...states.get(m.pid) })) : fetched;
     const members = thread?.members ?? {};
+    // Ảnh thành viên Smax lưu theo thread không được làm mới (link Zalo có hạn, `time=` là hạn)
+    // → Zalo cá nhân ưu tiên ảnh bạn bè của kênh (mới); chưa kết bạn thì dùng ảnh thread
+    const friendAvatars =
+      thread && channel.platform === 'zaloweb' ? this.peekFriendAvatars(channel.pid) : {};
     // Người gửi khác kênh: tên + avatar (tin cũ tải thêm dùng lại bảng này ở client)
     const senders: Record<string, { name: string | null; avatar: string | null }> = {};
     for (const pid of new Set([...Object.keys(members), ...Object.keys(thread?.memberAvatars ?? {})])) {
       if (pid === channel.pid) continue;
-      senders[pid] = { name: members[pid] ?? null, avatar: thread?.memberAvatars?.[pid] ?? null };
+      senders[pid] = {
+        name: members[pid] ?? null,
+        avatar: friendAvatars[pid] ?? thread?.memberAvatars?.[pid] ?? null,
+      };
     }
     return {
       thread: thread ? { name: thread.name, chatType: thread.chatType } : null,

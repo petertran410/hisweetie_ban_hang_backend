@@ -168,6 +168,21 @@ describe('SmaxChatService', () => {
     expect(res.messages[1]).toMatchObject({ fromMe: true, senderName: null, albumId: null });
   });
 
+  it('getMessages: avatar người gửi ưu tiên ảnh bạn bè của kênh (ảnh thread Smax hay hết hạn)', async () => {
+    const { service, api } = makeService();
+    api.listFriendAvatars.mockResolvedValue({ zlw1239621715347596858: 'https://ava/1-moi.jpg' });
+    api.getMessages.mockResolvedValue([]);
+    // Lần đầu: danh sách bạn bè đang tải ngầm → tạm dùng ảnh thread
+    expect((await service.getMessages(5, actor, PAGE, 11)).senders).toEqual({
+      zlw1239621715347596858: { name: 'Nguyễn Toàn', avatar: 'https://ava/1.jpg' },
+    });
+    await new Promise((r) => setImmediate(r));
+    expect((await service.getMessages(5, actor, PAGE, 11)).senders).toEqual({
+      zlw1239621715347596858: { name: 'Nguyễn Toàn', avatar: 'https://ava/1-moi.jpg' },
+    });
+    expect(api.listFriendAvatars).toHaveBeenCalledTimes(1);
+  });
+
   it('normalize: ảnh/tệp/sticker Facebook (mime_type, url_preview, name, facebook.sticker)', () => {
     const { service } = makeService();
     const base = { type: 'facebook_message', platform: 'facebook', sender_pid: 'fbU', created_at: '2026-11-03T06:00:00Z' };
