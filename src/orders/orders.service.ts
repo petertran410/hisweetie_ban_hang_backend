@@ -28,6 +28,7 @@ import { CancelOrderDto } from './dto/cancel-order.dto';
 import { resolveDeliveryAddress } from '../common/address-resolver.util';
 import { LarkOrderSyncService } from 'src/lark-sync/services/lark-order-sync.service';
 import { LarkOrderNotificationService } from 'src/lark-sync/services/lark-order-notification.service';
+import { LarkOrderPriceNotificationService } from 'src/lark-sync/services/lark-order-price-notification.service';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 import { assertCanConfirmOrder } from '../common/debt-delivery.util';
 import { RealtimeService } from 'src/realtime/realtime.service';
@@ -122,6 +123,7 @@ export class OrdersService {
     private larkOrderNotification: LarkOrderNotificationService,
     private promotionsService: PromotionsService,
     @Optional() private realtime?: RealtimeService,
+    @Optional() private orderPriceNotifier?: LarkOrderPriceNotificationService,
   ) {}
 
   /**
@@ -769,6 +771,11 @@ export class OrdersService {
 
     this.flushAuditLogs(pendingAuditLogs);
     if (result?.order) {
+      // Có dòng bán thấp hơn giá bảng giá buôn → card cảnh báo Lark (sau commit, không chặn)
+      this.orderPriceNotifier?.notifyAsync(result.order.id, {
+        action: 'create',
+        actorId: userId,
+      });
       this.realtime?.emitOrderChanged({
         orderId: result.order.id,
         branchId: result.order.branchId,
@@ -810,6 +817,10 @@ export class OrdersService {
 
   async update(id: number, dto: UpdateOrderDto, user: any) {
     const pendingAuditLogs: PendingAuditLog[] = [];
+    // Lệch giá trước khi sửa: sửa mà lệch y như cũ thì không báo Lark lại
+    const priceSignatureBefore = await this.orderPriceNotifier
+      ?.signature(id)
+      .catch(() => undefined);
     const result = await this.prisma.$transaction(async (tx) => {
       // Khóa đơn để 2 người sửa/hủy cùng lúc chạy lần lượt, không ghi đè nhau.
       await tx.$queryRaw`SELECT id FROM orders WHERE id = ${id} FOR UPDATE`;
@@ -1195,6 +1206,13 @@ export class OrdersService {
     // fire-and-forget để không ảnh hưởng response time.
     if (result?.status === ORDER_STATUS.CONFIRMED) {
       this.larkOrderNotification.notifyOrderConfirmedAsync(id);
+    }
+    if (result) {
+      this.orderPriceNotifier?.notifyAsync(id, {
+        action: 'update',
+        actorId: user?.id,
+        previousSignature: priceSignatureBefore,
+      });
     }
 
     this.realtime?.emitOrderChanged({
