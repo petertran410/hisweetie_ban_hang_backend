@@ -456,20 +456,8 @@ export class ProductionsService {
       ? await this.resolveExternalFields(this.prisma, dto)
       : null;
 
-    const lastProduction = await this.prisma.production.findFirst({
-      orderBy: { id: 'desc' },
-      select: { code: true },
-    });
-
-    let nextNumber = 1;
-    if (lastProduction?.code) {
-      const match = lastProduction.code.match(/\d+$/);
-      if (match) nextNumber = parseInt(match[0]) + 1;
-    }
-
     const code =
-      dto.code ||
-      `${external ? 'GSX' : 'SX'}${String(nextNumber).padStart(6, '0')}`;
+      dto.code || (await this.nextProductionCode(external ? 'GSX' : 'SX'));
     const totalCost = this.calculateTotalCost(
       product.comboComponents,
       dto.sourceBranchId,
@@ -1784,6 +1772,20 @@ export class ProductionsService {
       userName: user?.name || user?.email || 'System',
       branchId: production.sourceBranchId,
     });
+  }
+
+  /**
+   * Mã phiếu kế tiếp theo tiền tố (SX000123). Lấy số lớn nhất trong các mã đúng
+   * dạng `<tiền tố><số>` — không lấy phiếu mới nhất, vì phiếu gửi NSX có mã
+   * ngẫu nhiên (GSX7762846F) và mã nhập tay không theo dãy số.
+   */
+  private async nextProductionCode(prefix: 'SX' | 'GSX'): Promise<string> {
+    const [row] = await this.prisma.$queryRaw<{ max: number | null }[]>`
+      SELECT MAX(CAST(SUBSTRING(code FROM ${prefix.length + 1}::int) AS BIGINT))::int AS max
+      FROM productions
+      WHERE code ~ ${`^${prefix}[0-9]+$`}
+    `;
+    return `${prefix}${String((row?.max ?? 0) + 1).padStart(6, '0')}`;
   }
 
   /**

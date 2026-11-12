@@ -92,4 +92,11 @@ describe('ProductionsService — chọn công thức', () => {
       service.create({ productId: 1, quantity: 10 } as any, 1),
     ).rejects.toThrow('chưa có công thức sản xuất nội bộ');
   });
+  it('mã phiếu kế tiếp lấy số SX lớn nhất, bỏ qua mã GSX ngẫu nhiên', async () => {
+    const { service, prisma } = makeService(null);
+    (prisma as any).$queryRaw = jest.fn().mockResolvedValue([{ max: 372 }]);
+    await expect(service.nextProductionCode('SX')).resolves.toBe('SX000373');
+    (prisma as any).$queryRaw = jest.fn().mockResolvedValue([{ max: null }]);
+    await expect(service.nextProductionCode('SX')).resolves.toBe('SX000001');
+  });
 });
