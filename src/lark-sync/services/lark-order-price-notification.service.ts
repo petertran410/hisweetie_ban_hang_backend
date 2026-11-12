@@ -167,7 +167,7 @@ export class LarkOrderPriceNotificationService {
       const listPrice = Number(r.listPrice);
       return row([
         `${r.productCode} - ${r.productName}`,
-        `${this.num(Number(r.quantity))}${r.unit ? ` ${r.unit}` : ''}`,
+        this.num(Number(r.quantity)),
         `<font color='red'>${this.num(price)}</font>`,
         this.num(listPrice),
         `<font color='red'>**${this.num(price - listPrice)}**</font>`,

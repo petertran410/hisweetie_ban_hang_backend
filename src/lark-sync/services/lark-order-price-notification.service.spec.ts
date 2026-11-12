@@ -57,7 +57,7 @@ describe('LarkOrderPriceNotificationService', () => {
     expect(content).toContain('BẢNG GIÁ BUÔN HCM');
     expect(content).toContain('SP000344 - Mứt Quất Hồng Bì 1.2kg');
     expect(content).toContain('**SL**');
-    expect(content).toContain('5 Hộp');
+    expect(content).not.toContain('Hộp');
     expect(content).toContain("<font color='red'>140.000</font>");
     expect(content).toContain('145.000');
     expect(content).toContain("<font color='red'>**-5.000**</font>");
