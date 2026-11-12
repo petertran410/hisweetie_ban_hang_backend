@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { OrdersService } from './orders.service';
 import { INVOICE_STATUS } from '../invoices/dto';
 
@@ -40,6 +41,7 @@ describe('OrdersService findAll', () => {
         findMany: jest.fn().mockResolvedValue([order]),
         count: jest.fn().mockResolvedValue(1),
       },
+      $queryRaw: jest.fn().mockResolvedValue([]),
     };
     const service = new OrdersService(
       prisma as any,
@@ -66,6 +68,31 @@ describe('OrdersService findAll', () => {
     expect(result.data[0].customer?.debtPolicy?.debtRuleType).toBe(
       'CREDIT_LIMIT',
     );
+    expect(result.data[0]).toMatchObject({ hasPriceBookWarning: false, warnings: null });
+  });
+
+  it('gắn cảnh báo lệch giá bảng giá theo từng đơn', async () => {
+    const prisma = {
+      order: {
+        findMany: jest.fn().mockResolvedValue([{ id: 1 }, { id: 2 }]),
+        count: jest.fn().mockResolvedValue(2),
+      },
+      $queryRaw: jest.fn().mockResolvedValue([
+        { id: 2, productCode: 'SP1', productName: 'Mứt Mận', price: new Prisma.Decimal(135000), listPrice: new Prisma.Decimal(140000) },
+      ]),
+    };
+    const service = new OrdersService(prisma as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+
+    const result = await service.findAll({ page: 1, limit: 15 } as any);
+
+    expect(result.data[0]).toMatchObject({ hasPriceBookWarning: false, warnings: null });
+    expect(result.data[1]).toMatchObject({
+      hasPriceBookWarning: true,
+      warnings: {
+        price: [{ productCode: 'SP1', productName: 'Mứt Mận', price: 135000, listPrice: 140000 }],
+        quantity: [],
+      },
+    });
   });
 });
 

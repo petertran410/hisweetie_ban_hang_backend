@@ -33,6 +33,7 @@ import { assertCanConfirmOrder } from '../common/debt-delivery.util';
 import { RealtimeService } from 'src/realtime/realtime.service';
 import { searchCustomerIds } from '../common/customer-search.util';
 import { PromotionsService } from '../promotions/promotions.service';
+import { findOrderPriceWarnings } from './order-price-warnings.query';
 
 // Cùng giá trị với INVOICE_TX_OPTIONS: mặc định 5s của Prisma không đủ khi
 // đơn nhiều dòng có khuyến mãi và pool đang bận.
@@ -1370,8 +1371,38 @@ export class OrdersService {
         : Promise.resolve(undefined),
     ]);
 
+    // Cảnh báo lệch giá bảng giá (như danh sách hóa đơn); cùng cấu trúc warnings để dùng chung icon/hộp thoại
+    const priceRows = await findOrderPriceWarnings(
+      this.prisma,
+      data.map((o) => o.id),
+    );
+    const priceByOrder = new Map<number, typeof priceRows>();
+    for (const row of priceRows) {
+      const id = Number(row.id);
+      priceByOrder.set(id, [...(priceByOrder.get(id) ?? []), row]);
+    }
+
     return {
-      data,
+      data: data.map((order) => {
+        const rows = priceByOrder.get(order.id) ?? [];
+        return {
+          ...order,
+          hasPriceBookWarning: rows.length > 0,
+          warnings: rows.length
+            ? {
+                price: rows.map((r) => ({
+                  productCode: r.productCode,
+                  productName: r.productName,
+                  price: Number(r.price),
+                  listPrice: Number(r.listPrice),
+                })),
+                quantity: [],
+                orderCode: null,
+                previousInvoiceCodes: [],
+              }
+            : null,
+        };
+      }),
       total,
       page,
       limit,
