@@ -827,6 +827,7 @@ model Product {
   comboComponents                ProductComponent[]             @relation("ComboComponents")
   formulas                       ProductFormula[]
   componentOf                    ProductComponent[]             @relation("ComponentOf")
+  formulaNsxLines                ProductFormulaNsxLine[]        @relation("FormulaNsxLineProduct")
   documents                      ProductDocument[]
   images                         ProductImage[]
   productionComponents           ProductionComponent[]
@@ -882,20 +883,48 @@ model ProductComponent {
 
 /// Công thức thành phần của hàng sản xuất — 1 sản phẩm có nhiều công thức,
 /// đúng 1 công thức isDefault (dùng tính giá vốn sản phẩm).
+/// isExternal = công thức gửi đi sản xuất (NSX): không bao giờ isDefault,
+/// không dùng cho sản xuất nội bộ.
 model ProductFormula {
-  id          Int                @id @default(autoincrement())
-  productId   Int
-  name        String
-  isDefault   Boolean            @default(false)
-  sortOrder   Int                @default(0)
-  createdAt   DateTime           @default(now())
-  updatedAt   DateTime           @updatedAt
-  product     Product            @relation(fields: [productId], references: [id], onDelete: Cascade)
-  components  ProductComponent[]
-  productions Production[]
+  id                   Int                     @id @default(autoincrement())
+  productId            Int
+  name                 String
+  isDefault            Boolean                 @default(false)
+  sortOrder            Int                     @default(0)
+  isExternal           Boolean                 @default(false)
+  /// Phí gia công cho 1 thành phẩm, theo `currency`.
+  processingFeePerUnit Decimal                 @default(0) @db.Decimal(18, 6)
+  currency             String                  @default("VND")
+  createdAt            DateTime                @default(now())
+  updatedAt            DateTime                @updatedAt
+  product              Product                 @relation(fields: [productId], references: [id], onDelete: Cascade)
+  components           ProductComponent[]
+  nsxLines             ProductFormulaNsxLine[]
+  productions          Production[]
 
   @@index([productId])
   @@map("product_formulas")
+}
+
+/// Nguyên liệu NSX bổ sung của công thức gửi đi — định lượng cho 1 thành phẩm.
+/// unit / priceUnit: g | kg | gói (g ↔ kg quy đổi, gói chỉ đi với gói).
+model ProductFormulaNsxLine {
+  id        Int            @id @default(autoincrement())
+  formulaId Int
+  productId Int
+  quantity  Decimal        @db.Decimal(18, 6)
+  unit      String
+  unitPrice Decimal        @default(0) @db.Decimal(18, 6)
+  priceUnit String
+  sortOrder Int            @default(0)
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+  formula   ProductFormula @relation(fields: [formulaId], references: [id], onDelete: Cascade)
+  product   Product        @relation("FormulaNsxLineProduct", fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([formulaId, productId])
+  @@index([productId])
+  @@map("product_formula_nsx_lines")
 }
 
 model AttributeDefinition {
@@ -1183,6 +1212,8 @@ model ProductionManufacturerMaterial {
   unit           String?
   pricingMode    String   @default("UNIT_PRICE")
   unitPrice      Decimal  @default(0) @db.Decimal(18, 6)
+  /// g | kg | gói — đơn vị của đơn giá. null = dòng cũ (amount = quantity × unitPrice).
+  priceUnit      String?
   amount         Decimal  @default(0) @db.Decimal(18, 2)
   production     Production @relation(fields: [productionId], references: [id], onDelete: Cascade)
 

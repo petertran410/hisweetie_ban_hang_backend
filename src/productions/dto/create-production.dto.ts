@@ -29,6 +29,7 @@ export class ProductionComponentDto {
 
 export class CreateProductionDto {
   @IsOptional() @IsInt() @Min(1) manufacturerId?: number;
+  // Mẫu phối trộn đã bỏ: vẫn nhận để client cũ không bị từ chối, server bỏ qua.
   @IsOptional() @IsInt() @Min(1) externalTemplateId?: number | null;
   @IsOptional() @IsArray() @ValidateNested({ each: true })
   @Type(() => OwnMaterialDto) ownMaterials?: OwnMaterialDto[];
@@ -78,10 +79,11 @@ export class CreateProductionDto {
   components?: ProductionComponentDto[];
 
   // Công thức thành phần đã chọn (bỏ trống → công thức mặc định).
+  // Phiếu gửi NSX: công thức gửi đi (isExternal) của thành phẩm, null = nhập tay.
   @IsOptional()
   @IsInt()
   @Type(() => Number)
-  formulaId?: number;
+  formulaId?: number | null;
 
   // ── Gửi sản xuất ở nhà máy ngoài ────────────────────────────────────
   @IsOptional()

@@ -65,4 +65,31 @@ describe('ProductionsService — chọn công thức', () => {
     );
     expect(cost).toBe(1000 * 2 * 10);
   });
+  it('công thức gửi đi không dùng cho sản xuất nội bộ, nhưng vẫn đọc được khi hủy phiếu cũ', async () => {
+    const product = {
+      id: 1,
+      comboComponents: [],
+      formulas: [{ id: 8, name: 'Gửi NSX', isExternal: true }],
+    };
+    const { service, prisma } = makeService(product);
+    await expect(
+      service.loadProductWithFormula(prisma, 1, 8, { rejectExternal: true }),
+    ).rejects.toThrow('chỉ dùng cho phiếu gửi sản xuất');
+    const { formula } = await service.loadProductWithFormula(prisma, 1, 8);
+    expect(formula).toEqual({ id: 8, name: 'Gửi NSX' });
+  });
+
+  it('sản phẩm chỉ có công thức gửi đi → không tạo được phiếu sản xuất nội bộ', async () => {
+    const { service, prisma } = makeService({
+      id: 1,
+      type: 4,
+      weight: 1,
+      comboComponents: [],
+      formulas: [],
+    });
+    (prisma as any).productFormula = { count: jest.fn().mockResolvedValue(1) };
+    await expect(
+      service.create({ productId: 1, quantity: 10 } as any, 1),
+    ).rejects.toThrow('chưa có công thức sản xuất nội bộ');
+  });
 });

@@ -3,7 +3,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { ManufacturersService } from './manufacturers.service';
 import { PayablesService } from './payables.service';
-import { ExternalTemplateDto, ManufacturerDto, PayablePaymentDto } from './dto';
+import { ManufacturerDto, PayablePaymentDto } from './dto';
 
 @Controller('manufacturers')
 @UseGuards(JwtAuthGuard)
@@ -32,25 +32,6 @@ export class ManufacturersController {
       { hasInProgress: readBoolean('hasInProgress'), hasDebt: readBoolean('hasDebt') },
     );
   }
-
-  @Get('templates')
-  @RequirePermissions('productions:view')
-  templates(@Query('manufacturerId') manufacturerId: string, @Query('productId') productId: string, @Req() req: any) {
-    this.internal(req);
-    return this.service.templates(Number(manufacturerId) || undefined, Number(productId) || undefined);
-  }
-
-  @Post('templates')
-  @RequirePermissions('productions:create')
-  createTemplate(@Body() dto: ExternalTemplateDto, @Req() req: any) { this.internal(req); return this.service.saveTemplate(dto); }
-
-  @Put('templates/:id')
-  @RequirePermissions('productions:update')
-  updateTemplate(@Param('id', ParseIntPipe) id: number, @Body() dto: ExternalTemplateDto, @Req() req: any) { this.internal(req); return this.service.saveTemplate(dto, id); }
-
-  @Delete('templates/:id')
-  @RequirePermissions('productions:delete')
-  removeTemplate(@Param('id', ParseIntPipe) id: number, @Req() req: any) { this.internal(req); return this.service.deactivateTemplate(id); }
 
   @Post()
   @RequirePermissions('productions:create')

@@ -34,6 +34,7 @@ export class ProductionCostHistoryService {
         manufacturerId: true,
         manufacturer: { select: { name: true } },
         externalTemplateName: true,
+        formulaName: true,
         completedDate: true,
         receivedQuantity: true,
         quantity: true,

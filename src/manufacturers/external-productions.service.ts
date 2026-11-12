@@ -7,7 +7,8 @@ import { ManufacturersService } from './manufacturers.service';
 import { CreateProductionDto } from '../productions/dto/create-production.dto';
 import { ReceiveProductionDto } from '../productions/dto/production-factory.dto';
 import { ManufacturerMaterialDto, OwnMaterialDto } from './dto';
-import { externalCosts, materialAmount, money, ownConversion } from './external-production.util';
+import { externalCosts, materialAmount, money, ownConversion, slipQuantity } from './external-production.util';
+import { normalizeNsxUnit } from '../common/nsx-pricing.util';
 import { buildInventoryLogBase } from '../common/inventory-log.util';
 import { computeWeightedAverageCost, ensureInventoryRow } from '../common/production-factory.util';
 import { recalcOnHandForPairs } from '../common/inventory-onhand.util';
@@ -35,8 +36,10 @@ export class ExternalProductionsService {
     return row;
   }
 
-  private async materials(tx: Prisma.TransactionClient, own: OwnMaterialDto[], supplied: ManufacturerMaterialDto[]) {
-    const products = await this.manufacturers.validateMaterials(tx, own, supplied);
+  private async materials(
+    tx: Prisma.TransactionClient, own: OwnMaterialDto[], supplied: ManufacturerMaterialDto[], strict = false,
+  ) {
+    const products = await this.manufacturers.validateMaterials(tx, own, supplied, strict);
     return {
       own: own.map((line) => {
         const product = products.get(line.productId);
@@ -47,23 +50,59 @@ export class ExternalProductionsService {
           unit: line.unit, inputMode: 'external', conversionFactor, unitCost: 0,
         };
       }),
-      supplied: supplied.map((line) => ({
-        productId: line.productId ?? null,
-        productCode: line.productId ? products.get(line.productId).code : null,
-        description: line.description?.trim() || (line.productId ? products.get(line.productId).name : 'Nguyên liệu NSX bổ sung'),
-        quantity: line.quantity ?? null, unit: line.unit ?? null,
-        pricingMode: line.pricingMode, unitPrice: line.unitPrice ?? 0, amount: materialAmount(line),
-      })),
+      supplied: supplied.map((line) => {
+        const priceUnit = line.pricingMode === 'UNIT_PRICE' ? line.priceUnit ?? null : null;
+        const product = line.productId ? products.get(line.productId) : null;
+        return {
+          productId: line.productId ?? null,
+          productCode: product?.code ?? null,
+          description: (product ? product.name : line.description?.trim()) || 'Nguyên liệu NSX bổ sung',
+          quantity: line.quantity == null ? null
+            : line.pricingMode === 'UNIT_PRICE' ? slipQuantity(line.quantity) : line.quantity,
+          unit: priceUnit ? normalizeNsxUnit(line.unit) : line.unit ?? null,
+          pricingMode: line.pricingMode, unitPrice: line.unitPrice ?? 0, priceUnit,
+          amount: materialAmount(line),
+        };
+      }),
     };
+  }
+
+  /** Dòng NSX đã lưu → DTO, giữ priceUnit để tính lại đúng (300 g × đ/kg). */
+  static suppliedFromRows(rows: any[]): ManufacturerMaterialDto[] {
+    return rows.map((line) => ({
+      productId: line.productId, description: line.description,
+      quantity: line.quantity == null ? null : Number(line.quantity),
+      unit: line.unit, pricingMode: line.pricingMode as 'TOTAL' | 'UNIT_PRICE',
+      unitPrice: Number(line.unitPrice), priceUnit: line.priceUnit ?? null, amount: Number(line.amount),
+    }));
+  }
+
+  /**
+   * Công thức gửi đi của phiếu. Giữ nguyên công thức đã lưu nếu cả công thức
+   * lẫn thành phẩm không đổi (công thức có thể đã bị đổi tên/tắt sau đó).
+   */
+  private async resolveFormula(
+    tx: Prisma.TransactionClient, requested: number | null | undefined, productId: number, existing?: any,
+  ): Promise<{ formulaId: number | null; formulaName: string | null }> {
+    const formulaId = requested ?? null;
+    if (existing && formulaId === existing.formulaId && productId === existing.productId) {
+      return { formulaId: existing.formulaId, formulaName: existing.formulaName };
+    }
+    if (!formulaId) return { formulaId: null, formulaName: null };
+    const formula = await tx.productFormula.findUnique({
+      where: { id: formulaId }, select: { id: true, name: true, productId: true, isExternal: true },
+    });
+    if (!formula || formula.productId !== productId || !formula.isExternal) {
+      throw new BadRequestException('Công thức gửi sản xuất không thuộc thành phẩm đã chọn');
+    }
+    return { formulaId: formula.id, formulaName: formula.name };
   }
 
   async save(dto: CreateProductionDto, userId: number, id?: number) {
     await this.internal(userId);
     return this.prisma.$transaction(async (tx) => {
-      if (id) {
-        const existing = await this.locked(tx, id);
-        if (existing.status !== 1) throw new BadRequestException('Chỉ sửa được phiếu tạm');
-      }
+      const existing = id ? await this.locked(tx, id) : undefined;
+      if (existing && existing.status !== 1) throw new BadRequestException('Chỉ sửa được phiếu tạm');
       const [manufacturer, product, source, dest, user] = await Promise.all([
         tx.manufacturer.findUnique({ where: { id: dto.manufacturerId! } }),
         tx.product.findUnique({ where: { id: dto.productId } }),
@@ -77,14 +116,8 @@ export class ExternalProductionsService {
       if (!(dto.quantity > 0)) throw new BadRequestException('Sản lượng phải lớn hơn 0');
       const own = dto.ownMaterials ?? [];
       const supplied = dto.manufacturerMaterials ?? [];
-      const rows = await this.materials(tx, own, supplied);
-      let template: any = null;
-      if (dto.externalTemplateId) {
-        template = await tx.externalProductionTemplate.findUnique({ where: { id: dto.externalTemplateId }, include: { lines: true } });
-        if (!template?.isActive || template.manufacturerId !== manufacturer.id || template.productId !== product.id) {
-          throw new BadRequestException('Mẫu không thuộc nhà sản xuất và thành phẩm đã chọn');
-        }
-      }
+      const rows = await this.materials(tx, own, supplied, true);
+      const formula = await this.resolveFormula(tx, dto.formulaId, product.id, existing);
       const currency = dto.feeCurrency ?? manufacturer.currency;
       const fee = currency === 'CNY' ? dto.feeForeignAmount ?? 0 : dto.processingFee ?? 0;
       const costs = externalCosts(supplied, fee, currency, dto.feeExchangeRate ?? 1);
@@ -96,14 +129,15 @@ export class ExternalProductionsService {
         quantity: dto.quantity, note: dto.note, status: 1, autoDeductComponents: true,
         feeCurrency: currency, feeForeignAmount: currency === 'CNY' ? fee : null,
         feeExchangeRate: currency === 'CNY' ? dto.feeExchangeRate ?? 1 : null,
-        externalTemplateId: template?.id ?? null, externalTemplateName: template?.name ?? null,
-        externalTemplateSnapshot: template ? JSON.parse(JSON.stringify(template)) : Prisma.DbNull,
+        ...formula,
         ...costs,
       };
+      // Mẫu phối trộn đã bỏ: phiếu cũ giữ nguyên externalTemplate*, phiếu mới để trống.
       const saved = id
         ? await tx.production.update({ where: { id }, data: { ...data, components: { deleteMany: {}, create: rows.own }, manufacturerMaterials: { deleteMany: {}, create: rows.supplied } }, include: EXTERNAL_INCLUDE })
         : await tx.production.create({ data: {
-            ...data, code: dto.code?.trim() || `GSX${randomUUID().slice(0, 8).toUpperCase()}`,
+            ...data, externalTemplateId: null, externalTemplateName: null, externalTemplateSnapshot: Prisma.DbNull,
+            code: dto.code?.trim() || `GSX${randomUUID().slice(0, 8).toUpperCase()}`,
             createdById: user.id, createdByName: user.name ?? user.email,
             components: { create: rows.own }, manufacturerMaterials: { create: rows.supplied },
           }, include: EXTERNAL_INCLUDE });
@@ -162,10 +196,7 @@ export class ExternalProductionsService {
       if (!(quantity > 0)) throw new BadRequestException('Số lượng nhận phải lớn hơn 0');
       const date = dto.completedDate ? new Date(dto.completedDate) : new Date();
       if (row.sentDate && date.toISOString().slice(0, 10) < row.sentDate.toISOString().slice(0, 10)) throw new BadRequestException('Ngày nhận không được trước ngày gửi');
-      const supplied = dto.manufacturerMaterials ?? row.manufacturerMaterials.map((line) => ({
-        productId: line.productId, description: line.description, quantity: line.quantity == null ? null : Number(line.quantity),
-        unit: line.unit, pricingMode: line.pricingMode as 'TOTAL' | 'UNIT_PRICE', unitPrice: Number(line.unitPrice), amount: Number(line.amount),
-      }));
+      const supplied = dto.manufacturerMaterials ?? ExternalProductionsService.suppliedFromRows(row.manufacturerMaterials);
       const rows = await this.materials(tx, [], supplied);
       const rate = dto.feeExchangeRate ?? Number(row.feeExchangeRate ?? 1);
       const fee = row.feeCurrency === 'CNY' ? dto.feeForeignAmount ?? Number(row.feeForeignAmount ?? 0) : dto.processingFee ?? Number(row.processingFee);

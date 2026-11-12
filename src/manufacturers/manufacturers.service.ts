@@ -2,7 +2,8 @@ import { BadRequestException, Injectable, NotFoundException } from '@nestjs/comm
 import { randomUUID } from 'crypto';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { ExternalTemplateDto, ManufacturerDto, ManufacturerMaterialDto, OwnMaterialDto } from './dto';
+import { isNsxUnit } from '../common/nsx-pricing.util';
+import { ManufacturerDto, ManufacturerMaterialDto, OwnMaterialDto } from './dto';
 import { materialAmount, ownConversion } from './external-production.util';
 
 @Injectable()
@@ -62,9 +63,30 @@ export class ManufacturersService {
     return this.prisma.manufacturer.create({ data: { ...data, code: dto.code?.trim() || `NSX${randomUUID().slice(0, 8).toUpperCase()}` } });
   }
 
-  async validateMaterials(db: any, own: OwnMaterialDto[], supplied: ManufacturerMaterialDto[]) {
+  /**
+   * strict = dòng NSX phải là dòng mới: có mã hàng, tính theo đơn giá với đơn vị
+   * g | kg | gói và không trùng mã. Lưu phiếu tạm dùng strict; nhận hàng thì
+   * không (phiếu cũ có thể còn dòng không mã / "Tổng tiền").
+   */
+  async validateMaterials(
+    db: any, own: OwnMaterialDto[], supplied: ManufacturerMaterialDto[], strict = false,
+  ) {
     const ids = own.map((line) => line.productId);
     if (new Set(ids).size !== ids.length) throw new BadRequestException('Hàng mình gửi không được trùng mã');
+    if (strict) {
+      const suppliedIds = supplied.map((line) => line.productId);
+      if (suppliedIds.some((productId) => !productId)) {
+        throw new BadRequestException('Nguyên liệu NSX cần chọn sản phẩm');
+      }
+      if (new Set(suppliedIds).size !== suppliedIds.length) {
+        throw new BadRequestException('Nguyên liệu NSX không được trùng mã');
+      }
+      for (const line of supplied) {
+        if (line.pricingMode !== 'UNIT_PRICE' || !line.priceUnit || !isNsxUnit(line.unit)) {
+          throw new BadRequestException('Nguyên liệu NSX tính theo lượng × đơn giá (g, kg hoặc gói)');
+        }
+      }
+    }
     const products = await db.product.findMany({
       where: { id: { in: [...new Set([...ids, ...supplied.flatMap((line) => line.productId ? [line.productId] : [])])] } },
     });
@@ -79,52 +101,5 @@ export class ManufacturersService {
       materialAmount(line);
     }
     return byId;
-  }
-
-  async templates(manufacturerId?: number, productId?: number) {
-    return this.prisma.externalProductionTemplate.findMany({
-      where: { isActive: true, ...(manufacturerId ? { manufacturerId } : {}), ...(productId ? { productId } : {}) },
-      include: { lines: { orderBy: { sortOrder: 'asc' } }, manufacturer: { select: { id: true, name: true } } },
-      orderBy: { name: 'asc' },
-    });
-  }
-
-  async saveTemplate(dto: ExternalTemplateDto, id?: number) {
-    if (!dto.name.trim()) throw new BadRequestException('Vui lòng nhập tên mẫu');
-    if (!dto.ownMaterials.length && !dto.manufacturerMaterials.length) throw new BadRequestException('Mẫu cần ít nhất một nguyên liệu');
-    return this.prisma.$transaction(async (tx) => {
-      const manufacturer = await tx.manufacturer.findUnique({ where: { id: dto.manufacturerId } });
-      const product = await tx.product.findUnique({ where: { id: dto.productId } });
-      if (!manufacturer?.isActive || !product || ![2, 4].includes(product.type)) throw new BadRequestException('Nhà sản xuất hoặc thành phẩm không hợp lệ');
-      const products = await this.validateMaterials(tx, dto.ownMaterials, dto.manufacturerMaterials);
-      const data = {
-        name: dto.name.trim(), manufacturerId: dto.manufacturerId, productId: dto.productId,
-        baseQuantity: dto.baseQuantity, currency: dto.currency,
-        processingFee: dto.processingFee ?? 0, exchangeRate: dto.exchangeRate ?? 1,
-      };
-      const lines = [
-        ...dto.ownMaterials.map((line) => ({
-          source: 'OWN', productId: line.productId, description: products.get(line.productId).name,
-          quantity: line.quantity, unit: line.unit, pricingMode: 'UNIT_PRICE', unitPrice: 0, amount: 0,
-        })),
-        ...dto.manufacturerMaterials.map((line) => ({
-          source: 'MANUFACTURER', productId: line.productId ?? null,
-          description: line.description?.trim() || (line.productId ? products.get(line.productId).name : 'Nguyên liệu NSX bổ sung'),
-          quantity: line.quantity ?? null, unit: line.unit ?? null, pricingMode: line.pricingMode,
-          unitPrice: line.unitPrice ?? 0, amount: materialAmount(line),
-        })),
-      ].map((line, sortOrder) => ({ ...line, sortOrder }));
-      if (id) {
-        if (!await tx.externalProductionTemplate.findUnique({ where: { id } })) throw new NotFoundException('Không tìm thấy mẫu');
-        return tx.externalProductionTemplate.update({
-          where: { id }, data: { ...data, lines: { deleteMany: {}, create: lines } }, include: { lines: true },
-        });
-      }
-      return tx.externalProductionTemplate.create({ data: { ...data, lines: { create: lines } }, include: { lines: true } });
-    });
-  }
-
-  async deactivateTemplate(id: number) {
-    return this.prisma.externalProductionTemplate.update({ where: { id }, data: { isActive: false } });
   }
 }

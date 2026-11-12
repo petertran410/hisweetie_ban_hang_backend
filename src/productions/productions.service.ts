@@ -374,7 +374,8 @@ export class ProductionsService {
           sheet.addRow({
             ...base, componentCode: c.productCode ?? '', componentName: c.description,
             actualGrams: c.quantity == null ? '' : Number(c.quantity), unitsDeducted: 0,
-            materialSource: 'NSX bổ sung', materialUnit: c.unit ?? '',
+            materialSource: 'NSX bổ sung',
+            materialUnit: c.priceUnit ? `${c.unit} (giá/${c.priceUnit})` : c.unit ?? '',
             materialAmount: Number(c.amount), currency: p.feeCurrency,
           }).commit();
         }
@@ -412,9 +413,20 @@ export class ProductionsService {
       this.prisma,
       dto.productId,
       dto.formulaId,
+      { rejectExternal: true },
     );
 
     if (!product) throw new NotFoundException('Product not found');
+    if (
+      !formula &&
+      (await this.prisma.productFormula.count({
+        where: { productId: product.id, isExternal: true },
+      })) > 0
+    ) {
+      throw new BadRequestException(
+        'Sản phẩm chỉ có công thức gửi đi sản xuất, chưa có công thức sản xuất nội bộ',
+      );
+    }
     if (product.type !== 4) {
       throw new BadRequestException(
         'Product must be a manufacturing product (type = 4)',
@@ -578,10 +590,8 @@ export class ProductionsService {
         ownMaterials: dto.ownMaterials ?? production.components.map((line) => ({
           productId: line.componentProductId, quantity: Number(line.actualGrams), unit: line.unit ?? 'unit',
         })),
-        manufacturerMaterials: dto.manufacturerMaterials ?? production.manufacturerMaterials.map((line) => ({
-          productId: line.productId, description: line.description, quantity: line.quantity == null ? null : Number(line.quantity),
-          unit: line.unit, pricingMode: line.pricingMode as 'UNIT_PRICE' | 'TOTAL', unitPrice: Number(line.unitPrice), amount: Number(line.amount),
-        })),
+        manufacturerMaterials: dto.manufacturerMaterials
+          ?? ExternalProductionsService.suppliedFromRows(production.manufacturerMaterials),
       } as CreateProductionDto, userId!, id);
     }
     if (dto.manufacturerId || dto.ownMaterials || dto.manufacturerMaterials) {
@@ -654,6 +664,7 @@ export class ProductionsService {
           tx,
           production.productId,
           formulaId,
+          { rejectExternal: true },
         );
         if (formulaChanged) {
           updateData.formulaId = formula?.id ?? null;
@@ -673,6 +684,7 @@ export class ProductionsService {
           tx,
           production.productId,
           formulaId,
+          { rejectExternal: true },
         );
 
         if (productForDraft) {
@@ -720,6 +732,7 @@ export class ProductionsService {
           tx,
           production.productId,
           formulaId,
+          { rejectExternal: true },
         );
 
         if (product && updateData.autoDeductComponents !== false) {
@@ -1778,10 +1791,16 @@ export class ProductionsService {
    * (không chọn → công thức mặc định). Logic tính chi phí / trừ kho phía sau
    * đều đọc product.comboComponents nên giữ nguyên.
    */
+  /**
+   * rejectExternal: dùng công thức để sản xuất nội bộ mới (tạo / sửa / hoàn
+   * thành phiếu) → chặn công thức gửi đi sản xuất. Hủy phiếu đã hoàn thành thì
+   * không chặn (công thức có thể được chuyển sang gửi đi sau khi sản xuất).
+   */
   private async loadProductWithFormula(
     db: Prisma.TransactionClient,
     productId: number,
     formulaId?: number | null,
+    { rejectExternal = false }: { rejectExternal?: boolean } = {},
   ) {
     const product = await db.product.findUnique({
       where: { id: productId },
@@ -1792,14 +1811,23 @@ export class ProductionsService {
         },
         formulas: {
           where: formulaId ? { id: formulaId } : { isDefault: true },
-          select: { id: true, name: true },
+          select: { id: true, name: true, isExternal: true },
         },
       },
     });
     if (product && formulaId && product.formulas.length === 0) {
       throw new BadRequestException('Công thức không thuộc sản phẩm này');
     }
-    return { product, formula: product?.formulas[0] ?? null };
+    const formula = product?.formulas[0] ?? null;
+    if (rejectExternal && formula?.isExternal) {
+      throw new BadRequestException(
+        'Công thức gửi đi sản xuất chỉ dùng cho phiếu gửi sản xuất',
+      );
+    }
+    return {
+      product,
+      formula: formula ? { id: formula.id, name: formula.name } : null,
+    };
   }
 
   private buildProductionSnapshot(production: any, components?: any[]) {
