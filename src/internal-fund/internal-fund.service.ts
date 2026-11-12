@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import type { Response } from 'express';
 import { PrismaService } from '../prisma/prisma.service';
 import { FinanceAccessService } from '../auth/finance-access.service';
 import { ApprovalLifecycleService } from '../approval-lifecycle/approval-lifecycle.service';
@@ -22,6 +23,7 @@ import {
   CloseInternalFundDayDto,
   CreateInternalFundReceiptApprovalDto,
   InternalFundAttachmentDto,
+  InternalFundExportQueryDto,
   InternalFundQueryDto,
   UpdateInternalFundTransactionDto,
 } from './dto/internal-fund.dto';
@@ -36,6 +38,11 @@ import {
   buildFundReceiptForm,
   fundCashSourceLabel,
 } from './internal-fund-template.registry';
+import {
+  FUND_EXPORT_SELECT,
+  fundExportColumns,
+  writeFundExport,
+} from './internal-fund-export';
 
 @Injectable()
 export class InternalFundService {
@@ -180,13 +187,29 @@ export class InternalFundService {
     return this.approvalLifecycle.uploadFile(file, 'attachment');
   }
 
-  async listTransactions(query: InternalFundQueryDto, user: InternalFundActor) {
-    const branchIds = await this.branches(query, user);
-    const where: Prisma.InternalFundTransactionWhereInput = {
+  private transactionWhere(
+    query: InternalFundQueryDto,
+    branchIds: number[],
+  ): Prisma.InternalFundTransactionWhereInput {
+    return {
       branchId: { in: branchIds },
       status: query.status || 'POSTED',
       ...(query.transactionType
         ? { transactionType: query.transactionType }
+        : {}),
+      ...(query.direction
+        ? {
+            AND: [
+              {
+                transactionType: {
+                  in:
+                    query.direction === 'RECEIPT'
+                      ? ['RECEIPT', 'TRANSFER_IN']
+                      : ['EXPENSE', 'TRANSFER_OUT'],
+                },
+              },
+            ],
+          }
         : {}),
       ...(query.fromDate || query.toDate
         ? {
@@ -218,14 +241,23 @@ export class InternalFundService {
           }
         : {}),
     };
+  }
+
+  private transactionOrderBy(
+    query: InternalFundQueryDto,
+  ): Prisma.InternalFundTransactionOrderByWithRelationInput[] {
+    const direction = query.orderDirection === 'asc' ? 'asc' : 'desc';
+    return query.orderBy === 'amount'
+      ? [{ amount: direction }, { occurredAt: 'desc' }, { id: 'desc' }]
+      : [{ occurredAt: direction }, { id: direction }];
+  }
+
+  async listTransactions(query: InternalFundQueryDto, user: InternalFundActor) {
+    const branchIds = await this.branches(query, user);
+    const where = this.transactionWhere(query, branchIds);
     const page = query.page || 1,
       limit = Math.min(query.limit || 50, 100);
-    const direction = query.orderDirection === 'asc' ? 'asc' : 'desc';
-    // Sắp xếp theo cột (Ngày ghi quỹ / Số tiền); cùng giá trị thì dòng mới trước.
-    const orderBy: Prisma.InternalFundTransactionOrderByWithRelationInput[] =
-      query.orderBy === 'amount'
-        ? [{ amount: direction }, { occurredAt: 'desc' }, { id: 'desc' }]
-        : [{ occurredAt: direction }, { id: direction }];
+    const orderBy = this.transactionOrderBy(query);
     const [data, total, sums] = await Promise.all([
       this.prisma.internalFundTransaction.findMany({
         where,
@@ -270,6 +302,35 @@ export class InternalFundService {
       expense: sumOf(['EXPENSE', 'TRANSFER_OUT']),
     };
     return { data, total, page, limit, totals };
+  }
+
+  async exportTransactions(
+    query: InternalFundExportQueryDto,
+    user: InternalFundActor,
+    res: Response,
+    detail = false,
+  ) {
+    const branchIds = await this.branches(query, user);
+    const where = this.transactionWhere(query, branchIds);
+    const orderBy = this.transactionOrderBy(query);
+    const columns = fundExportColumns(detail, query.columns);
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=SoQuy_${detail ? 'ChiTiet' : 'TongQuan'}_${Date.now()}.xlsx`,
+    );
+    await writeFundExport(res, columns, detail, (skip, take) =>
+      this.prisma.internalFundTransaction.findMany({
+        where,
+        orderBy,
+        skip,
+        take,
+        select: FUND_EXPORT_SELECT,
+      }),
+    );
   }
 
   async summary(query: InternalFundQueryDto, user: InternalFundActor) {

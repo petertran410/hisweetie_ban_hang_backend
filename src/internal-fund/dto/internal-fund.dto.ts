@@ -24,6 +24,10 @@ export class InternalFundQueryDto {
   transactionType?: string;
 
   @IsOptional()
+  @IsIn(['RECEIPT', 'EXPENSE'])
+  direction?: 'RECEIPT' | 'EXPENSE';
+
+  @IsOptional()
   @IsIn([
     'POSTED',
     'CANCELLED',
@@ -66,6 +70,12 @@ export class InternalFundQueryDto {
   @IsOptional()
   @IsIn(['asc', 'desc'])
   orderDirection?: 'asc' | 'desc';
+}
+
+export class InternalFundExportQueryDto extends InternalFundQueryDto {
+  @IsOptional()
+  @IsString()
+  columns?: string;
 }
 
 export class CreateInternalFundReceiptApprovalDto {
