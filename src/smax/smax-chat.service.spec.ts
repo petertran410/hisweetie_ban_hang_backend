@@ -6,7 +6,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import * as fs from 'fs';
-import { isProxyableMediaUrl, isZaloMediaUrl, safeFileName, SmaxChatService, vietQrUrl } from './smax-chat.service';
+import {
+  isProxyableMediaUrl,
+  isZaloMediaUrl,
+  mentionInfoFor,
+  safeFileName,
+  SmaxChatService,
+  vietQrUrl,
+} from './smax-chat.service';
 
 const PAGE = 'zlw693698651694262958';
 const pages = [
@@ -353,6 +360,36 @@ describe('SmaxChatService', () => {
     expect(audit.create).toHaveBeenCalledWith(
       expect.objectContaining({ actionCode: 'SMAX_CHAT_SEND', entityCode: 'TOANTEST', userId: 1 }),
     );
+  });
+
+  it('tag thành viên: nhóm Zalo gửi kèm mentionInfo (vị trí theo text đã trim); chat trực tiếp bỏ qua', async () => {
+    const { service, api } = makeService();
+    const mentions = [{ uid: '8480515010592', pos: 2, len: 12 }];
+    await service.sendMessage(5, actor, { pagePid: PAGE, contactId: 11, text: '  @Nguyễn Hằng gửi GPKD', mentions, confirmed: true });
+    await service.sendMessage(5, actor, { pagePid: PAGE, contactId: 10, text: '  @Nguyễn Hằng gửi GPKD', mentions, confirmed: true });
+
+    expect(api.sendZaloweb).toHaveBeenNthCalledWith(1, PAGE, { grid: '2395241168877084467' }, {
+      message: '@Nguyễn Hằng gửi GPKD',
+      mentionInfo: JSON.stringify([{ pos: 0, uid: '8480515010592', len: 12, type: 0 }]),
+    });
+    expect(api.sendZaloweb).toHaveBeenNthCalledWith(2, PAGE, { uid: '1239621715347596858' }, { message: '@Nguyễn Hằng gửi GPKD' });
+  });
+
+  it('mentionInfoFor: bỏ tag lệch vị trí / vượt độ dài / chồng nhau', () => {
+    expect(mentionInfoFor('chào', [{ uid: '123', pos: 0, len: 3 }])).toBeUndefined();
+    expect(mentionInfoFor('@An', [{ uid: '123', pos: 0, len: 9 }])).toBeUndefined();
+    expect(
+      JSON.parse(
+        mentionInfoFor('@An @Bình', [
+          { uid: '222', pos: 4, len: 5 },
+          { uid: '111', pos: 0, len: 3 },
+          { uid: '333', pos: 1, len: 3 },
+        ])!,
+      ),
+    ).toEqual([
+      { pos: 0, uid: '111', len: 3, type: 0 },
+      { pos: 4, uid: '222', len: 5, type: 0 },
+    ]);
   });
 
   it('production không cần confirmed; giới hạn 20 tin/phút/người', async () => {
