@@ -196,24 +196,13 @@ export class AnalyticsKhachHangDlclService {
     const [shared, parents, productNames, productTypes, brands] =
       await Promise.all([
         this.base.getFilterOptions(),
-        // Khách cha theo quy tắc gộp (như custCte, không cần địa chỉ) của khách đã có hoá đơn.
-        this.prisma.$queryRaw<{ name: string }[]>`
-          WITH rules AS (
-            SELECT id, match_type, lower(pattern) AS pat, parent_name, priority
-            FROM analytics_customer_parent_rules WHERE is_active
-          ),
-          cb AS (
-            SELECT DISTINCT ON (c.code) c.code, c.name FROM customers c
-            WHERE c.id IN (SELECT DISTINCT "customerId" FROM invoices WHERE status <> 2 AND "customerId" IS NOT NULL)
-            ORDER BY c.code, c.id
-          )
-          SELECT DISTINCT COALESCE((
-            SELECT r.parent_name FROM rules r
-            WHERE (r.match_type = 'code' AND lower(cb.code) = r.pat)
-               OR (r.match_type = 'name_contains' AND strpos(lower(cb.name), r.pat) > 0)
-            ORDER BY r.priority, r.id LIMIT 1
-          ), cb.name) AS name
-          FROM cb ORDER BY 1`,
+        // Khách cha theo quy tắc gộp của khách đã có hoá đơn.
+        this.base.dataLakeReady().then(
+          () =>
+            this.prisma.$queryRaw<{ name: string }[]>`
+            WITH ${this.base.custCte(Prisma.sql`c.id IN (SELECT DISTINCT "customerId" FROM invoices WHERE status <> 2 AND "customerId" IS NOT NULL)`)}
+            SELECT DISTINCT parent_name AS name FROM cust ORDER BY 1`,
+        ),
         this.prisma.$queryRaw<{ name: string }[]>`
           SELECT DISTINCT name FROM products WHERE name IS NOT NULL ORDER BY 1`,
         this.productTypes(),
@@ -1024,8 +1013,9 @@ export class AnalyticsKhachHangDlclService {
         WHERE true ${invAnd}
       ),
       dl_pname AS (
-        SELECT DISTINCT ON (p.code) p.code, p.name, COALESCE(p."basePrice", 0)::float8 AS base_price
-        FROM products p ORDER BY p.code, p.id
+        -- products.code là UNIQUE → không cần DISTINCT ON; để Postgres tra theo index.
+        SELECT p.code, p.name, COALESCE(p."basePrice", 0)::float8 AS base_price
+        FROM products p
       )${q.productPhase ? Prisma.sql`, ${this.phaseCtes(lake)}` : Prisma.empty},
       dl_raw AS (
         SELECT x.code, x.d, x.ok, x.total, x.customer_code, x.customer_name, x.parent_name, x.customer_type, x.is_vip,
@@ -1131,9 +1121,9 @@ export class AnalyticsKhachHangDlclService {
         ${sp.where ? Prisma.sql`WHERE ${sp.where}` : Prisma.empty}
         GROUP BY GROUPING SETS (${sets}))`;
     });
-    const rows = await this.prisma.$queryRaw<Record<string, unknown>[]>`
+    const rows = await this.base.q<Record<string, unknown>[]>(Prisma.sql`
       WITH ${ctes}
-      ${Prisma.join(parts, ' UNION ALL ')}`;
+      ${Prisma.join(parts, ' UNION ALL ')}`);
 
     const out = specs.map((sp) => {
       const m: CubeMap = new Map();
@@ -1466,9 +1456,9 @@ export class AnalyticsKhachHangDlclService {
         FROM data_lake.invoice o LEFT JOIN customers c ON c.code = o."customerCode"
         WHERE o.status <> 2`
       : Prisma.empty;
-    const rows = await this.prisma.$queryRaw<
+    const rows = await this.base.q<
       { key: string | null; g: number; n: number }[]
-    >`
+    >(Prisma.sql`
       WITH ${ctes},
       -- Tháng mua đầu tiên của khách cha trên MỌI hoá đơn (bảng invoice của Power BI: mọi người bán, trừ user 2)
       nc_all AS (
@@ -1498,7 +1488,7 @@ export class AnalyticsKhachHangDlclService {
           FILTER (WHERE date_trunc('month', x.d) = date_trunc('month', f.first_d))::int AS n
       FROM inv x LEFT JOIN nc_first f ON f.parent_key = COALESCE(x.parent_name, ${BLANK})
       WHERE ${this.base.periodCond(p)}
-      GROUP BY GROUPING SETS ((x.customer_type), ())`;
+      GROUP BY GROUPING SETS ((x.customer_type), ())`);
     return new Map(
       rows.map((r) => [`${r.g}${SEP}${r.key ?? NULL_KEY}`, Number(r.n)]),
     );
@@ -1541,7 +1531,7 @@ export class AnalyticsKhachHangDlclService {
 
   /** Bảng chi tiết (tableEx): từng dòng hàng của hoá đơn trong kỳ. */
   private async detail(ctes: Prisma.Sql, p: CurrentPeriod) {
-    const rows = await this.prisma.$queryRaw<Record<string, unknown>[]>`
+    const rows = await this.base.q<Record<string, unknown>[]>(Prisma.sql`
       WITH ${ctes}
       SELECT x.d::text AS d, x.code, x.customer_name, x.customer_code, x.product_code, x.product_name,
              x.price, x.discount, (x.inv_total = 0) AS free, x.parent_name,
@@ -1552,7 +1542,7 @@ export class AnalyticsKhachHangDlclService {
       WHERE ${this.base.periodCond(p)}
       GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10
       ORDER BY 1 DESC, 2 DESC, 6
-      LIMIT ${DETAIL_LIMIT}`;
+      LIMIT ${DETAIL_LIMIT}`);
     const count = rows.length ? Number(rows[0].n) : 0;
     // Dòng dạng mảng (gọn): xem DETAIL_COLUMNS.
     return {

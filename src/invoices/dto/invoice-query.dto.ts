@@ -134,6 +134,15 @@ export class InvoiceQueryDto {
   @IsDateString()
   toUpdatedDate?: string;
 
+  /** Lọc theo thời gian hóa đơn được đẩy lên Misa (misaSyncedAt) */
+  @IsOptional()
+  @IsDateString()
+  fromMisaSyncedDate?: string;
+
+  @IsOptional()
+  @IsDateString()
+  toMisaSyncedDate?: string;
+
   @IsOptional()
   @IsString()
   invoiceCodeSearch?: string;
@@ -265,6 +274,12 @@ export class InvoiceQueryDto {
   @Transform(({ value }) => value === true || value === 'true' || value === '1')
   @IsBoolean()
   priceWarning?: boolean;
+
+  // Cùng điều kiện với biểu tượng cảnh báo: lệch giá hoặc lệch số lượng.
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true' || value === '1')
+  @IsBoolean()
+  hasWarning?: boolean;
 
   // Hóa đơn đã hủy vẫn còn phiếu giao hàng chưa được chuyển sang
   // hóa đơn kế tiếp cùng gốc (.xx). Không xét đóng hàng hay loading.

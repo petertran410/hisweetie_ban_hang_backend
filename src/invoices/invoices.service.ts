@@ -15,6 +15,10 @@ import {
   InvoiceQuantityMismatchItem,
 } from './invoice-quantity-mismatch';
 import {
+  findInvoicePriceWarnings,
+  findInvoiceWarningIds,
+} from './invoice-warnings.query';
+import {
   CreateInvoiceDto,
   UpdateInvoiceDto,
   InvoiceQueryDto,
@@ -437,6 +441,24 @@ export class InvoicesService {
     this.intersectInvoiceIds(where, ids);
   }
 
+  private async applyInvoiceWarningFilter(where: any, query: InvoiceQueryDto) {
+    if (!query.hasWarning && !query.priceWarning) return;
+
+    const candidates = await this.prisma.invoice.findMany({
+      where,
+      select: { id: true },
+    });
+    const ids: number[] = [];
+    // Giới hạn số tham số SQL; chỉ kiểm tra các hóa đơn đã khớp bộ lọc khác.
+    for (let offset = 0; offset < candidates.length; offset += 2000) {
+      const batch = candidates.slice(offset, offset + 2000).map((row) => row.id);
+      ids.push(
+        ...(await findInvoiceWarningIds(this.prisma, batch, !!query.hasWarning)),
+      );
+    }
+    this.intersectInvoiceIds(where, ids);
+  }
+
   /**
    * Tách logic build `where` để dùng chung giữa findAll và getTotals.
    * Mọi filter (status/branch/date/payment/advanced search...) áp lên cả 2.
@@ -615,6 +637,14 @@ export class InvoicesService {
       if (toUpdatedDate) where.updatedAt.lte = new Date(toUpdatedDate);
     }
 
+    if (query.fromMisaSyncedDate || query.toMisaSyncedDate) {
+      where.misaSyncedAt = {};
+      if (query.fromMisaSyncedDate)
+        where.misaSyncedAt.gte = new Date(query.fromMisaSyncedDate);
+      if (query.toMisaSyncedDate)
+        where.misaSyncedAt.lte = new Date(query.toMisaSyncedDate);
+    }
+
     // Filter theo người tạo (chỉ áp dụng khi user có quyền xem data người khác)
     if (query.createdByIds?.length && !where.createdBy) {
       where.createdBy = { in: query.createdByIds };
@@ -679,32 +709,7 @@ export class InvoicesService {
       };
     }
 
-    // Lọc hóa đơn có cảnh báo lệch giá bảng giá 2/3.
-    // Phản chiếu đúng logic hiển thị icon ở client (useInvoicePriceBookWarnings):
-    // - status <> 2 (chưa hủy)
-    // - priceBookId ∈ {2, 3}
-    // - có ≥1 dòng sản phẩm mà (price - discount) < giá niêm yết của sản phẩm
-    //   đó trong CHÍNH bảng giá của hóa đơn (chỉ xét dòng bảng giá đang active;
-    //   sản phẩm không có trong bảng giá → bỏ qua nhờ EXISTS).
-    // Lấy tập id rồi giao (AND) với các filter còn lại qua where.id; phân trang
-    // và đếm tổng vẫn do Prisma xử lý ở findAll/getTotals như bình thường.
-    if (query.priceWarning) {
-      const rows = await this.prisma.$queryRaw<{ id: number }[]>`
-        SELECT i.id FROM invoices i
-        WHERE i.status <> 2 AND i."priceBookId" IN (2, 3)
-          AND EXISTS (
-            SELECT 1 FROM invoice_details d
-            JOIN price_book_details pbd
-              ON pbd."productId" = d."productId"
-             AND pbd."priceBookId" = i."priceBookId"
-             AND pbd."isActive" = true
-            WHERE d."invoiceId" = i.id
-              AND (d.price - d.discount) < pbd.price
-          )`;
-      const ids = rows.map((r) => Number(r.id));
-      where.id = { in: ids.length ? ids : [-1] };
-    }
-
+    await this.applyInvoiceWarningFilter(where, query);
     await this.applyOrphanedPackingFilter(where, query.orphanedPacking);
 
     return where;
@@ -899,6 +904,10 @@ export class InvoicesService {
       const sqlConditions: string[] = [];
       const sqlParams: any[] = [];
 
+      if (where.id?.in) {
+        sqlParams.push(where.id.in);
+        sqlConditions.push(`i.id = ANY($${sqlParams.length})`);
+      }
       if (where.createdBy !== undefined) {
         if (where.createdBy?.in) {
           sqlParams.push(where.createdBy.in);
@@ -1142,29 +1151,7 @@ export class InvoicesService {
     };
 
     const [priceRows, quantityMismatches] = await Promise.all([
-      priceIds.length > 0
-        ? this.prisma.$queryRaw<
-            {
-              id: number;
-              productCode: string;
-              productName: string;
-              price: Prisma.Decimal;
-              listPrice: Prisma.Decimal;
-            }[]
-          >`
-        SELECT DISTINCT i.id, d."productCode", d."productName",
-               (d.price - d.discount) AS price, pbd.price AS "listPrice"
-         FROM invoices i
-         JOIN invoice_details d ON d."invoiceId" = i.id
-         JOIN price_book_details pbd
-           ON pbd."productId" = d."productId"
-          AND pbd."priceBookId" = i."priceBookId"
-          AND pbd."isActive" = true
-         WHERE i.id IN (${Prisma.join(priceIds)})
-           AND i.status <> 2
-           AND i."priceBookId" IN (2, 3)
-           AND (d.price - d.discount) < pbd.price`
-        : Promise.resolve([]),
+      findInvoicePriceWarnings(this.prisma, priceIds),
       findInvoiceQuantityMismatches(this.prisma, activeIds),
     ]);
 
@@ -6755,6 +6742,14 @@ export class InvoicesService {
         where.updatedAt.lte = new Date(query.toUpdatedDate);
     }
 
+    if (query.fromMisaSyncedDate || query.toMisaSyncedDate) {
+      where.misaSyncedAt = {};
+      if (query.fromMisaSyncedDate)
+        where.misaSyncedAt.gte = new Date(query.fromMisaSyncedDate);
+      if (query.toMisaSyncedDate)
+        where.misaSyncedAt.lte = new Date(query.toMisaSyncedDate);
+    }
+
     if (query.createdByIds?.length) {
       where.createdBy = { in: query.createdByIds };
     }
@@ -6813,24 +6808,7 @@ export class InvoicesService {
       };
     }
 
-    // Cảnh báo lệch giá bảng giá 2/3 — cùng truy vấn với buildInvoiceListWhere.
-    if (query.priceWarning) {
-      const rows = await this.prisma.$queryRaw<{ id: number }[]>`
-        SELECT i.id FROM invoices i
-        WHERE i.status <> 2 AND i."priceBookId" IN (2, 3)
-          AND EXISTS (
-            SELECT 1 FROM invoice_details d
-            JOIN price_book_details pbd
-              ON pbd."productId" = d."productId"
-             AND pbd."priceBookId" = i."priceBookId"
-             AND pbd."isActive" = true
-            WHERE d."invoiceId" = i.id
-              AND (d.price - d.discount) < pbd.price
-          )`;
-      const ids = rows.map((r) => Number(r.id));
-      where.id = { in: ids.length ? ids : [-1] };
-    }
-
+    await this.applyInvoiceWarningFilter(where, query);
     await this.applyOrphanedPackingFilter(where, query.orphanedPacking);
 
     return where;

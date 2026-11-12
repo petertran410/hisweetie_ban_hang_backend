@@ -1000,7 +1000,8 @@ export class AnalyticsQuanTriService {
     const lake = await this.base.dataLakeReady();
     const today = todayVn();
 
-    // Lọc hoá đơn / phiếu trả theo khách, nhân viên, kênh.
+    // Lọc hoá đơn / phiếu trả theo khách, nhân viên, kênh (dùng trong invx / retx:
+    // x = hoá đơn / phiếu trả, cu = khách).
     const invConds: Prisma.Sql[] = [
       Prisma.sql`x.customer_code NOT IN (SELECT code FROM qexcl WHERE kind = 'customer')`,
     ];
@@ -1008,10 +1009,10 @@ export class AnalyticsQuanTriService {
       invConds.push(Prisma.sql`x.team_id = ${f.saleTeamId}`);
     if (f.customerType)
       invConds.push(
-        Prisma.sql`lower(COALESCE(x.customer_type, '')) = lower(${f.customerType})`,
+        Prisma.sql`lower(COALESCE(cu.customer_type, '')) = lower(${f.customerType})`,
       );
     if (f.parentName)
-      invConds.push(Prisma.sql`x.parent_name = ${f.parentName}`);
+      invConds.push(Prisma.sql`cu.parent_name = ${f.parentName}`);
     if (f.groupSource)
       invConds.push(Prisma.sql`x.group_source = ${f.groupSource}`);
     const invWhere = Prisma.join(invConds, ' AND ');

@@ -7,8 +7,10 @@ import {
   IsArray,
   ValidateNested,
   IsBoolean,
+  Min,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { PayableAllocationDto } from '../../manufacturers/dto';
 
 /**
  * DTO cho endpoint POST /api/cashflows/supplier-payments — đối xứng
@@ -29,6 +31,7 @@ class PurchaseOrderPaymentItem {
   purchaseOrderId: number;
 
   @IsNumber()
+  @Min(0)
   amount: number;
 
   @IsOptional()
@@ -46,6 +49,7 @@ class SupplierDebtOffsetItem {
   purchaseOrderId: number;
 
   @IsNumber()
+  @Min(0)
   amount: number;
 
   @IsOptional()
@@ -58,11 +62,15 @@ class SupplierDebtOffsetItem {
 }
 
 export class CreateSupplierPaymentDto {
+  @IsOptional() @IsString() requestKey?: string;
+  @IsOptional() @IsArray() @ValidateNested({ each: true })
+  @Type(() => PayableAllocationDto) allocations?: PayableAllocationDto[];
   @IsInt()
   @Type(() => Number)
   supplierId: number;
 
   @IsNumber()
+  @Min(0)
   totalAmount: number;
 
   @IsOptional()

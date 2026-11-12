@@ -9,6 +9,7 @@ import {
   Post,
   Query,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
@@ -28,12 +29,14 @@ import {
   MuaHangRebateUpdateDto,
   MuaHangSalesQueryDto,
 } from './analytics-mua-hang.dto';
+import { AnalyticsCacheInterceptor } from './analytics-cache';
 
 // Phân tích › Chuyển Kho + Thu Mua. Quyền mặc định của cả controller: reports:analytics_purchasing
 // (endpoint cấu hình riêng thì gắn @ReportPermission({ key: 'reports:analytics_config' })).
 @ApiTags('Reports - Phân tích')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, ReportsPermissionGuard)
+@UseInterceptors(AnalyticsCacheInterceptor)
 @ReportPermission({ key: 'reports:analytics_purchasing' })
 @Controller('reports/analytics/mua-hang')
 export class AnalyticsMuaHangController {

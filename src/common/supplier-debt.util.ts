@@ -1,5 +1,3 @@
-import { getProductionFeeDebtItems } from './production-factory.util';
-
 interface RecalcSupplierDebtOptions {
   /**
    * Bỏ 1 supplier-return ra khỏi offsets — dùng khi SR đang chuyển trạng thái
@@ -110,11 +108,11 @@ export function supplierReturnOffsetAmount(sr: {
 // Prefix CashFlow CHI cần loại để tránh trừ đôi (clone PCTUPN khi PDN→PN).
 export const SUPPLIER_DEBT_CASHFLOW_PAID_EXCLUDE_PREFIX = 'PCTUPN';
 
-export async function recalcSupplierDebt(
+export async function calculateSupplierDebt(
   tx: any,
   supplierId: number,
   opts: RecalcSupplierDebtOptions = {},
-): Promise<number> {
+) {
   // 1. PO subTotal (KHÔNG trừ paidAmount — tiền đi qua cashflow).
   //    Dùng SUPPLIER_DEBT_PO_WHERE → loại PN đã hủy (status 2) + xoá mềm {DEL},
   //    KHỚP chính xác với timeline. Đây là FIX: trước đây thiếu filter status
@@ -187,28 +185,39 @@ export async function recalcSupplierDebt(
       0,
     ) + (opts.extraSupplierReturnOffset || 0);
 
-  // 4. Phí sản xuất của phiếu Gửi sản xuất đã hoàn thành. Giá vốn nguyên
-  //    liệu đang ở nhà máy KHÔNG tính vào nợ (theo dõi riêng). Không cộng vào
-  //    `totalInvoiced` (đó là giá trị MUA hàng).
-  const productionFeeItems = await getProductionFeeDebtItems(tx, supplierId);
-  const debtFromProductionFees = productionFeeItems.reduce(
-    (s, item) => s + item.amount,
-    0,
-  );
-
+  const [production, adjustments] = await Promise.all([
+    tx.production.aggregate({
+      where: { supplierId, manufacturerId: { not: null }, isExternal: true, status: 2 },
+      _sum: { totalPayable: true },
+    }),
+    tx.payableAllocation.aggregate({
+      where: { status: 1, batch: { accountType: 'S', accountId: supplierId, status: 1 } },
+      _sum: { fxAdjustment: true },
+    }),
+  ]);
+  const productionCharges = Number(production._sum.totalPayable ?? 0);
+  const fxAdjustment = Number(adjustments._sum.fxAdjustment ?? 0);
   const totalDebt =
     debtFromPurchases +
-    debtFromProductionFees +
+    productionCharges +
+    fxAdjustment +
     totalCashFlowReceived -
     totalCashFlowPaid -
     totalSupplierReturnOffsets;
 
+  return { totalDebt, totalInvoiced: opts.totalInvoiced ?? totalInvoicedComputed, productionCharges };
+}
+
+export async function recalcSupplierDebt(
+  tx: any,
+  supplierId: number,
+  opts: RecalcSupplierDebtOptions = {},
+): Promise<number> {
+  await tx.$queryRaw`SELECT id FROM suppliers WHERE id = ${supplierId} FOR UPDATE`;
+  const { totalDebt, totalInvoiced } = await calculateSupplierDebt(tx, supplierId, opts);
   await tx.supplier.update({
     where: { id: supplierId },
-    data:
-      opts.totalInvoiced !== undefined
-        ? { debt: totalDebt, totalInvoiced: opts.totalInvoiced }
-        : { debt: totalDebt, totalInvoiced: totalInvoicedComputed },
+    data: { debt: totalDebt, totalInvoiced },
   });
 
   return totalDebt;

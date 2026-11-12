@@ -11,6 +11,7 @@ import {
   LineAgg,
   MetricRow,
   MetricValues,
+  analyticsSettings,
 } from '../analytics-reports.service';
 import { AnalyticsBusinessQueryDto } from '../dto';
 import {
@@ -1699,7 +1700,7 @@ export class AnalyticsKhachHangService {
   run(sql: Prisma.Sql): Promise<Row[]> {
     return this.prisma
       .$transaction([
-        this.prisma.$executeRaw`SET LOCAL jit = off`,
+        this.prisma.$queryRaw(analyticsSettings(sql)),
         this.prisma.$queryRaw<Row[]>(sql),
       ])
       .then(([, rows]) => rows);

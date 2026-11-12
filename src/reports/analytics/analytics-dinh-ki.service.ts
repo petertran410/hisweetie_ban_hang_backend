@@ -984,9 +984,9 @@ export class AnalyticsDinhKiService {
         LEFT JOIN customers c ON c.code = o."customerCode"
         WHERE o.status <> 2`
       : Prisma.empty;
-    return this.prisma.$queryRaw<
+    return this.base.q<
       { user_id: number; d: Date; amount: number; new_amount: number }[]
-    >`
+    >(Prisma.sql`
       WITH hist AS (
         SELECT (i."purchaseDate" + interval '7 hour')::date AS d, c.code AS customer_code
         FROM invoices i
@@ -1024,7 +1024,7 @@ export class AnalyticsDinhKiService {
       LEFT JOIN cust cu ON cu.code = x.customer_code
       LEFT JOIN first_p fp ON fp.p = COALESCE(cu.parent_name, ${BLANK})
       WHERE x.d < ${V2_EXCLUDE_FROM}::date OR COALESCE(p.code, '') <> ${V2_EXCLUDED_PRODUCT}
-      GROUP BY x.user_id, x.d`;
+      GROUP BY x.user_id, x.d`);
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -1437,7 +1437,7 @@ export class AnalyticsDinhKiService {
         GROUP BY r.k, ft.team_id`);
     }
 
-    const rows = await this.prisma.$queryRaw<
+    const rows = await this.base.q<
       {
         src: string;
         k: string;
@@ -1451,7 +1451,7 @@ export class AnalyticsDinhKiService {
         orders_all: number;
         customers_all: number;
       }[]
-    >`
+    >(Prisma.sql`
       WITH ${ctes},
       dk_r(k, f, t) AS (VALUES ${Prisma.join(
         Object.entries(ranges).map(
@@ -1462,7 +1462,7 @@ export class AnalyticsDinhKiService {
       ${Prisma.join(
         selects.map((s) => Prisma.sql`(${s})`),
         ' UNION ALL ',
-      )}`;
+      )}`);
 
     const line: AggMap = new Map();
     const inv: AggMap = new Map();
@@ -1642,9 +1642,9 @@ export class AnalyticsDinhKiService {
         SELECT o."customerCode" AS code, MAX((o."purchaseDate" + interval '7 hour')::date) AS d
         FROM data_lake.invoice o WHERE o.status <> 2 GROUP BY o."customerCode"`
       : Prisma.empty;
-    const rows = await this.prisma.$queryRaw<
+    const rows = await this.base.q<
       { total: number; over30: number }[]
-    >`
+    >(Prisma.sql`
       WITH cb AS (
         SELECT DISTINCT ON (c.code) c.code, COALESCE(c."totalDebt", 0)::float8 AS debt
         FROM customers c ORDER BY c.code, c.id
@@ -1660,7 +1660,7 @@ export class AnalyticsDinhKiService {
       SELECT COALESCE(SUM(cb.debt), 0)::float8 AS total,
         COUNT(DISTINCT cb.code) FILTER (
           WHERE cb.debt > 0 AND (l.d IS NULL OR ${today}::date - l.d > 30))::int AS over30
-      FROM cb LEFT JOIN last l ON l.code = cb.code`;
+      FROM cb LEFT JOIN last l ON l.code = cb.code`);
     return {
       total: Number(rows[0]?.total ?? 0),
       over30: Number(rows[0]?.over30 ?? 0),

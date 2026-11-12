@@ -24,6 +24,7 @@ import { recalcSupplierDebt as recalcSupplierDebtUtil } from 'src/common/supplie
 import { SUPPLIER_DEBT_PO_WHERE } from 'src/common/supplier-debt.util';
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
+import { PayablesService } from '../manufacturers/payables.service';
 
 const CASH_FLOW_LIST_SELECT = {
   id: true,
@@ -79,6 +80,7 @@ export class CashFlowsService {
   constructor(
     private prisma: PrismaService,
     private auditLogsService: AuditLogsService,
+    private payables?: PayablesService,
   ) {}
 
   async create(dto: CreateCashFlowDto, userId: number) {
@@ -1224,6 +1226,9 @@ export class CashFlowsService {
   }
 
   async update(id: number, dto: UpdateCashFlowDto, userId?: number) {
+    if (await this.prisma.payablePaymentBatch.findUnique({ where: { cashFlowId: id } })) {
+      throw new BadRequestException('Phiếu chi có phân bổ công nợ; hãy hủy lần thanh toán và tạo lại');
+    }
     const result = await this.prisma.$transaction(async (tx) => {
       const existingCashFlow = await tx.cashFlow.findUnique({
         where: { id },
@@ -1231,6 +1236,15 @@ export class CashFlowsService {
 
       if (!existingCashFlow) {
         throw new Error('Không tìm thấy phiếu thu/chi');
+      }
+      const accountKeys = [existingCashFlow, {
+        partnerType: dto.partnerType ?? existingCashFlow.partnerType,
+        partnerId: dto.partnerId ?? existingCashFlow.partnerId,
+      }].filter((row) => row.partnerId && (row.partnerType === 'S' || row.partnerType === 'M'))
+        .map((row) => `${row.partnerType}:${row.partnerId}`);
+      for (const key of [...new Set(accountKeys)].sort()) {
+        const [type, accountId] = key.split(':');
+        await this.payables!.lock(tx, type as 'S' | 'M', Number(accountId));
       }
 
       const cashFlow = await tx.cashFlow.update({
@@ -1294,6 +1308,10 @@ export class CashFlowsService {
       }
       for (const sid of supplierIdsToRecalc) {
         await this.recalcSupplierDebt(sid, tx);
+        await this.payables!.assertCreditCoverage(tx, 'S', sid);
+      }
+      for (const mid of new Set([existingCashFlow, cashFlow].filter((row) => row.partnerType === 'M' && row.partnerId).map((row) => row.partnerId!))) {
+        await this.payables!.assertCreditCoverage(tx, 'M', mid);
       }
 
       return { existingCashFlow, cashFlow };
@@ -1361,6 +1379,12 @@ export class CashFlowsService {
    * Dùng cho các luồng cần hủy nhiều phiếu thu atomic (ví dụ tiền mặt kho).
    */
   async cancelInTransaction(tx: any, id: number) {
+    const payableBatch = await tx.payablePaymentBatch.findUnique({ where: { cashFlowId: id } });
+    if (payableBatch) {
+      const batch = await this.payables!.cancelBatchTx(tx, payableBatch.id);
+      const cashFlow = await tx.cashFlow.findUnique({ where: { id } });
+      return { cashFlow, updated: cashFlow, payableBatch: batch };
+    }
     const cashFlow = await tx.cashFlow.findUnique({
       where: { id },
       include: { branch: { select: { id: true, name: true } } },
@@ -1368,6 +1392,9 @@ export class CashFlowsService {
 
     if (!cashFlow) {
       throw new Error('Không tìm thấy phiếu thu/chi');
+    }
+    if (cashFlow.partnerId && (cashFlow.partnerType === 'S' || cashFlow.partnerType === 'M')) {
+      await this.payables!.lock(tx, cashFlow.partnerType, cashFlow.partnerId);
     }
 
     await tx.$queryRaw`
@@ -1674,7 +1701,9 @@ export class CashFlowsService {
       // [FIX-10] Recalc Supplier.debt
       if (cashFlow.partnerType === 'S' && cashFlow.partnerId) {
         await this.recalcSupplierDebt(cashFlow.partnerId, tx);
+        await this.payables!.assertCreditCoverage(tx, 'S', cashFlow.partnerId);
       }
+      if (cashFlow.partnerType === 'M' && cashFlow.partnerId) await this.payables!.assertCreditCoverage(tx, 'M', cashFlow.partnerId);
 
       // Recalc cho supplier của PO/OS bị ảnh hưởng (nếu khác partnerId)
       const affectedSupplierIds = new Set<number>();
@@ -2038,7 +2067,12 @@ export class CashFlowsService {
       }),
     ]);
 
+    const payableAllocations = await this.prisma.payableAllocation.findMany({
+      where: { batch: { cashFlowId }, targetType: 'production' },
+      include: { production: { select: { id: true, code: true, totalPayable: true, paidAmount: true, debtAmount: true } } },
+    });
     return {
+      payableAllocations,
       invoicePayments,
       orderPayments,
       debtOffsets,
@@ -2698,7 +2732,22 @@ export class CashFlowsService {
    * partner — luôn 1 cashflow.
    */
   async createSupplierPayment(dto: CreateSupplierPaymentDto, userId: number) {
+    if (dto.allocations !== undefined) {
+      if (!dto.requestKey || !dto.branchId || !['cash', 'transfer'].includes(dto.method)) {
+        throw new BadRequestException('Thiếu mã yêu cầu, chi nhánh hoặc phương thức thanh toán');
+      }
+      return this.payables!.pay('S', dto.supplierId, {
+        ...dto, requestKey: dto.requestKey, branchId: dto.branchId, allocations: dto.allocations,
+      }, userId);
+    }
     return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM suppliers WHERE id = ${dto.supplierId} FOR UPDATE`;
+      if (dto.debtOffsets?.length) {
+        const available = (await this.payables!.summary(tx, 'S', dto.supplierId)).availableCredit;
+        if (dto.debtOffsets.reduce((sum, row) => sum + row.amount, 0) > available + 0.005) {
+          throw new BadRequestException('Tiền cấn vượt ứng trước còn lại');
+        }
+      }
       const supplier = await tx.supplier.findUnique({
         where: { id: dto.supplierId },
         select: {

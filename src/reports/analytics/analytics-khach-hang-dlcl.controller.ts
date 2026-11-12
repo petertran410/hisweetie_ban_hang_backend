@@ -9,6 +9,7 @@ import {
   Post,
   Query,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
@@ -22,12 +23,14 @@ import {
   AnalyticsStrategicDistributorUpdateDto,
   AnalyticsStrategicProgramUpdateDto,
 } from './analytics-khach-hang-dlcl.dto';
+import { AnalyticsCacheInterceptor } from './analytics-cache';
 
 // Phân tích › Khách Hàng (trang ĐLCL, Biên Thương Mại, Chi Tiết, Xuất Data). Quyền mặc định của cả controller: reports:analytics_customer
 // (endpoint cấu hình riêng thì gắn @ReportPermission({ key: 'reports:analytics_config' })).
 @ApiTags('Reports - Phân tích')
 @ApiBearerAuth()
 @UseGuards(JwtAuthGuard, ReportsPermissionGuard)
+@UseInterceptors(AnalyticsCacheInterceptor)
 @ReportPermission({ key: 'reports:analytics_customer' })
 @Controller('reports/analytics/khach-hang-dlcl')
 export class AnalyticsKhachHangDlclController {

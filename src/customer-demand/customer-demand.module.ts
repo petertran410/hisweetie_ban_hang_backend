@@ -6,6 +6,7 @@ import { CustomerDemandController } from './controllers/customer-demand.controll
 import { CustomerDemandRepository } from './repositories/customer-demand.repository';
 import { CustomerDemandImportService } from './services/customer-demand-import.service';
 import { CustomerDemandService } from './services/customer-demand.service';
+import { LarkCustomerDemandNotificationService } from './services/lark-customer-demand-notification.service';
 import { LarkCustomerDemandSyncService } from './services/lark-customer-demand-sync.service';
 
 @Module({
@@ -15,6 +16,7 @@ import { LarkCustomerDemandSyncService } from './services/lark-customer-demand-s
     CustomerDemandRepository,
     CustomerDemandService,
     CustomerDemandImportService,
+    LarkCustomerDemandNotificationService,
     LarkCustomerDemandSyncService,
   ],
   exports: [CustomerDemandService, CustomerDemandRepository],
