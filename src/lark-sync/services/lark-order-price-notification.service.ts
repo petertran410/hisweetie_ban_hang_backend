@@ -79,7 +79,7 @@ export class LarkOrderPriceNotificationService {
         priceBookName: true,
         branch: { select: { name: true } },
         customer: { select: { code: true, name: true } },
-        soldBy: { select: { name: true, larkUserId: true } },
+        soldBy: { select: { name: true } },
         creator: { select: { name: true } },
       },
     });
@@ -120,7 +120,7 @@ export class LarkOrderPriceNotificationService {
       priceBookName: string | null;
       branch: { name: string } | null;
       customer: { code: string | null; name: string } | null;
-      soldBy: { name: string; larkUserId: string | null } | null;
+      soldBy: { name: string } | null;
       creator: { name: string } | null;
     },
     rows: PriceRow[],
@@ -134,8 +134,8 @@ export class LarkOrderPriceNotificationService {
       `**Đơn đặt hàng:** [${order.code}](${base}/don-hang/dat-hang?Code=${encodeURIComponent(order.code)}) (${action === 'create' ? 'tạo mới' : 'vừa sửa'})`,
       `**Bảng giá:** ${order.priceBookName ?? ''}`,
       `**Khách hàng:** ${[order.customer?.code, order.customer?.name].filter(Boolean).join(' - ')}`,
-      // Tag người bán trên Lark (larkUserId là open_id); chưa liên kết Lark thì ghi tên
-      `**Người bán:** ${order.soldBy?.larkUserId ? `<at id=${order.soldBy.larkUserId}></at>` : (order.soldBy?.name ?? '')}`,
+      // Ghi tên người bán (không tag Lark)
+      `**Người bán:** ${order.soldBy?.name ?? ''}`,
       `**Người ${action === 'create' ? 'tạo' : 'sửa'}:** ${actorName ?? order.creator?.name ?? ''} · ${this.formatDateTime(action === 'create' ? order.createdAt : new Date())}`,
     ];
 

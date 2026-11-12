@@ -46,7 +46,7 @@ function makeService(opts: { rows?: unknown[]; chatEnv?: string } = {}) {
 }
 
 describe('LarkOrderPriceNotificationService', () => {
-  it('gửi card vào nhóm cảnh báo: giá bán, giá bảng giá, chênh lệch đỏ, tag người bán', async () => {
+  it('gửi card vào nhóm cảnh báo: SL, giá bán, giá bảng giá, chênh lệch đỏ, tên người bán (không tag)', async () => {
     const { service, create } = makeService();
     await expect(service.notify(10, { action: 'create' })).resolves.toBe(true);
     const arg = create.mock.calls[0][0];
@@ -61,7 +61,8 @@ describe('LarkOrderPriceNotificationService', () => {
     expect(content).toContain("<font color='red'>140.000</font>");
     expect(content).toContain('145.000');
     expect(content).toContain("<font color='red'>**-5.000**</font>");
-    expect(content).toContain('**Người bán:** <at id=ou_sale></at>');
+    expect(content).toContain('**Người bán:** Sale A');
+    expect(content).not.toContain('<at id=');
   });
 
   it('env LARK_ORDER_PRICE_CHAT_ID ghi đè nhóm nhận', async () => {
