@@ -8,10 +8,12 @@ import {
   Post,
   Put,
   Query,
+  Res,
   UseGuards,
   UseInterceptors,
   UploadedFile,
 } from '@nestjs/common';
+import type { Response } from 'express';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -22,6 +24,7 @@ import {
   CancelInternalFundTransferDto,
   CloseInternalFundDayDto,
   CreateInternalFundReceiptApprovalDto,
+  InternalFundExportQueryDto,
   InternalFundQueryDto,
   MarkInternalFundExpenseDto,
   UpdateInternalFundTransactionDto,
@@ -127,6 +130,26 @@ export class InternalFundController {
     @CurrentUser() user: InternalFundActor,
   ) {
     return this.service.listTransactions(query, user);
+  }
+
+  @Get('export')
+  @ApiOperation({ summary: 'Xuất Excel sổ quỹ tổng quan' })
+  exportOverview(
+    @Query() query: InternalFundExportQueryDto,
+    @CurrentUser() user: InternalFundActor,
+    @Res() res: Response,
+  ) {
+    return this.service.exportTransactions(query, user, res);
+  }
+
+  @Get('export-detail')
+  @ApiOperation({ summary: 'Xuất Excel sổ quỹ chi tiết' })
+  exportDetail(
+    @Query() query: InternalFundExportQueryDto,
+    @CurrentUser() user: InternalFundActor,
+    @Res() res: Response,
+  ) {
+    return this.service.exportTransactions(query, user, res, true);
   }
 
   @Get('summary')
