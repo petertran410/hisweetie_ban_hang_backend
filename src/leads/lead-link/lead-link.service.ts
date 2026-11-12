@@ -194,7 +194,8 @@ export class LeadLinkService {
     for (const c of lead.conversations) {
       const zalo = ZALOWEB_TID.exec(c.tid);
       const data = zalo
-        ? { kind: c.isGroup ? 'group' : 'user', zaloId: zalo[1], pagePid: null }
+        ? // ID nhóm Zalo khác nhau theo tài khoản → nhóm ghi kèm kênh
+          { kind: c.isGroup ? 'group' : 'user', zaloId: zalo[1], pagePid: c.isGroup ? c.pagePid : null }
         : { kind: 'user', zaloId: c.tid, pagePid: c.pagePid };
       // Không ghi đè ID Zalo cá nhân / hội thoại cùng kênh khách đã có
       const taken = existing.some((e) =>

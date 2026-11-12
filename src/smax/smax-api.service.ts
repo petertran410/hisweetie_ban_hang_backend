@@ -578,6 +578,23 @@ export class SmaxApiService {
       }));
   }
 
+  /**
+   * Kênh chứa từng hội thoại (tid → page_pid) trong các kênh cho trước. Cùng 1 nhóm Zalo
+   * mỗi tài khoản Zalo thấy một ID khác nhau → dùng để biết ID nhóm thuộc tài khoản nào.
+   */
+  async findThreadPages(pagePids: string[], tids: string[]): Promise<Map<string, string>> {
+    const map = new Map<string, string>();
+    if (!pagePids.length || !tids.length) return map;
+    const threads = await this.listThreadsRaw(
+      { page_pids: pagePids, thread_tids: tids, limit: Math.min(tids.length * pagePids.length, 500) },
+      30000,
+    );
+    for (const t of threads) {
+      if (t?.tid && t?.page_pid && !map.has(t.tid)) map.set(t.tid, t.page_pid);
+    }
+    return map;
+  }
+
   /** Hội thoại mới nhất của các kênh, mọi nền tảng (mới → cũ). Response nặng (~20KB/thread) → nơi gọi nên cache. */
   async listRecentThreads(pagePids: string[], limit = 30, keyword?: string): Promise<SmaxRecentThread[]> {
     const threads = await this.listThreadsRaw(

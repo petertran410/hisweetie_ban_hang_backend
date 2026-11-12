@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { OrdersService } from './orders.service';
 import { INVOICE_STATUS } from '../invoices/dto';
 
@@ -40,6 +41,7 @@ describe('OrdersService findAll', () => {
         findMany: jest.fn().mockResolvedValue([order]),
         count: jest.fn().mockResolvedValue(1),
       },
+      $queryRaw: jest.fn().mockResolvedValue([]),
     };
     const service = new OrdersService(
       prisma as any,
@@ -66,6 +68,81 @@ describe('OrdersService findAll', () => {
     expect(result.data[0].customer?.debtPolicy?.debtRuleType).toBe(
       'CREDIT_LIMIT',
     );
+    expect(result.data[0]).toMatchObject({ hasPriceBookWarning: false, warnings: null });
+  });
+
+  it('gắn cảnh báo lệch giá bảng giá theo từng đơn', async () => {
+    const prisma = {
+      order: {
+        findMany: jest.fn().mockResolvedValue([{ id: 1 }, { id: 2 }]),
+        count: jest.fn().mockResolvedValue(2),
+      },
+      $queryRaw: jest.fn().mockResolvedValue([
+        { id: 2, productCode: 'SP1', productName: 'Mứt Mận', price: new Prisma.Decimal(135000), listPrice: new Prisma.Decimal(140000) },
+      ]),
+    };
+    const service = new OrdersService(prisma as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+
+    const result = await service.findAll({ page: 1, limit: 15 } as any);
+
+    expect(result.data[0]).toMatchObject({ hasPriceBookWarning: false, warnings: null });
+    expect(result.data[1]).toMatchObject({
+      hasPriceBookWarning: true,
+      warnings: {
+        price: [{ productCode: 'SP1', productName: 'Mứt Mận', price: 135000, listPrice: 140000 }],
+        quantity: [],
+      },
+    });
+  });
+});
+
+describe('OrdersService bộ lọc Cảnh báo đơn hàng', () => {
+  const make = () => {
+    const prisma = {
+      order: { findMany: jest.fn().mockResolvedValue([{ id: 1 }, { id: 2 }, { id: 3 }]) },
+      $queryRaw: jest.fn().mockResolvedValue([{ id: 2 }]),
+    };
+    const service = new OrdersService(prisma as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+    return { prisma, service };
+  };
+
+  it('không chọn ô nào: không thêm điều kiện, không truy vấn', async () => {
+    const { prisma, service } = make();
+    const where = await (service as any).buildOrderListWhere({});
+    expect(where.AND).toBeUndefined();
+    expect(prisma.order.findMany).not.toHaveBeenCalled();
+  });
+
+  it('nhiều ô: OR giữa lệch giá / phí ship / hàng lạnh, giữ bộ lọc khác', async () => {
+    const { prisma, service } = make();
+    const where = await (service as any).buildOrderListWhere({
+      branchIds: [1],
+      priceWarning: true,
+      hasShippingFee: true,
+      hasColdItems: true,
+    });
+    expect(where.branchId).toEqual({ in: [1] });
+    // Lệch giá chỉ xét đơn đã khớp bộ lọc khác, cùng điều kiện với icon
+    expect(prisma.order.findMany.mock.calls[0][0].where.branchId).toEqual({ in: [1] });
+    const sql = prisma.$queryRaw.mock.calls[0][0];
+    expect(sql.sql).toContain('(oi.price - oi.discount) < pbd.price');
+    expect(sql.values).toEqual([1, 2, 3]);
+    expect(where.AND).toEqual([
+      {
+        OR: [
+          { shippingFee: { gt: 0 } },
+          { items: { some: { product: { cargoType: 'COLD' } } } },
+          { id: { in: [2] } },
+        ],
+      },
+    ]);
+  });
+
+  it('lệch giá không có đơn nào → không ra đơn (id -1)', async () => {
+    const { prisma, service } = make();
+    prisma.$queryRaw.mockResolvedValue([]);
+    const where = await (service as any).buildOrderListWhere({ priceWarning: true });
+    expect(where.AND).toEqual([{ OR: [{ id: { in: [-1] } }] }]);
   });
 });
 

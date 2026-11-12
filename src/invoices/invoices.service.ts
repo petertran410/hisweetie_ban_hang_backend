@@ -16,6 +16,7 @@ import {
 } from './invoice-quantity-mismatch';
 import {
   findInvoicePriceWarnings,
+  findInvoiceQuantityWarningIds,
   findInvoiceWarningIds,
 } from './invoice-warnings.query';
 import {
@@ -420,43 +421,64 @@ export class InvoicesService {
     return rows.map((row) => Number(row.id));
   }
 
-  private intersectInvoiceIds(where: { id?: { in: number[] } }, ids: number[]) {
-    const next = ids.length > 0 ? ids : [-1];
-    const current = where.id?.in;
-    if (!current) {
-      where.id = { in: next };
-      return;
+  /**
+   * Nhóm "Cảnh báo hóa đơn" (lệch giá, lệch SL, hủy còn giao hàng, có phí ship, hàng lạnh):
+   * chọn nhiều ô → hóa đơn thỏa ÍT NHẤT 1 ô (OR); các bộ lọc khác vẫn áp chung (AND).
+   */
+  private async applyInvoiceAlertFilters(where: any, query: InvoiceQueryDto) {
+    const branches: any[] = [];
+    if (query.hasShippingFee) branches.push({ shippingFee: { gt: 0 } });
+    if (query.hasColdItems) {
+      branches.push({ details: { some: { product: { cargoType: 'COLD' } } } });
     }
-    const allowed = new Set(current.map(Number));
-    const intersection = next.filter((id) => allowed.has(id));
-    where.id = { in: intersection.length > 0 ? intersection : [-1] };
-  }
 
-  private async applyOrphanedPackingFilter(where: any, enabled?: boolean) {
-    if (!enabled) return;
-    // Checklist trạng thái mặc định đang ẩn "Đã hủy". Công tắc này phải
-    // vẫn ra đúng các hóa đơn hủy, nên ghi đè status sau khi build where.
-    where.status = INVOICE_STATUS.CANCELLED;
-    const ids = await this.findOrphanedPackingInvoiceIds();
-    this.intersectInvoiceIds(where, ids);
-  }
+    // Lệch giá / lệch SL: chỉ kiểm tra hóa đơn đã khớp các bộ lọc khác. hasWarning (cũ) = giá hoặc SL
+    const price = !!(query.hasWarning || query.priceWarning);
+    const quantity = !!(query.hasWarning || query.quantityWarning);
+    if (price || quantity) {
+      const candidates = await this.prisma.invoice.findMany({
+        where,
+        select: { id: true },
+      });
+      const ids: number[] = [];
+      // Giới hạn số tham số SQL
+      for (let offset = 0; offset < candidates.length; offset += 2000) {
+        const batch = candidates.slice(offset, offset + 2000).map((row) => row.id);
+        ids.push(
+          ...(await (price
+            ? findInvoiceWarningIds(this.prisma, batch, quantity)
+            : findInvoiceQuantityWarningIds(this.prisma, batch))),
+        );
+      }
+      branches.push({ id: { in: ids.length > 0 ? ids : [-1] } });
+    }
 
-  private async applyInvoiceWarningFilter(where: any, query: InvoiceQueryDto) {
-    if (!query.hasWarning && !query.priceWarning) return;
+    if (query.orphanedPacking) {
+      // Hóa đơn hủy còn giao hàng luôn ở trạng thái "Đã hủy" (checklist mặc định đang ẩn) →
+      // nhánh này bỏ qua bộ lọc trạng thái; các nhánh khác vẫn theo trạng thái đang lọc.
+      const status = where.status;
+      delete where.status;
+      const others = branches.splice(0);
+      if (others.length > 0) {
+        branches.push(
+          status === undefined ? { OR: others } : { AND: [{ status }, { OR: others }] },
+        );
+      }
+      const orphanIds = await this.findOrphanedPackingInvoiceIds();
+      branches.push({
+        status: INVOICE_STATUS.CANCELLED,
+        id: { in: orphanIds.length > 0 ? orphanIds : [-1] },
+      });
+    }
 
-    const candidates = await this.prisma.invoice.findMany({
-      where,
+    if (branches.length === 0) return;
+    // Quy về danh sách id: đường sort SQL thô (cột tính toán) chỉ hiểu where.id
+    const matched = await this.prisma.invoice.findMany({
+      where: { ...where, AND: [...(where.AND ?? []), { OR: branches }] },
       select: { id: true },
     });
-    const ids: number[] = [];
-    // Giới hạn số tham số SQL; chỉ kiểm tra các hóa đơn đã khớp bộ lọc khác.
-    for (let offset = 0; offset < candidates.length; offset += 2000) {
-      const batch = candidates.slice(offset, offset + 2000).map((row) => row.id);
-      ids.push(
-        ...(await findInvoiceWarningIds(this.prisma, batch, !!query.hasWarning)),
-      );
-    }
-    this.intersectInvoiceIds(where, ids);
+    const ids = matched.map((row) => row.id);
+    where.id = { in: ids.length > 0 ? ids : [-1] };
   }
 
   /**
@@ -551,12 +573,6 @@ export class InvoicesService {
         contains: productNoteSearch,
         mode: 'insensitive',
       };
-    }
-    if (query.hasShippingFee) {
-      where.shippingFee = { gt: 0 };
-    }
-    if (query.hasColdItems) {
-      detailsConditions.product = { cargoType: 'COLD' };
     }
     if (Object.keys(detailsConditions).length > 0) {
       where.details = { some: detailsConditions };
@@ -709,8 +725,7 @@ export class InvoicesService {
       };
     }
 
-    await this.applyInvoiceWarningFilter(where, query);
-    await this.applyOrphanedPackingFilter(where, query.orphanedPacking);
+    await this.applyInvoiceAlertFilters(where, query);
 
     return where;
   }
@@ -6662,12 +6677,6 @@ export class InvoicesService {
         mode: 'insensitive',
       };
     }
-    if (query.hasShippingFee) {
-      where.shippingFee = { gt: 0 };
-    }
-    if (query.hasColdItems) {
-      detailsConditions.product = { cargoType: 'COLD' };
-    }
     if (Object.keys(detailsConditions).length > 0) {
       where.details = { some: detailsConditions };
     }
@@ -6808,8 +6817,7 @@ export class InvoicesService {
       };
     }
 
-    await this.applyInvoiceWarningFilter(where, query);
-    await this.applyOrphanedPackingFilter(where, query.orphanedPacking);
+    await this.applyInvoiceAlertFilters(where, query);
 
     return where;
   }

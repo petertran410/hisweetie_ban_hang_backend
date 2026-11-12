@@ -17,6 +17,7 @@ import { LarkDebtNotificationService } from './services/lark-debt-notification.s
 import { LarkExpenseReviewNotificationService } from './services/lark-expense-review-notification.service';
 import { LarkSecurityNotificationService } from './services/lark-security-notification.service';
 import { LarkInvoiceQuantityNotificationService } from './services/lark-invoice-quantity-notification.service';
+import { LarkOrderPriceNotificationService } from './services/lark-order-price-notification.service';
 
 @Module({
   imports: [ConfigModule, PrismaModule],
@@ -27,6 +28,7 @@ import { LarkInvoiceQuantityNotificationService } from './services/lark-invoice-
     LarkOrderSyncService,
     LarkOrderNotificationService,
     LarkInvoiceQuantityNotificationService,
+    LarkOrderPriceNotificationService,
     LarkLoadingNotificationService,
     LarkUserDirectoryService,
     LarkCustomerBaseService,
@@ -43,6 +45,7 @@ import { LarkInvoiceQuantityNotificationService } from './services/lark-invoice-
     LarkOrderSyncService,
     LarkOrderNotificationService,
     LarkInvoiceQuantityNotificationService,
+    LarkOrderPriceNotificationService,
     LarkLoadingNotificationService,
     LarkCustomerSyncService,
     LarkProductSyncService,

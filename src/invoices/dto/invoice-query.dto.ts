@@ -275,6 +275,13 @@ export class InvoiceQueryDto {
   @IsBoolean()
   priceWarning?: boolean;
 
+  // Chỉ lấy hóa đơn lệch số lượng so với đơn đặt hàng (đơn tách giao: so với SL còn lại).
+  // Bật cùng priceWarning → hóa đơn có cả hai cảnh báo.
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true' || value === '1')
+  @IsBoolean()
+  quantityWarning?: boolean;
+
   // Cùng điều kiện với biểu tượng cảnh báo: lệch giá hoặc lệch số lượng.
   @IsOptional()
   @Transform(({ value }) => value === true || value === 'true' || value === '1')

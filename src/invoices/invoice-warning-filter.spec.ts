@@ -206,7 +206,8 @@ describe('InvoicesService warning filter', () => {
     const { prisma, service } = setup();
     await service.findAll({ ...filters, page: 2, limit: 1 });
     const candidateQuery = prisma.invoice.findMany.mock.calls[0][0];
-    const listQuery = prisma.invoice.findMany.mock.calls[1][0];
+    // Lần 2: quy nhóm cảnh báo (OR) về danh sách id; lần 3: trang danh sách
+    const listQuery = prisma.invoice.findMany.mock.calls[2][0];
     expect(candidateQuery.select).toEqual({ id: true });
     expect(candidateQuery.skip).toBeUndefined();
     expect(candidateQuery.take).toBeUndefined();
@@ -254,6 +255,65 @@ describe('InvoicesService warning filter', () => {
     expect(sqlOf(prisma.$queryRaw).sql).toContain('UNION');
   });
 
+  it('quantityWarning: chỉ lệch SL (không gộp với điều kiện giá)', async () => {
+    const { prisma, service } = setup([3]);
+    const where = await (service as any).buildInvoiceListWhere({
+      quantityWarning: true,
+    });
+    const q = sqlOf(prisma.$queryRaw);
+    expect(q.sql).toContain('a.iq <> GREATEST(a.oq - a.pq, 0)');
+    expect(q.sql).not.toMatch(/UNION\s+SELECT a\.id/);
+    expect(q.sql).not.toContain('pbd.price');
+    expect(where.id).toEqual({ in: [3] });
+  });
+
+  it('priceWarning + quantityWarning: hóa đơn có ít nhất 1 trong 2 (OR)', async () => {
+    const { prisma, service } = setup();
+    prisma.$queryRaw.mockReset().mockResolvedValueOnce([{ id: 2 }, { id: 4 }]);
+    await (service as any).buildInvoiceListWhere({
+      priceWarning: true,
+      quantityWarning: true,
+    });
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(sqlOf(prisma.$queryRaw).sql).toMatch(/UNION\s+SELECT a\.id FROM agg a/);
+    expect(prisma.invoice.findMany.mock.calls[1][0].where.AND).toEqual([
+      { OR: [{ id: { in: [2, 4] } }] },
+    ]);
+  });
+
+  it('nhiều ô cảnh báo khác loại: OR; "hủy còn giao hàng" bỏ qua bộ lọc trạng thái', async () => {
+    const { prisma, service } = setup();
+    jest.spyOn(service as any, 'findOrphanedPackingInvoiceIds').mockResolvedValue([9]);
+    const where = await (service as any).buildInvoiceListWhere({
+      statusIds: [1, 3],
+      hasShippingFee: true,
+      hasColdItems: true,
+      orphanedPacking: true,
+    });
+    const idsQuery = prisma.invoice.findMany.mock.calls[0][0];
+    expect(idsQuery.where.status).toBeUndefined();
+    expect(idsQuery.where.AND).toEqual([
+      {
+        OR: [
+          {
+            AND: [
+              { status: { in: [1, 3] } },
+              {
+                OR: [
+                  { shippingFee: { gt: 0 } },
+                  { details: { some: { product: { cargoType: 'COLD' } } } },
+                ],
+              },
+            ],
+          },
+          { status: 2, id: { in: [9] } },
+        ],
+      },
+    ]);
+    expect(where.status).toBeUndefined();
+    expect(where.id).toEqual({ in: [1, 2, 3, 4] });
+  });
+
   it('preserves legacy price-only behavior', async () => {
     const { prisma, service } = setup([2]);
     const where = await (service as any).buildInvoiceListWhere({
@@ -289,8 +349,11 @@ describe('InvoicesService warning filter', () => {
       .mockResolvedValueOnce([{ id: 2 }])
       .mockResolvedValueOnce([{ id: 2001 }]);
     const where = { id: { in: [2, 2001, 3000] } };
-    await (service as any).applyInvoiceWarningFilter(where, filters);
-    expect(where.id.in).toEqual([2, 2001]);
+    await (service as any).applyInvoiceAlertFilters(where, filters);
+    // Id lệch giá/SL đi vào nhánh OR; truy vấn cuối vẫn giữ id của các bộ lọc khác
+    const final = prisma.invoice.findMany.mock.calls[1][0].where;
+    expect(final.AND).toEqual([{ OR: [{ id: { in: [2, 2001] } }] }]);
+    expect(final.id).toEqual({ in: [2, 2001, 3000] });
     expect(prisma.$queryRaw).toHaveBeenCalledTimes(2);
     expect(sqlOf(prisma.$queryRaw).values).toHaveLength(4000);
     expect(sqlOf(prisma.$queryRaw, 1).values).toEqual([2001, 2001]);

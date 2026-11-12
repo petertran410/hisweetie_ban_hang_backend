@@ -28,11 +28,16 @@ import { CancelOrderDto } from './dto/cancel-order.dto';
 import { resolveDeliveryAddress } from '../common/address-resolver.util';
 import { LarkOrderSyncService } from 'src/lark-sync/services/lark-order-sync.service';
 import { LarkOrderNotificationService } from 'src/lark-sync/services/lark-order-notification.service';
+import { LarkOrderPriceNotificationService } from 'src/lark-sync/services/lark-order-price-notification.service';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 import { assertCanConfirmOrder } from '../common/debt-delivery.util';
 import { RealtimeService } from 'src/realtime/realtime.service';
 import { searchCustomerIds } from '../common/customer-search.util';
 import { PromotionsService } from '../promotions/promotions.service';
+import {
+  findOrderPriceWarningIds,
+  findOrderPriceWarnings,
+} from './order-price-warnings.query';
 
 // Cùng giá trị với INVOICE_TX_OPTIONS: mặc định 5s của Prisma không đủ khi
 // đơn nhiều dòng có khuyến mãi và pool đang bận.
@@ -118,6 +123,7 @@ export class OrdersService {
     private larkOrderNotification: LarkOrderNotificationService,
     private promotionsService: PromotionsService,
     @Optional() private realtime?: RealtimeService,
+    @Optional() private orderPriceNotifier?: LarkOrderPriceNotificationService,
   ) {}
 
   /**
@@ -765,6 +771,11 @@ export class OrdersService {
 
     this.flushAuditLogs(pendingAuditLogs);
     if (result?.order) {
+      // Có dòng bán thấp hơn giá bảng giá buôn → card cảnh báo Lark (sau commit, không chặn)
+      this.orderPriceNotifier?.notifyAsync(result.order.id, {
+        action: 'create',
+        actorId: userId,
+      });
       this.realtime?.emitOrderChanged({
         orderId: result.order.id,
         branchId: result.order.branchId,
@@ -806,6 +817,10 @@ export class OrdersService {
 
   async update(id: number, dto: UpdateOrderDto, user: any) {
     const pendingAuditLogs: PendingAuditLog[] = [];
+    // Lệch giá trước khi sửa: sửa mà lệch y như cũ thì không báo Lark lại
+    const priceSignatureBefore = await this.orderPriceNotifier
+      ?.signature(id)
+      .catch(() => undefined);
     const result = await this.prisma.$transaction(async (tx) => {
       // Khóa đơn để 2 người sửa/hủy cùng lúc chạy lần lượt, không ghi đè nhau.
       await tx.$queryRaw`SELECT id FROM orders WHERE id = ${id} FOR UPDATE`;
@@ -1192,6 +1207,13 @@ export class OrdersService {
     if (result?.status === ORDER_STATUS.CONFIRMED) {
       this.larkOrderNotification.notifyOrderConfirmedAsync(id);
     }
+    if (result) {
+      this.orderPriceNotifier?.notifyAsync(id, {
+        action: 'update',
+        actorId: user?.id,
+        previousSignature: priceSignatureBefore,
+      });
+    }
 
     this.realtime?.emitOrderChanged({
       orderId: id,
@@ -1285,7 +1307,37 @@ export class OrdersService {
       where.payments = { some: paymentWhere };
     }
 
+    await this.applyOrderAlertFilters(where, query);
+
     return where;
+  }
+
+  /**
+   * Nhóm "Cảnh báo đơn hàng" (lệch giá bảng giá, có phí ship, hàng lạnh): chọn nhiều ô →
+   * đơn thỏa ÍT NHẤT 1 ô (OR); các bộ lọc khác vẫn áp chung (AND).
+   */
+  private async applyOrderAlertFilters(where: any, query: OrderQueryDto) {
+    const branches: any[] = [];
+    if (query.hasShippingFee) branches.push({ shippingFee: { gt: 0 } });
+    if (query.hasColdItems) {
+      branches.push({ items: { some: { product: { cargoType: 'COLD' } } } });
+    }
+    if (query.priceWarning) {
+      // Chỉ kiểm tra đơn đã khớp các bộ lọc khác; chia lô giới hạn số tham số SQL
+      const candidates = await this.prisma.order.findMany({
+        where,
+        select: { id: true },
+      });
+      const ids: number[] = [];
+      for (let offset = 0; offset < candidates.length; offset += 2000) {
+        const batch = candidates.slice(offset, offset + 2000).map((row) => row.id);
+        ids.push(...(await findOrderPriceWarningIds(this.prisma, batch)));
+      }
+      branches.push({ id: { in: ids.length > 0 ? ids : [-1] } });
+    }
+    if (branches.length > 0) {
+      where.AND = [...(where.AND ?? []), { OR: branches }];
+    }
   }
 
   /**
@@ -1370,8 +1422,38 @@ export class OrdersService {
         : Promise.resolve(undefined),
     ]);
 
+    // Cảnh báo lệch giá bảng giá (như danh sách hóa đơn); cùng cấu trúc warnings để dùng chung icon/hộp thoại
+    const priceRows = await findOrderPriceWarnings(
+      this.prisma,
+      data.map((o) => o.id),
+    );
+    const priceByOrder = new Map<number, typeof priceRows>();
+    for (const row of priceRows) {
+      const id = Number(row.id);
+      priceByOrder.set(id, [...(priceByOrder.get(id) ?? []), row]);
+    }
+
     return {
-      data,
+      data: data.map((order) => {
+        const rows = priceByOrder.get(order.id) ?? [];
+        return {
+          ...order,
+          hasPriceBookWarning: rows.length > 0,
+          warnings: rows.length
+            ? {
+                price: rows.map((r) => ({
+                  productCode: r.productCode,
+                  productName: r.productName,
+                  price: Number(r.price),
+                  listPrice: Number(r.listPrice),
+                })),
+                quantity: [],
+                orderCode: null,
+                previousInvoiceCodes: [],
+              }
+            : null,
+        };
+      }),
       total,
       page,
       limit,

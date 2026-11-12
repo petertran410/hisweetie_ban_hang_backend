@@ -74,17 +74,28 @@ describe('InvoicesService cold cargo filter', () => {
     );
 
   it('adds a product cargoType=COLD relation filter when enabled', async () => {
-    const service = createService();
+    const findMany = jest.fn().mockResolvedValue([{ id: 5 }]);
+    const service = new InvoicesService(
+      { invoice: { findMany } } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {} as any,
+    );
 
     const where = await (service as any).buildInvoiceListWhere({
       hasColdItems: true,
     });
 
-    expect(where.details).toEqual({
-      some: {
-        product: { cargoType: 'COLD' },
-      },
-    });
+    // Nhóm "Cảnh báo hóa đơn" (OR) quy về danh sách id
+    expect(findMany.mock.calls[0][0].where.AND).toEqual([
+      { OR: [{ details: { some: { product: { cargoType: 'COLD' } } } }] },
+    ]);
+    expect(where.id).toEqual({ in: [5] });
   });
 
   it('does not add a cold relation filter by default', async () => {
