@@ -30,11 +30,18 @@ export async function findOrderPriceWarnings(db: Db, orderIds: number[]) {
       productName: string;
       price: Prisma.Decimal;
       listPrice: Prisma.Decimal;
+      /** Tổng SL (đơn vị cơ bản) các dòng cùng sản phẩm, cùng giá. */
+      quantity: Prisma.Decimal;
+      unit: string | null;
     }[]
   >(Prisma.sql`
-    SELECT DISTINCT o.id, oi."productCode", oi."productName",
-           (oi.price - oi.discount) AS price, pbd.price AS "listPrice"
+    SELECT o.id, oi."productCode", oi."productName",
+           (oi.price - oi.discount) AS price, pbd.price AS "listPrice",
+           sum(oi.quantity) AS quantity,
+           (SELECT p.unit FROM products p WHERE p.id = oi."productId") AS unit
     ${priceWarningSource(orderIds)}
+    GROUP BY o.id, oi."productId", oi."productCode", oi."productName",
+             (oi.price - oi.discount), pbd.price
     ORDER BY o.id, oi."productCode"`);
 }
 

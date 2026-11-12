@@ -10,6 +10,8 @@ const row = (over: Record<string, unknown> = {}) => ({
   productName: 'Mứt Quất Hồng Bì 1.2kg',
   price: new Prisma.Decimal(140000),
   listPrice: new Prisma.Decimal(145000),
+  quantity: new Prisma.Decimal(5),
+  unit: 'Hộp',
   ...over,
 });
 
@@ -54,6 +56,8 @@ describe('LarkOrderPriceNotificationService', () => {
     expect(content).toContain('DH128596');
     expect(content).toContain('BẢNG GIÁ BUÔN HCM');
     expect(content).toContain('SP000344 - Mứt Quất Hồng Bì 1.2kg');
+    expect(content).toContain('**SL**');
+    expect(content).toContain('5 Hộp');
     expect(content).toContain("<font color='red'>140.000</font>");
     expect(content).toContain('145.000');
     expect(content).toContain("<font color='red'>**-5.000**</font>");

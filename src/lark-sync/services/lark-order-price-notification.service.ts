@@ -139,7 +139,7 @@ export class LarkOrderPriceNotificationService {
       `**Người ${action === 'create' ? 'tạo' : 'sửa'}:** ${actorName ?? order.creator?.name ?? ''} · ${this.formatDateTime(action === 'create' ? order.createdAt : new Date())}`,
     ];
 
-    const row = (cells: [string, string, string, string], header = false) => ({
+    const row = (cells: [string, string, string, string, string], header = false) => ({
       tag: 'column_set',
       flex_mode: 'none',
       horizontal_spacing: 'small',
@@ -167,6 +167,7 @@ export class LarkOrderPriceNotificationService {
       const listPrice = Number(r.listPrice);
       return row([
         `${r.productCode} - ${r.productName}`,
+        `${this.num(Number(r.quantity))}${r.unit ? ` ${r.unit}` : ''}`,
         `<font color='red'>${this.num(price)}</font>`,
         this.num(listPrice),
         `<font color='red'>**${this.num(price - listPrice)}**</font>`,
@@ -186,7 +187,7 @@ export class LarkOrderPriceNotificationService {
         { tag: 'div', text: { tag: 'lark_md', content: lines.join('\n') } },
         { tag: 'hr' },
         row(
-          ['**Sản phẩm**', '**Giá bán**', '**Giá bảng giá**', '**Chênh lệch**'],
+          ['**Sản phẩm**', '**SL**', '**Giá bán**', '**Giá bảng giá**', '**Chênh lệch**'],
           true,
         ),
         ...items,
