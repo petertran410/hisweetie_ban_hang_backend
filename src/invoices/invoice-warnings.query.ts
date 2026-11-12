@@ -36,6 +36,18 @@ export async function findInvoicePriceWarnings(db: Db, invoiceIds: number[]) {
     ${priceWarningSource(invoiceIds)}`);
 }
 
+/** Hóa đơn lệch SL so với đơn đặt (cùng điều kiện icon cảnh báo, xem invoice-quantity-mismatch). */
+export async function findInvoiceQuantityWarningIds(
+  db: Db,
+  invoiceIds: number[],
+): Promise<number[]> {
+  if (invoiceIds.length === 0) return [];
+  const rows = await db.$queryRaw<{ id: number }[]>(Prisma.sql`
+    WITH ${invoiceQuantityMismatchCtes(invoiceIds)}
+    SELECT DISTINCT a.id FROM agg a WHERE ${invoiceQuantityMismatchCondition}`);
+  return rows.map((row) => Number(row.id));
+}
+
 export async function findInvoiceWarningIds(
   db: Db,
   invoiceIds: number[],

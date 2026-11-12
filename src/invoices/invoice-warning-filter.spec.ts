@@ -254,6 +254,33 @@ describe('InvoicesService warning filter', () => {
     expect(sqlOf(prisma.$queryRaw).sql).toContain('UNION');
   });
 
+  it('quantityWarning: chỉ lệch SL (không gộp với điều kiện giá)', async () => {
+    const { prisma, service } = setup([3]);
+    const where = await (service as any).buildInvoiceListWhere({
+      quantityWarning: true,
+    });
+    const q = sqlOf(prisma.$queryRaw);
+    expect(q.sql).toContain('a.iq <> GREATEST(a.oq - a.pq, 0)');
+    expect(q.sql).not.toMatch(/UNION\s+SELECT a\.id/);
+    expect(q.sql).not.toContain('pbd.price');
+    expect(where.id).toEqual({ in: [3] });
+  });
+
+  it('priceWarning + quantityWarning: giao 2 điều kiện', async () => {
+    const { prisma, service } = setup();
+    prisma.$queryRaw
+      .mockReset()
+      .mockResolvedValueOnce([{ id: 2 }, { id: 3 }])
+      .mockResolvedValueOnce([{ id: 3 }, { id: 4 }]);
+    const where = await (service as any).buildInvoiceListWhere({
+      priceWarning: true,
+      quantityWarning: true,
+    });
+    expect(sqlOf(prisma.$queryRaw, 0).sql).toContain('pbd.price');
+    expect(sqlOf(prisma.$queryRaw, 1).sql).toContain('a.iq <> GREATEST');
+    expect(where.id).toEqual({ in: [3] });
+  });
+
   it('preserves legacy price-only behavior', async () => {
     const { prisma, service } = setup([2]);
     const where = await (service as any).buildInvoiceListWhere({

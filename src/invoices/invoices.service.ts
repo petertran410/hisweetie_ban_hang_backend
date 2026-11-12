@@ -16,6 +16,7 @@ import {
 } from './invoice-quantity-mismatch';
 import {
   findInvoicePriceWarnings,
+  findInvoiceQuantityWarningIds,
   findInvoiceWarningIds,
 } from './invoice-warnings.query';
 import {
@@ -442,21 +443,29 @@ export class InvoicesService {
   }
 
   private async applyInvoiceWarningFilter(where: any, query: InvoiceQueryDto) {
-    if (!query.hasWarning && !query.priceWarning) return;
+    // Mỗi bộ lọc bật = 1 điều kiện, giao nhau. hasWarning (cũ): lệch giá HOẶC lệch SL.
+    const kinds: ((ids: number[]) => Promise<number[]>)[] = [];
+    if (query.hasWarning || query.priceWarning) {
+      kinds.push((ids) => findInvoiceWarningIds(this.prisma, ids, !!query.hasWarning));
+    }
+    if (query.quantityWarning) {
+      kinds.push((ids) => findInvoiceQuantityWarningIds(this.prisma, ids));
+    }
+    if (kinds.length === 0) return;
 
     const candidates = await this.prisma.invoice.findMany({
       where,
       select: { id: true },
     });
-    const ids: number[] = [];
-    // Giới hạn số tham số SQL; chỉ kiểm tra các hóa đơn đã khớp bộ lọc khác.
-    for (let offset = 0; offset < candidates.length; offset += 2000) {
-      const batch = candidates.slice(offset, offset + 2000).map((row) => row.id);
-      ids.push(
-        ...(await findInvoiceWarningIds(this.prisma, batch, !!query.hasWarning)),
-      );
+    for (const find of kinds) {
+      const ids: number[] = [];
+      // Giới hạn số tham số SQL; chỉ kiểm tra các hóa đơn đã khớp bộ lọc khác.
+      for (let offset = 0; offset < candidates.length; offset += 2000) {
+        const batch = candidates.slice(offset, offset + 2000).map((row) => row.id);
+        ids.push(...(await find(batch)));
+      }
+      this.intersectInvoiceIds(where, ids);
     }
-    this.intersectInvoiceIds(where, ids);
   }
 
   /**
