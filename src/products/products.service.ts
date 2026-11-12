@@ -48,6 +48,7 @@ import {
   DEFAULT_COMPONENTS_WHERE,
   FORMULAS_INCLUDE,
   defaultFormulaComponents,
+  mergeStoredFormulaFields,
   normalizeFormulas,
   replaceDefaultFormulaComponents,
   saveProductFormulas,
@@ -1468,6 +1469,8 @@ export class ProductsService {
         images: true,
         documents: true,
         comboComponents: true,
+        // Bù trường gửi đi sản xuất khi client (app mobile) không gửi.
+        formulas: { include: { nsxLines: true } },
         inventories: true,
         variant: true,
         tradeMark: true,
@@ -1535,7 +1538,11 @@ export class ProductsService {
     const productType = dto.type ?? currentProduct.type;
     // Hàng sản xuất gửi nhiều công thức → giá vốn tính theo công thức mặc định.
     const normalizedFormulas =
-      productType === 4 && formulas ? normalizeFormulas(formulas) : undefined;
+      productType === 4 && formulas
+        ? normalizeFormulas(
+            mergeStoredFormulaFields(formulas, currentProduct.formulas),
+          )
+        : undefined;
     const components = normalizedFormulas
       ? defaultFormulaComponents(normalizedFormulas)
       : rawComponents;

@@ -9,9 +9,11 @@ import {
   IsDateString,
   ValidateNested,
   IsIn,
+  ArrayMaxSize,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 import { PartialType } from '@nestjs/swagger';
+import { NSX_UNITS, NsxUnit, toNsxUnit } from '../../common/nsx-pricing.util';
 
 /**
  * Phân loại hàng hoá phục vụ leadtime chuyển kho (Phase 1 — hệ thống leadtime).
@@ -64,7 +66,37 @@ export class ComponentDto {
   inputMode?: string;
 }
 
-/** Công thức thành phần của hàng sản xuất (type 4). */
+/** Nguyên liệu NSX bổ sung của công thức gửi đi — định lượng cho 1 thành phẩm. */
+export class FormulaNsxLineDto {
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  productId: number;
+
+  @IsNumber()
+  @Min(0.000001)
+  @Type(() => Number)
+  quantity: number;
+
+  @Transform(toNsxUnit)
+  @IsIn(NSX_UNITS)
+  unit: NsxUnit;
+
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  unitPrice: number;
+
+  @Transform(toNsxUnit)
+  @IsIn(NSX_UNITS)
+  priceUnit: NsxUnit;
+}
+
+/**
+ * Công thức thành phần của hàng sản xuất (type 4). Các trường gửi đi sản xuất
+ * đều optional: payload cũ {id, name, isDefault, components} (app mobile) vẫn
+ * hợp lệ và server giữ nguyên giá trị đã lưu.
+ */
 export class ProductFormulaDto {
   @IsOptional()
   @IsInt()
@@ -82,6 +114,27 @@ export class ProductFormulaDto {
   @ValidateNested({ each: true })
   @Type(() => ComponentDto)
   components: ComponentDto[];
+
+  @IsOptional()
+  @IsBoolean()
+  isExternal?: boolean;
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Type(() => Number)
+  processingFeePerUnit?: number;
+
+  @IsOptional()
+  @IsIn(['VND', 'CNY'])
+  currency?: string;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(100)
+  @ValidateNested({ each: true })
+  @Type(() => FormulaNsxLineDto)
+  nsxLines?: FormulaNsxLineDto[];
 }
 
 export class ProductComponentDto {

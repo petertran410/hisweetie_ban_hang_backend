@@ -1,8 +1,9 @@
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import {
   ArrayMaxSize, IsArray, IsBoolean, IsDateString, IsIn, IsInt,
   IsNumber, IsOptional, IsString, MaxLength, Min, ValidateNested,
 } from 'class-validator';
+import { NSX_UNITS, NsxUnit, toNsxUnit } from '../common/nsx-pricing.util';
 
 export class OwnMaterialDto {
   @IsInt() @Min(1) productId: number;
@@ -10,6 +11,11 @@ export class OwnMaterialDto {
   @IsString() @MaxLength(40) unit: string;
 }
 
+/**
+ * Dòng NSX bổ sung trên phiếu. Dòng mới: có productId, UNIT_PRICE, unit/priceUnit
+ * thuộc g|kg|gói (kiểm tra chặt ở ManufacturersService.validateMaterials).
+ * productId trống, TOTAL, priceUnit null chỉ còn để nhận hàng các phiếu cũ.
+ */
 export class ManufacturerMaterialDto {
   @IsOptional() @IsInt() @Min(1) productId?: number | null;
   @IsOptional() @IsString() @MaxLength(500) description?: string;
@@ -17,6 +23,7 @@ export class ManufacturerMaterialDto {
   @IsOptional() @IsNumber() @Min(0) quantity?: number | null;
   @IsOptional() @IsString() @MaxLength(40) unit?: string | null;
   @IsOptional() @IsNumber() @Min(0) unitPrice?: number;
+  @IsOptional() @Transform(toNsxUnit) @IsIn(NSX_UNITS) priceUnit?: NsxUnit | null;
   @IsOptional() @IsNumber() @Min(0) amount?: number;
 }
 
@@ -30,20 +37,6 @@ export class ManufacturerDto {
   @IsOptional() @IsIn(['VND', 'CNY']) currency?: string;
   @IsOptional() @IsInt() @Min(1) supplierId?: number | null;
   @IsOptional() @IsBoolean() isActive?: boolean;
-}
-
-export class ExternalTemplateDto {
-  @IsString() @MaxLength(200) name: string;
-  @IsInt() @Min(1) manufacturerId: number;
-  @IsInt() @Min(1) productId: number;
-  @IsNumber() @Min(0.0001) baseQuantity: number;
-  @IsIn(['VND', 'CNY']) currency: string;
-  @IsOptional() @IsNumber() @Min(0) processingFee?: number;
-  @IsOptional() @IsNumber() @Min(0) exchangeRate?: number;
-  @IsArray() @ArrayMaxSize(100) @ValidateNested({ each: true })
-  @Type(() => OwnMaterialDto) ownMaterials: OwnMaterialDto[];
-  @IsArray() @ArrayMaxSize(100) @ValidateNested({ each: true })
-  @Type(() => ManufacturerMaterialDto) manufacturerMaterials: ManufacturerMaterialDto[];
 }
 
 export class PayableAllocationDto {

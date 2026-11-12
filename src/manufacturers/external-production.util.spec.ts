@@ -37,4 +37,21 @@ describe('external production cost and unit rules', () => {
     expect(ownConversion({ unit: 'chiếc' }, 'chiếc')).toBe(1);
     expect(() => ownConversion({ unit: 'chiếc' }, 'kg')).toThrow();
   });
+  it('converts g ↔ kg when the price unit differs, legacy lines keep qty × price', () => {
+    expect(materialAmount({ pricingMode: 'UNIT_PRICE', quantity: 300, unit: 'g', unitPrice: 250000, priceUnit: 'kg' })).toBe(75000);
+    expect(materialAmount({ pricingMode: 'UNIT_PRICE', quantity: 2, unit: 'kg', unitPrice: 300, priceUnit: 'g' })).toBe(600000);
+    expect(materialAmount({ pricingMode: 'UNIT_PRICE', quantity: 300, unit: 'g', unitPrice: 250000, priceUnit: null })).toBe(75000000);
+    expect(materialAmount({ pricingMode: 'TOTAL', amount: 10, priceUnit: 'kg' })).toBe(10);
+    expect(() => materialAmount({ pricingMode: 'UNIT_PRICE', quantity: 3, unit: 'gói', unitPrice: 1, priceUnit: 'kg' })).toThrow();
+  });
+
+  it('rounds slip quantity to 4 decimals before pricing', () => {
+    expect(materialAmount({ pricingMode: 'UNIT_PRICE', quantity: 0.12345, unit: 'kg', unitPrice: 10000, priceUnit: 'kg' })).toBe(1235);
+    expect(() => materialAmount({ pricingMode: 'UNIT_PRICE', quantity: 0.00001, unit: 'kg', unitPrice: 1, priceUnit: 'kg' })).toThrow();
+  });
+
+  it('CNY totals include converted-unit lines', () => {
+    const result = externalCosts([{ pricingMode: 'UNIT_PRICE', quantity: 500, unit: 'g', unitPrice: 20, priceUnit: 'kg' }], 5, 'CNY', 3500, 0);
+    expect(result).toMatchObject({ totalForeignPayable: 15, totalPayable: 52500, processingFee: 17500, manufacturerMaterialCost: 35000 });
+  });
 });

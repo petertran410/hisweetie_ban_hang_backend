@@ -139,4 +139,75 @@ describe('external production lifecycle', () => {
     expect(Number(tx.inventoryLog.create.mock.calls[0][0].data.quantity)).toBe(-80);
     expect(tx.product.findMany).not.toHaveBeenCalled();
   });
+  describe('formula-based slips and priced NSX lines', () => {
+    const products = [
+      { id: 10, code: 'A', name: 'Tea A', type: 2, unit: 'kg' },
+      { id: 11, code: 'B', name: 'Trà B', type: 2, unit: 'kg' },
+    ];
+    const setup = (status = 1) => {
+      const ctx = fixture(status);
+      ctx.tx.product.findMany.mockResolvedValue(products);
+      ctx.tx.product.findUnique = jest.fn().mockResolvedValue(products[0]);
+      ctx.tx.branch = { findUnique: jest.fn().mockResolvedValue({ id: 2, name: 'Kho' }) };
+      ctx.tx.production.create = jest.fn(async ({ data }) => data);
+      ctx.tx.productFormula = { findUnique: jest.fn() };
+      return ctx;
+    };
+    const dto = (over: any = {}) => ({
+      isExternal: true, manufacturerId: 5, productId: 10, sourceBranchId: 2, destinationBranchId: 2, quantity: 100,
+      ownMaterials: [{ productId: 10, quantity: 50, unit: 'kg' }],
+      manufacturerMaterials: [{ productId: 11, pricingMode: 'UNIT_PRICE', quantity: 300, unit: 'g', unitPrice: 250000, priceUnit: 'kg' }],
+      ...over,
+    });
+
+    it('stores the external formula and a converted g→kg amount on a new slip', async () => {
+      const { service, tx } = setup();
+      tx.productFormula.findUnique.mockResolvedValue({ id: 8, name: 'Gửi NSX', productId: 10, isExternal: true });
+      const saved: any = await service.save(dto({ formulaId: 8 }) as any, 7);
+      expect(saved).toMatchObject({ formulaId: 8, formulaName: 'Gửi NSX', externalTemplateId: null, totalPayable: 75000 });
+      expect(saved.manufacturerMaterials.create[0]).toMatchObject({ productId: 11, productCode: 'B', description: 'Trà B', unit: 'g', priceUnit: 'kg', amount: 75000 });
+    });
+
+    it('rejects an internal formula or one of another product', async () => {
+      const { service, tx } = setup();
+      tx.productFormula.findUnique.mockResolvedValueOnce({ id: 8, name: 'Nội bộ', productId: 10, isExternal: false });
+      await expect(service.save(dto({ formulaId: 8 }) as any, 7)).rejects.toThrow('không thuộc thành phẩm');
+      tx.productFormula.findUnique.mockResolvedValueOnce({ id: 9, name: 'Khác', productId: 99, isExternal: true });
+      await expect(service.save(dto({ formulaId: 9 }) as any, 7)).rejects.toThrow('không thuộc thành phẩm');
+    });
+
+    it('new draft lines must be linked, unique and priced per g/kg/gói', async () => {
+      const { service } = setup();
+      await expect(service.save(dto({ manufacturerMaterials: [{ pricingMode: 'UNIT_PRICE', quantity: 1, unit: 'kg', unitPrice: 1, priceUnit: 'kg' }] }) as any, 7))
+        .rejects.toThrow('cần chọn sản phẩm');
+      await expect(service.save(dto({ manufacturerMaterials: [{ productId: 11, pricingMode: 'TOTAL', amount: 500 }] }) as any, 7))
+        .rejects.toThrow('lượng × đơn giá');
+      const line = { productId: 11, pricingMode: 'UNIT_PRICE', quantity: 1, unit: 'kg', unitPrice: 1, priceUnit: 'kg' };
+      await expect(service.save(dto({ manufacturerMaterials: [line, line] }) as any, 7)).rejects.toThrow('trùng mã');
+    });
+
+    it('only-machining slip (no NSX lines, zero fee) is valid', async () => {
+      const { service } = setup();
+      const saved: any = await service.save(dto({ manufacturerMaterials: [], processingFee: 0 }) as any, 7);
+      expect(saved).toMatchObject({ totalPayable: 0, manufacturerMaterialCost: 0 });
+    });
+
+    it('updating a draft keeps its old template columns and an unchanged formula', async () => {
+      const { service, tx, row } = setup();
+      Object.assign(row, { formulaId: 8, formulaName: 'Đã đổi tên sau', externalTemplateId: 3, externalTemplateName: 'Mẫu cũ' });
+      await service.save(dto({ formulaId: 8 }) as any, 7, 1);
+      expect(tx.productFormula.findUnique).not.toHaveBeenCalled();
+      const data = tx.production.update.mock.calls[0][0].data;
+      expect(data).toMatchObject({ formulaId: 8, formulaName: 'Đã đổi tên sau' });
+      expect(data).not.toHaveProperty('externalTemplateId');
+    });
+
+    it('receive without edits recomputes saved lines with their price unit (not qty × price)', async () => {
+      const { service, row } = setup(4);
+      row.processingFee = 0;
+      row.manufacturerMaterials = [{ productId: 11, description: 'Trà B', pricingMode: 'UNIT_PRICE', quantity: 300, unit: 'g', unitPrice: 250000, priceUnit: 'kg', amount: 75000 }];
+      await service.receive(1, { receivedQuantity: 160 }, 7);
+      expect(row).toMatchObject({ totalPayable: 75000, debtAmount: 75000 });
+    });
+  });
 });
