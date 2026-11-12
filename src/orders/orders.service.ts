@@ -33,7 +33,10 @@ import { assertCanConfirmOrder } from '../common/debt-delivery.util';
 import { RealtimeService } from 'src/realtime/realtime.service';
 import { searchCustomerIds } from '../common/customer-search.util';
 import { PromotionsService } from '../promotions/promotions.service';
-import { findOrderPriceWarnings } from './order-price-warnings.query';
+import {
+  findOrderPriceWarningIds,
+  findOrderPriceWarnings,
+} from './order-price-warnings.query';
 
 // Cùng giá trị với INVOICE_TX_OPTIONS: mặc định 5s của Prisma không đủ khi
 // đơn nhiều dòng có khuyến mãi và pool đang bận.
@@ -1286,7 +1289,37 @@ export class OrdersService {
       where.payments = { some: paymentWhere };
     }
 
+    await this.applyOrderAlertFilters(where, query);
+
     return where;
+  }
+
+  /**
+   * Nhóm "Cảnh báo đơn hàng" (lệch giá bảng giá, có phí ship, hàng lạnh): chọn nhiều ô →
+   * đơn thỏa ÍT NHẤT 1 ô (OR); các bộ lọc khác vẫn áp chung (AND).
+   */
+  private async applyOrderAlertFilters(where: any, query: OrderQueryDto) {
+    const branches: any[] = [];
+    if (query.hasShippingFee) branches.push({ shippingFee: { gt: 0 } });
+    if (query.hasColdItems) {
+      branches.push({ items: { some: { product: { cargoType: 'COLD' } } } });
+    }
+    if (query.priceWarning) {
+      // Chỉ kiểm tra đơn đã khớp các bộ lọc khác; chia lô giới hạn số tham số SQL
+      const candidates = await this.prisma.order.findMany({
+        where,
+        select: { id: true },
+      });
+      const ids: number[] = [];
+      for (let offset = 0; offset < candidates.length; offset += 2000) {
+        const batch = candidates.slice(offset, offset + 2000).map((row) => row.id);
+        ids.push(...(await findOrderPriceWarningIds(this.prisma, batch)));
+      }
+      branches.push({ id: { in: ids.length > 0 ? ids : [-1] } });
+    }
+    if (branches.length > 0) {
+      where.AND = [...(where.AND ?? []), { OR: branches }];
+    }
   }
 
   /**

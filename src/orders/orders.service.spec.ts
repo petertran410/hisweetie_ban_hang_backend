@@ -96,6 +96,56 @@ describe('OrdersService findAll', () => {
   });
 });
 
+describe('OrdersService bộ lọc Cảnh báo đơn hàng', () => {
+  const make = () => {
+    const prisma = {
+      order: { findMany: jest.fn().mockResolvedValue([{ id: 1 }, { id: 2 }, { id: 3 }]) },
+      $queryRaw: jest.fn().mockResolvedValue([{ id: 2 }]),
+    };
+    const service = new OrdersService(prisma as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+    return { prisma, service };
+  };
+
+  it('không chọn ô nào: không thêm điều kiện, không truy vấn', async () => {
+    const { prisma, service } = make();
+    const where = await (service as any).buildOrderListWhere({});
+    expect(where.AND).toBeUndefined();
+    expect(prisma.order.findMany).not.toHaveBeenCalled();
+  });
+
+  it('nhiều ô: OR giữa lệch giá / phí ship / hàng lạnh, giữ bộ lọc khác', async () => {
+    const { prisma, service } = make();
+    const where = await (service as any).buildOrderListWhere({
+      branchIds: [1],
+      priceWarning: true,
+      hasShippingFee: true,
+      hasColdItems: true,
+    });
+    expect(where.branchId).toEqual({ in: [1] });
+    // Lệch giá chỉ xét đơn đã khớp bộ lọc khác, cùng điều kiện với icon
+    expect(prisma.order.findMany.mock.calls[0][0].where.branchId).toEqual({ in: [1] });
+    const sql = prisma.$queryRaw.mock.calls[0][0];
+    expect(sql.sql).toContain('(oi.price - oi.discount) < pbd.price');
+    expect(sql.values).toEqual([1, 2, 3]);
+    expect(where.AND).toEqual([
+      {
+        OR: [
+          { shippingFee: { gt: 0 } },
+          { items: { some: { product: { cargoType: 'COLD' } } } },
+          { id: { in: [2] } },
+        ],
+      },
+    ]);
+  });
+
+  it('lệch giá không có đơn nào → không ra đơn (id -1)', async () => {
+    const { prisma, service } = make();
+    prisma.$queryRaw.mockResolvedValue([]);
+    const where = await (service as any).buildOrderListWhere({ priceWarning: true });
+    expect(where.AND).toEqual([{ OR: [{ id: { in: [-1] } }] }]);
+  });
+});
+
 const buildService = (prisma: any, auditLogs: any = { create: jest.fn() }) =>
   new OrdersService(
     prisma,

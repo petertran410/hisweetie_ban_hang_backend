@@ -456,6 +456,24 @@ export class OrderQueryDto {
   @IsArray()
   bankAccountIds?: number[];
 
+  // Nhóm "Cảnh báo đơn hàng": chọn nhiều ô → đơn thỏa ít nhất 1 ô (OR)
+  // Lệch giá: đơn có dòng bán thấp hơn giá bảng giá buôn 2/3 (như icon cảnh báo)
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true' || value === '1')
+  @IsBoolean()
+  priceWarning?: boolean;
+
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true' || value === '1')
+  @IsBoolean()
+  hasShippingFee?: boolean;
+
+  // Có ít nhất 1 sản phẩm hàng lạnh (Product.cargoType=COLD)
+  @IsOptional()
+  @Transform(({ value }) => value === true || value === 'true' || value === '1')
+  @IsBoolean()
+  hasColdItems?: boolean;
+
   @IsOptional()
   @IsString()
   @IsIn([
