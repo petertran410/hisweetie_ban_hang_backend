@@ -68,6 +68,11 @@ export class CreateProductionDto {
   @IsDateString()
   manufacturedDate?: string;
 
+  // Phiếu gửi NSX đã gửi: sửa ngày gửi (ngày ghi xuất kho nguyên liệu).
+  @IsOptional()
+  @IsDateString()
+  sentDate?: string;
+
   @IsOptional()
   @IsBoolean()
   autoDeductComponents?: boolean;

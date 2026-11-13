@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { calculateSupplierDebt, recalcSupplierDebt, SUPPLIER_DEBT_PO_WHERE } from '../common/supplier-debt.util';
 import { PayablePaymentDto } from './dto';
 import { money } from './external-production.util';
+import { heldMaterialValueOf } from '../common/production-factory.util';
 
 type AccountType = 'S' | 'M';
 export interface PayableRow {
@@ -46,8 +47,12 @@ export class PayablesService {
         },
       }) : [],
       db.production.findMany({
-        where: { isExternal: true, status: 2, manufacturerId: type === 'M' ? id : { not: null }, supplierId: type === 'S' ? id : null },
-        include: { manufacturer: { select: { name: true } }, payableAllocations: { where: { status: 1 } } },
+        // Nợ NSX ghi theo đợt nhận: Nhận một phần (5) + Hoàn thành (2).
+        where: { isExternal: true, status: { in: [2, 5] }, manufacturerId: type === 'M' ? id : { not: null }, supplierId: type === 'S' ? id : null },
+        include: {
+          manufacturer: { select: { name: true } }, payableAllocations: { where: { status: 1 } },
+          receipts: { where: { status: 1 }, select: { receivedDate: true }, orderBy: { receivedDate: 'desc' }, take: 1 },
+        },
       }),
     ]);
     const rows: PayableRow[] = orders.map((po: any) => {
@@ -65,7 +70,7 @@ export class PayablesService {
     for (const row of productions) {
       rows.push({
         targetType: 'production', targetId: row.id, code: row.code,
-        date: row.completedDate ?? row.updatedAt, manufacturerName: row.manufacturer?.name,
+        date: row.completedDate ?? row.receipts[0]?.receivedDate ?? row.updatedAt, manufacturerName: row.manufacturer?.name,
         total: Number(row.totalPayable), paidAmount: Number(row.paidAmount),
         debtAmount: Math.max(0, Number(row.debtAmount)), currency: row.feeCurrency,
         foreignDebt: row.feeCurrency === 'CNY'
@@ -121,8 +126,8 @@ export class PayablesService {
       const own = productions.filter((row) => account.type === 'S' ? row.supplierId === account.id : row.supplierId == null);
       return {
         ...summary, batches,
-        manufacturerProductionDebt: money(own.filter((row) => row.status === 2).reduce((sum, row) => sum + Number(row.debtAmount), 0)),
-        heldMaterialValue: money(own.filter((row) => row.status === 4).reduce((sum, row) => sum + Number(row.materialValue), 0)),
+        manufacturerProductionDebt: money(own.filter((row) => row.status === 2 || row.status === 5).reduce((sum, row) => sum + Number(row.debtAmount), 0)),
+        heldMaterialValue: money(own.reduce((sum, row) => sum + heldMaterialValueOf(row), 0)),
       };
     }));
     return { manufacturer, productions, groups };

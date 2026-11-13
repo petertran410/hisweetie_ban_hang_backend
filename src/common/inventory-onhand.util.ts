@@ -53,6 +53,13 @@ const ACTIVE_FINDERS: Record<
       where: { id: { in: ids }, status: { not: 3 } },
       select: { id: true },
     }),
+  // Đợt nhận thành phẩm của phiếu gửi NSX: còn hiệu lực khi đợt chưa hủy
+  // và phiếu gửi chưa hủy.
+  production_receipt: (tx, ids) =>
+    tx.productionReceipt.findMany({
+      where: { id: { in: ids }, status: 1, production: { status: { not: 3 } } },
+      select: { id: true },
+    }),
   destruction: (tx, ids) =>
     tx.destruction.findMany({
       where: { id: { in: ids }, status: { not: 3 } },

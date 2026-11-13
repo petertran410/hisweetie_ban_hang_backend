@@ -74,6 +74,14 @@ function fixture() {
         .mockImplementation(async ({ where }) =>
           inventories.find((item) => item.id === where.id),
         ),
+      findUnique: jest
+        .fn()
+        .mockImplementation(
+          async ({ where }) =>
+            inventories.find(
+              (item) => item.branchId === where.productId_branchId?.branchId,
+            ) ?? null,
+        ),
       update: jest.fn().mockResolvedValue({}),
     },
     user: {
@@ -172,13 +180,57 @@ describe('explicit production cost application', () => {
     expect(tx.inventory.update).toHaveBeenCalledTimes(1);
   });
 
-  it.each([3, 4])('rejects status %s before writing', async (status) => {
+  it.each([1, 3])('rejects status %s before writing', async (status) => {
     const { service, row, tx } = fixture();
     row.status = status;
     await expect(
       service.apply(1, { basis: 'batch', expectedOldCost: 100 }, 7),
     ).rejects.toThrow();
     expect(tx.inventory.update).not.toHaveBeenCalled();
+  });
+
+  it('old factory slips (no manufacturer) still apply only when completed', async () => {
+    const { service, row, tx } = fixture();
+    row.manufacturerId = null;
+    row.status = 4;
+    await expect(
+      service.apply(1, { basis: 'batch', expectedOldCost: 100 }, 7),
+    ).rejects.toThrow();
+    expect(tx.inventory.update).not.toHaveBeenCalled();
+  });
+
+  it.each([4, 5])(
+    'NSX slip applies the cost fixed at send while status is %s (before all goods arrive)',
+    async (status) => {
+      const { service, row, tx } = fixture();
+      row.status = status;
+      await service.apply(1, { basis: 'batch', expectedOldCost: 100 }, 7);
+      expect(tx.inventory.update).toHaveBeenCalledWith({
+        where: { id: 10 },
+        data: { cost: d(206.25) },
+      });
+      expect(row.costAppliedAt).toBeInstanceOf(Date);
+    },
+  );
+
+  it('NSX slip sent before cost-at-send: fills the planned unit cost + spec, then applies it', async () => {
+    const { service, row, tx } = fixture();
+    Object.assign(row, {
+      status: 4,
+      batchUnitCost: null,
+      outputSpecSnapshot: null,
+      costSnapshotAt: null,
+      materialValue: d(70000),
+      processingFee: d(5000),
+      manufacturerMaterialCost: d(25000),
+      quantity: d(1000),
+    });
+    await service.apply(1, { basis: 'batch', expectedOldCost: 100 }, 7);
+    expect(tx.inventory.update).toHaveBeenCalledWith({
+      where: { id: 10 },
+      data: { cost: d(100) },
+    });
+    expect(Number(row.appliedUnitCost)).toBe(100);
   });
 
   it.each(['unit', 'missing', 'stale', 'missingTarget', 'revoked'])(
@@ -195,7 +247,11 @@ describe('explicit production cost application', () => {
           masterUnitId: null,
           isPieceUnit: false,
         });
-      if (reason === 'missing') row.outputSpecSnapshot = null;
+      // Phiếu nhà máy cũ (không NSX) thiếu quy cách: không tự bổ sung, phải chặn.
+      if (reason === 'missing') {
+        row.manufacturerId = null;
+        row.outputSpecSnapshot = null;
+      }
       if (reason === 'revoked')
         access.assert.mockRejectedValue(new ForbiddenException());
       const expectedCosts = [

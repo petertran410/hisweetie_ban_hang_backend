@@ -187,7 +187,8 @@ export async function calculateSupplierDebt(
 
   const [production, adjustments] = await Promise.all([
     tx.production.aggregate({
-      where: { supplierId, manufacturerId: { not: null }, isExternal: true, status: 2 },
+      // Phiếu gửi NSX ghi nợ theo đợt nhận: Nhận một phần (5) + Hoàn thành (2).
+      where: { supplierId, manufacturerId: { not: null }, isExternal: true, status: { in: [2, 5] } },
       _sum: { totalPayable: true },
     }),
     tx.payableAllocation.aggregate({

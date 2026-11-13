@@ -1,11 +1,13 @@
 import {
   IsArray,
+  IsBoolean,
   IsDateString,
   IsIn,
   IsInt,
   IsNumber,
   IsOptional,
   IsString,
+  MaxLength,
   Min,
   ValidateNested,
   ValidateIf,
@@ -48,6 +50,16 @@ export class ReceiveProductionDto {
   @IsOptional()
   @IsDateString()
   completedDate?: string;
+
+  // Phiếu gửi NSX: đợt cuối — hoàn tất phiếu dù chưa nhận đủ dự kiến.
+  @IsOptional()
+  @IsBoolean()
+  finish?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
 
   // Bỏ trống → nhận đúng số lượng của phiếu.
   @IsOptional()

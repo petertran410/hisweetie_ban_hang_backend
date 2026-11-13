@@ -35,6 +35,7 @@ function batch(
     outputSpecSnapshot: spec,
     costSnapshotAt: new Date(),
     costAppliedAt: null,
+    receipts: [],
     ...overrides,
   };
 }
@@ -142,5 +143,33 @@ describe('production cost history', () => {
         pageSize: 20,
       }),
     ).rejects.toThrow();
+  });
+
+  it('multi-receipt batch: NSX + fee summed from active receipts, actual vs planned unit cost', async () => {
+    const { service } = fixture([
+      batch(1, 100, {
+        quantity: decimal(1000),
+        receivedQuantity: decimal(950),
+        totalCost: decimal(98000),
+        manufacturerMaterialCost: decimal(30000),
+        processingFee: decimal(5000),
+        receipts: [
+          {
+            manufacturerMaterialCost: decimal(15000),
+            processingFee: decimal(2500),
+          },
+          {
+            manufacturerMaterialCost: decimal(13000),
+            processingFee: decimal(2500),
+          },
+        ],
+      }),
+    ]);
+    const [row] = (await service.history({} as any)).data;
+    expect(row.manufacturerMaterialCost).toBe(28000);
+    expect(row.processingFee).toBe(5000);
+    expect(row.unitCost).toBe(100);
+    expect(row.actualUnitCost).toBeCloseTo(98000 / 950, 6);
+    expect(row.receivedQuantity).toBe(950);
   });
 });

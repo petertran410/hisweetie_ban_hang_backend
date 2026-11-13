@@ -74,17 +74,28 @@ describe('productionFeeInVnd', () => {
 });
 
 describe('công nợ NCC của phiếu gửi sản xuất', () => {
-  it('hàng NCC đang giữ = tổng giá vốn NVL của phiếu Đã gửi, không phải nợ', async () => {
-    const aggregate = jest
-      .fn()
-      .mockResolvedValue({ _sum: { materialValue: '20000000' } });
+  it('hàng NCC đang giữ = giá vốn NVL phiếu Đã gửi + phần chưa nhận của phiếu Nhận một phần', async () => {
+    const findMany = jest.fn().mockResolvedValue([
+      {
+        status: 4,
+        materialValue: '20000000',
+        quantity: '1000',
+        receivedQuantity: null,
+      },
+      {
+        status: 5,
+        materialValue: '10000000',
+        quantity: '1000',
+        receivedQuantity: '600',
+      },
+    ]);
     await expect(
-      getHeldMaterialValue({ production: { aggregate } }, 3),
-    ).resolves.toBe(20_000_000);
-    expect(aggregate.mock.calls[0][0].where).toEqual({
+      getHeldMaterialValue({ production: { findMany } }, 3),
+    ).resolves.toBe(24_000_000);
+    expect(findMany.mock.calls[0][0].where).toEqual({
       supplierId: 3,
       isExternal: true,
-      status: 4,
+      status: { in: [4, 5] },
     });
   });
 });

@@ -9,12 +9,23 @@ import { Prisma, Production } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { FinanceAccessService } from '../auth/finance-access.service';
 import { ApplyProductionCostDto } from './dto/production-factory.dto';
+import { ensureInventoryRow } from '../common/production-factory.util';
+import { ensureExternalCostSnapshot } from '../manufacturers/external-production.util';
 import {
   outputSpec,
   readOutputSpec,
   specKey,
   specLabel,
 } from './production-cost.util';
+
+/**
+ * Phiếu gửi NSX áp giá vốn được từ lúc gửi (Đã gửi / Nhận một phần /
+ * Hoàn thành) vì giá thành chốt lúc gửi; phiếu cũ chỉ khi Hoàn thành.
+ */
+const canApplyStatus = (row: {
+  manufacturerId: number | null;
+  status: number;
+}) => (row.manufacturerId ? [2, 4, 5].includes(row.status) : row.status === 2);
 
 @Injectable()
 export class ProductionCostService {
@@ -58,10 +69,23 @@ export class ProductionCostService {
     const row = await this.prisma.production.findUnique({ where: { id } });
     if (!row?.isExternal)
       throw new NotFoundException('Không tìm thấy phiếu gửi sản xuất');
-    if (row.status !== 2 || row.costAppliedAt)
-      throw new ConflictException(
-        'Phiếu chưa hoàn thành, đã hủy hoặc đã áp giá vốn',
+    if (!canApplyStatus(row) || row.costAppliedAt)
+      throw new ConflictException('Phiếu chưa gửi, đã hủy hoặc đã áp giá vốn');
+    if (row.manufacturerId) {
+      // Giá thành chốt lúc gửi: áp được trước khi nhận hàng.
+      await ensureInventoryRow(
+        this.prisma,
+        row.productId,
+        row.destinationBranchId,
       );
+      Object.assign(
+        row,
+        await ensureExternalCostSnapshot(
+          this.prisma as unknown as Prisma.TransactionClient,
+          row,
+        ),
+      );
+    }
     const { price, spec } = this.batchPrice(row);
     const actor = await this.prisma.user.findUniqueOrThrow({
       where: { id: userId },
@@ -119,12 +143,10 @@ export class ProductionCostService {
   ) {
     if (
       !row.isExternal ||
-      row.status !== (legacyReceipt ? 4 : 2) ||
+      !(legacyReceipt ? row.status === 4 : canApplyStatus(row)) ||
       row.costAppliedAt
     ) {
-      throw new ConflictException(
-        'Phiếu chưa hoàn thành, đã hủy hoặc đã áp giá vốn',
-      );
+      throw new ConflictException('Phiếu chưa gửi, đã hủy hoặc đã áp giá vốn');
     }
     const scope = dto.scope ?? 'receiveBranch';
     const user = await tx.user.findUniqueOrThrow({
@@ -243,6 +265,10 @@ export class ProductionCostService {
         const row = await tx.production.findUnique({ where: { id } });
         if (!row)
           throw new NotFoundException('Không tìm thấy phiếu gửi sản xuất');
+        if (row.manufacturerId && canApplyStatus(row) && !row.costAppliedAt) {
+          await ensureInventoryRow(tx, row.productId, row.destinationBranchId);
+          Object.assign(row, await ensureExternalCostSnapshot(tx, row));
+        }
         const data = await this.write(tx, row, dto, userId);
         return tx.production.update({ where: { id }, data });
       },

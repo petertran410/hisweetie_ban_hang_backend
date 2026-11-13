@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { nsxRawAmount } from '../common/nsx-pricing.util';
+import { normalizeNsxUnit, nsxRawAmount } from '../common/nsx-pricing.util';
+import { outputSpec } from '../productions/production-cost.util';
 import { ManufacturerMaterialDto } from './dto';
 
 export const money = (value: Prisma.Decimal.Value) =>
@@ -61,4 +62,66 @@ export function ownConversion(product: { unit?: string | null; weight?: any; wei
   const grams = Number(product.weight ?? 0) * (product.weightUnit === 'kg' ? 1000 : 1);
   if (grams > 0 && (unit === 'g' || unit === 'kg')) return (unit === 'kg' ? 1000 : 1) / grams;
   throw new BadRequestException('Đơn vị nguyên liệu không quy đổi được sang đơn vị kho');
+}
+
+/**
+ * Giá thành dự kiến / 1 sp của phiếu gửi NSX, chốt từ lúc gửi:
+ * (giá vốn NL mình đã gửi + phải trả NSX dự kiến) / sản lượng dự kiến.
+ */
+export function planUnitCost(row: {
+  materialValue: Prisma.Decimal.Value | null;
+  processingFee: Prisma.Decimal.Value | null;
+  manufacturerMaterialCost: Prisma.Decimal.Value | null;
+  quantity: Prisma.Decimal.Value | null;
+}): Prisma.Decimal {
+  const quantity = new Prisma.Decimal(row.quantity ?? 0);
+  if (!quantity.gt(0)) return new Prisma.Decimal(0);
+  return new Prisma.Decimal(row.materialValue ?? 0)
+    .add(row.processingFee ?? 0)
+    .add(row.manufacturerMaterialCost ?? 0)
+    .div(quantity)
+    .toDecimalPlaces(6);
+}
+
+/**
+ * Chia một dòng NSX dự kiến (cả lô) theo tỷ lệ đợt nhận. Lượng lưu 4 số lẻ:
+ * kg bị cắt mất số lẻ thì đổi sang g (đơn giá vẫn theo priceUnit).
+ */
+export function scaleSuppliedLine(
+  line: ManufacturerMaterialDto,
+  ratio: Prisma.Decimal.Value,
+): ManufacturerMaterialDto {
+  if (line.pricingMode === 'TOTAL') {
+    return { ...line, amount: money(new Prisma.Decimal(line.amount ?? 0).mul(ratio)) };
+  }
+  const raw = new Prisma.Decimal(line.quantity ?? 0).mul(ratio);
+  const unit = line.priceUnit ? normalizeNsxUnit(line.unit) : line.unit;
+  if (unit === 'kg' && !raw.toDecimalPlaces(4).equals(raw.toDecimalPlaces(6))) {
+    return { ...line, quantity: raw.mul(1000).toDecimalPlaces(4).toNumber(), unit: 'g' };
+  }
+  return { ...line, quantity: raw.toDecimalPlaces(4).toNumber(), unit };
+}
+
+/**
+ * Phiếu gửi trước khi có giá thành chốt lúc gửi: bổ sung batchUnitCost +
+ * quy cách thành phẩm để nhận đợt / áp giá vốn được.
+ */
+export async function ensureExternalCostSnapshot(
+  tx: Prisma.TransactionClient,
+  row: {
+    id: number; productId: number; batchUnitCost: Prisma.Decimal | null;
+    outputSpecSnapshot: Prisma.JsonValue | null; costSnapshotAt: Date | null;
+    materialValue: Prisma.Decimal; processingFee: Prisma.Decimal;
+    manufacturerMaterialCost: Prisma.Decimal; quantity: Prisma.Decimal;
+  },
+) {
+  if (row.batchUnitCost != null && row.outputSpecSnapshot && row.costSnapshotAt) return {};
+  const product = await tx.product.findUniqueOrThrow({ where: { id: row.productId } });
+  const data = {
+    batchUnitCost: row.batchUnitCost ?? planUnitCost(row),
+    outputSpecSnapshot: (row.outputSpecSnapshot ?? { ...outputSpec(product) }) as Prisma.InputJsonValue,
+    costSnapshotAt: row.costSnapshotAt ?? new Date(),
+  };
+  await tx.production.update({ where: { id: row.id }, data });
+  return data;
 }

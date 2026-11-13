@@ -6,7 +6,7 @@ import { PayablesService } from './payables.service';
 
 interface BatchWhere {
   isExternal?: boolean;
-  status?: number;
+  status?: { in: number[] };
   debtAmount?: { gt: number };
 }
 
@@ -166,12 +166,16 @@ describe('manufacturer activity filtering', () => {
         where: {
           isActive: false,
           AND: [
-            { productions: { [relation]: { isExternal: true, status: 4 } } },
+            {
+              productions: {
+                [relation]: { isExternal: true, status: { in: [4, 5] } },
+              },
+            },
             {
               productions: {
                 [relation]: {
                   isExternal: true,
-                  status: 2,
+                  status: { in: [2, 5] },
                   debtAmount: { gt: 0.005 },
                 },
               },
@@ -370,7 +374,8 @@ function matches(row: ManufacturerFixture, where: ManufacturerWhere): boolean {
         item.manufacturerId === row.id &&
         (predicate.isExternal === undefined ||
           item.isExternal === predicate.isExternal) &&
-        (predicate.status === undefined || item.status === predicate.status) &&
+        (predicate.status === undefined ||
+          predicate.status.in.includes(item.status)) &&
         (predicate.debtAmount === undefined ||
           item.debtAmount > predicate.debtAmount.gt),
     );

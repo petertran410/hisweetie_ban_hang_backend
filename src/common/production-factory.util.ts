@@ -21,18 +21,43 @@ export const PRODUCTION_STATUS = {
   COMPLETED: 2,
   CANCELLED: 3,
   SENT: 4,
+  /** Phiếu gửi NSX đã nhận một phần (còn đợt chưa trả). */
+  RECEIVING: 5,
 } as const;
 
-/** Tổng giá vốn nguyên liệu NCC đang giữ (phiếu gửi ở trạng thái Đã gửi). */
+/**
+ * Giá trị nguyên liệu mình còn nằm ở NSX/NCC của một phiếu:
+ * Đã gửi → toàn bộ; Nhận một phần → phần ứng với số chưa nhận.
+ */
+export function heldMaterialValueOf(row: {
+  status: number;
+  materialValue: any;
+  quantity: any;
+  receivedQuantity?: any;
+}): number {
+  const value = Number(row.materialValue ?? 0);
+  if (row.status === PRODUCTION_STATUS.SENT) return value;
+  if (row.status !== PRODUCTION_STATUS.RECEIVING) return 0;
+  const planned = Number(row.quantity ?? 0);
+  if (!(planned > 0)) return 0;
+  const remaining = Math.max(0, 1 - Number(row.receivedQuantity ?? 0) / planned);
+  return Math.round(value * remaining * 100) / 100;
+}
+
+/** Tổng giá vốn nguyên liệu NCC đang giữ (phiếu Đã gửi / Nhận một phần). */
 export async function getHeldMaterialValue(
   tx: any,
   supplierId: number,
 ): Promise<number> {
-  const agg = await tx.production.aggregate({
-    where: { supplierId, isExternal: true, status: PRODUCTION_STATUS.SENT },
-    _sum: { materialValue: true },
+  const rows = await tx.production.findMany({
+    where: {
+      supplierId,
+      isExternal: true,
+      status: { in: [PRODUCTION_STATUS.SENT, PRODUCTION_STATUS.RECEIVING] },
+    },
+    select: { status: true, materialValue: true, quantity: true, receivedQuantity: true },
   });
-  return Number(agg._sum.materialValue ?? 0);
+  return Math.round(rows.reduce((sum: number, row: any) => sum + heldMaterialValueOf(row), 0) * 100) / 100;
 }
 
 /** Phí sản xuất quy VND: VND giữ nguyên; ngoại tệ × tỷ giá, làm tròn đồng. */

@@ -19,12 +19,12 @@ export class ManufacturersService {
     // Independent predicates may match different batches of the same manufacturer.
     if (filters.hasInProgress !== undefined) {
       and.push({ productions: {
-        [filters.hasInProgress ? 'some' : 'none']: { isExternal: true, status: 4 },
+        [filters.hasInProgress ? 'some' : 'none']: { isExternal: true, status: { in: [4, 5] } },
       } });
     }
     if (filters.hasDebt !== undefined) {
       and.push({ productions: {
-        [filters.hasDebt ? 'some' : 'none']: { isExternal: true, status: 2, debtAmount: { gt: 0.005 } },
+        [filters.hasDebt ? 'some' : 'none']: { isExternal: true, status: { in: [2, 5] }, debtAmount: { gt: 0.005 } },
       } });
     }
     const where: Prisma.ManufacturerWhereInput = {

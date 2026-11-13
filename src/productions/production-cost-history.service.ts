@@ -54,6 +54,11 @@ export class ProductionCostHistoryService {
         costAppliedScope: true,
         destinationBranchId: true,
         destinationBranchName: true,
+        // Phiếu nhận nhiều đợt: NSX + phí thực tế = tổng các đợt còn hiệu lực.
+        receipts: {
+          where: { status: 1 },
+          select: { manufacturerMaterialCost: true, processingFee: true },
+        },
       },
     });
     const variants = new Map<string, string>();
@@ -78,6 +83,18 @@ export class ProductionCostHistoryService {
       const prior = complete ? previous.get(key) : undefined;
       const delta = cost != null && prior ? cost.sub(prior.cost) : null;
       if (complete && cost != null) previous.set(key, { id: row.id, cost });
+      const fromReceipts = row.receipts.length > 0;
+      const sum = (
+        pick: (item: (typeof row.receipts)[number]) => Prisma.Decimal,
+      ) =>
+        row.receipts.reduce(
+          (total, item) => total.add(pick(item)),
+          new Prisma.Decimal(0),
+        );
+      // Giá thành thực tế = toàn bộ chi phí / tổng đã nhận (so với giá thành dự kiến đã áp).
+      const actualUnitCost = quantity.gt(0)
+        ? Number(row.totalCost.div(quantity).toDecimalPlaces(6))
+        : null;
       return [
         {
           ...row,
@@ -91,9 +108,19 @@ export class ProductionCostHistoryService {
           receivedQuantity: Number(quantity),
           unitCost: cost == null ? null : Number(cost),
           materialValue: Number(row.materialValue),
-          manufacturerMaterialCost: Number(row.manufacturerMaterialCost),
-          processingFee: Number(row.processingFee),
+          manufacturerMaterialCost: Number(
+            fromReceipts
+              ? sum((item) => item.manufacturerMaterialCost)
+              : row.manufacturerMaterialCost,
+          ),
+          processingFee: Number(
+            fromReceipts
+              ? sum((item) => item.processingFee)
+              : row.processingFee,
+          ),
           totalCost: Number(row.totalCost),
+          actualUnitCost,
+          receipts: undefined,
           previousProductionId: prior?.id ?? null,
           deltaAmount: delta == null ? null : Number(delta),
           deltaPercent:
