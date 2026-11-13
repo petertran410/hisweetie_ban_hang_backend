@@ -193,6 +193,41 @@ export class ProductionsController {
     );
   }
 
+  // ── Đợt nhận thành phẩm của phiếu gửi NSX (dùng mã quyền có sẵn) ─────
+  @Put(':id/receipts/:receiptId')
+  @RequirePermissions('productions:update')
+  updateReceipt(
+    @Param('id') id: string,
+    @Param('receiptId') receiptId: string,
+    @Body() dto: ReceiveProductionDto,
+    @Req() req: any,
+  ) {
+    return this.productionsService.updateReceipt(+id, +receiptId, dto, req.user?.id || 1);
+  }
+
+  // Hủy đợt nhận dùng quyền Xóa phiếu sản xuất, giống Hủy phiếu.
+  @Post(':id/receipts/:receiptId/cancel')
+  @RequirePermissions('productions:delete')
+  cancelReceipt(
+    @Param('id') id: string,
+    @Param('receiptId') receiptId: string,
+    @Req() req: any,
+  ) {
+    return this.productionsService.cancelReceipt(+id, +receiptId, req.user?.id || 1);
+  }
+
+  @Post(':id/close-receiving')
+  @RequirePermissions('productions:update')
+  closeReceiving(@Param('id') id: string, @Req() req: any) {
+    return this.productionsService.closeReceiving(+id, req.user?.id || 1);
+  }
+
+  @Post(':id/reopen-receiving')
+  @RequirePermissions('productions:update')
+  reopenReceiving(@Param('id') id: string, @Req() req: any) {
+    return this.productionsService.reopenReceiving(+id, req.user?.id || 1);
+  }
+
   @Delete(':id')
   @RequirePermissions('productions:delete')
   remove(@Param('id') id: string, @Req() req: any) {

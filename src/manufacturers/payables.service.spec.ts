@@ -123,6 +123,6 @@ describe('supplier canonical debt with production', () => {
       payableAllocation: { aggregate: jest.fn().mockResolvedValue({ _sum: { fxAdjustment: 0 } }) },
     };
     expect(await calculateSupplierDebt(tx, 9)).toEqual({ totalDebt: 22000, totalInvoiced: 50000, productionCharges: 32000 });
-    expect(tx.production.aggregate.mock.calls[0][0].where).toMatchObject({ supplierId: 9, status: 2 });
+    expect(tx.production.aggregate.mock.calls[0][0].where).toMatchObject({ supplierId: 9, status: { in: [2, 5] } });
   });
 });

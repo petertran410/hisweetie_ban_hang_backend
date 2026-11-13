@@ -46,6 +46,8 @@ import {
 const PRODUCTION_PARTNER_INCLUDE = {
   manufacturer: { select: { id: true, code: true, name: true, supplierId: true } },
   manufacturerMaterials: true,
+  // Đợt nhận thành phẩm của phiếu gửi NSX (cả đợt đã hủy để xem lịch sử).
+  receipts: { orderBy: { seq: 'asc' as const } },
   factory: { select: { id: true, code: true, name: true } },
   supplier: { select: { id: true, code: true, name: true } },
   purchaseOrders: {
@@ -181,6 +183,7 @@ export class ProductionsService {
     2: 'Hoàn thành',
     3: 'Đã hủy',
     4: 'Đã gửi',
+    5: 'Nhận một phần',
   };
 
   /**
@@ -210,6 +213,7 @@ export class ProductionsService {
       { header: 'Kho đầu vào', key: 'sourceBranch', width: 22 },
       { header: 'Kho đầu ra', key: 'destinationBranch', width: 22 },
       { header: 'Số lượng', key: 'quantity', width: 12 },
+      { header: 'Đã nhận', key: 'receivedQuantity', width: 12 },
       { header: 'Tổng chi phí', key: 'totalCost', width: 16 },
       { header: 'Người tạo', key: 'createdBy', width: 20 },
       { header: 'Ghi chú', key: 'note', width: 30 },
@@ -249,6 +253,7 @@ export class ProductionsService {
           sourceBranch: p.sourceBranchName || '',
           destinationBranch: p.destinationBranchName || '',
           quantity: Number(p.quantity) || 0,
+          receivedQuantity: p.receivedQuantity == null ? '' : Number(p.receivedQuantity),
           totalCost: Number(p.totalCost) || 0,
           createdBy: p.createdByName || '',
           note: p.note || '',
@@ -568,6 +573,27 @@ export class ProductionsService {
   async update(id: number, dto: UpdateProductionDto, userId?: number) {
     const production = await this.findOne(id);
     if (production.manufacturerId) {
+      if (production.status === PRODUCTION_STATUS.CANCELLED) {
+        throw new BadRequestException('Phiếu đã hủy, không thể chỉnh sửa');
+      }
+      if (production.status !== PRODUCTION_STATUS.DRAFT) {
+        // Phiếu đã gửi / nhận một phần / hoàn thành: sửa và ghi lại tồn, giá thành.
+        return this.externalProductions!.updateSent(id, {
+          ...dto,
+          quantity: dto.quantity ?? Number(production.quantity),
+          note: dto.note !== undefined ? dto.note : production.note ?? undefined,
+          formulaId: dto.formulaId !== undefined ? dto.formulaId : production.formulaId,
+          feeCurrency: dto.feeCurrency ?? production.feeCurrency,
+          processingFee: dto.processingFee ?? Number(production.processingFee),
+          feeForeignAmount: dto.feeForeignAmount ?? Number(production.feeForeignAmount ?? 0),
+          feeExchangeRate: dto.feeExchangeRate ?? Number(production.feeExchangeRate ?? 1),
+          ownMaterials: dto.ownMaterials ?? production.components.map((line) => ({
+            productId: line.componentProductId, quantity: Number(line.actualGrams), unit: line.unit ?? 'unit',
+          })),
+          manufacturerMaterials: dto.manufacturerMaterials
+            ?? ExternalProductionsService.suppliedFromRows(production.manufacturerMaterials),
+        } as CreateProductionDto, userId!);
+      }
       return this.externalProductions!.save({
         ...production, ...dto,
         manufacturerId: dto.manufacturerId ?? production.manufacturerId,
@@ -1624,6 +1650,32 @@ export class ProductionsService {
       costApplication: updated.costApplicationSnapshot,
     });
     return updated;
+  }
+
+  // ── Đợt nhận của phiếu gửi NSX ──────────────────────────────────────
+  private async externalOnly(id: number) {
+    const production = await this.prisma.production.findUnique({ where: { id }, select: { manufacturerId: true } });
+    if (!production?.manufacturerId) throw new NotFoundException('Không tìm thấy phiếu gửi sản xuất mới');
+  }
+
+  async updateReceipt(id: number, receiptId: number, dto: ReceiveProductionDto, userId: number) {
+    await this.externalOnly(id);
+    return this.externalProductions!.updateReceipt(id, receiptId, dto, userId);
+  }
+
+  async cancelReceipt(id: number, receiptId: number, userId: number) {
+    await this.externalOnly(id);
+    return this.externalProductions!.cancelReceipt(id, receiptId, userId);
+  }
+
+  async closeReceiving(id: number, userId: number) {
+    await this.externalOnly(id);
+    return this.externalProductions!.closeReceiving(id, userId);
+  }
+
+  async reopenReceiving(id: number, userId: number) {
+    await this.externalOnly(id);
+    return this.externalProductions!.reopenReceiving(id, userId);
   }
 
   /**

@@ -1013,15 +1013,31 @@ export class SuppliersService {
       });
     }
 
+    // Phiếu gửi NSX ghi nợ theo đợt nhận: mỗi đợt một dòng; phiếu cũ (nhận một lần) một dòng.
     const productions = await this.prisma.production.findMany({
-      where: { supplierId, manufacturerId: { not: null }, isExternal: true, status: 2 },
-      include: { destinationBranch: { select: { id: true, name: true } }, creator: { select: { id: true, name: true } } },
+      where: { supplierId, manufacturerId: { not: null }, isExternal: true, status: { in: [2, 5] } },
+      include: {
+        destinationBranch: { select: { id: true, name: true } }, creator: { select: { id: true, name: true } },
+        receipts: { where: { status: 1 }, orderBy: { seq: 'asc' } },
+      },
     });
-    for (const row of productions) timeline.push({
-      type: 'production_fee', id: row.id, code: row.code, date: row.completedDate ?? row.updatedAt,
-      createdAt: row.createdAt, amount: Number(row.totalPayable), description: `Sản xuất ${row.code}`,
-      debtSnapshot: 0, branch: row.destinationBranch, user: row.creator,
-    });
+    for (const row of productions) {
+      if (!row.receipts.length) {
+        timeline.push({
+          type: 'production_fee', id: row.id, code: row.code, date: row.completedDate ?? row.updatedAt,
+          createdAt: row.createdAt, amount: Number(row.totalPayable), description: `Sản xuất ${row.code}`,
+          debtSnapshot: 0, branch: row.destinationBranch, user: row.creator,
+        });
+        continue;
+      }
+      for (const receipt of row.receipts) timeline.push({
+        // code = mã phiếu gửi để link mở đúng phiếu; receiptId tách các đợt.
+        type: 'production_fee', id: row.id, receiptId: receipt.id, code: row.code, date: receipt.receivedDate,
+        createdAt: receipt.createdAt, amount: Number(receipt.totalPayable),
+        description: `Sản xuất ${row.code} — nhận đợt ${receipt.seq}`,
+        debtSnapshot: 0, branch: row.destinationBranch, user: row.creator,
+      });
+    }
     const adjustments = await this.prisma.payableAllocation.findMany({
       where: { status: 1, fxAdjustment: { not: 0 }, batch: { accountType: 'S', accountId: supplierId, status: 1 } },
       include: { batch: { include: { cashFlow: { include: { branch: { select: { id: true, name: true } } } } } } },

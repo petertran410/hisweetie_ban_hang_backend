@@ -1095,10 +1095,12 @@ model Production {
   costAppliedByName     String?
   costAppliedScope      String?
   costApplicationSnapshot Json?
+  receivingClosed       Boolean               @default(false)
   createdAt             DateTime              @default(now())
   updatedAt             DateTime              @updatedAt
   components            ProductionComponent[]
   manufacturerMaterials ProductionManufacturerMaterial[]
+  receipts              ProductionReceipt[]
   payableAllocations    PayableAllocation[]
   manufacturer          Manufacturer?         @relation(fields: [manufacturerId], references: [id])
   externalTemplate      ExternalProductionTemplate? @relation(fields: [externalTemplateId], references: [id], onDelete: SetNull)
@@ -1219,6 +1221,40 @@ model ProductionManufacturerMaterial {
 
   @@index([productionId])
   @@map("production_manufacturer_materials")
+}
+
+/// Đợt nhận thành phẩm của phiếu gửi NSX. Mỗi đợt ghi nhập kho + công nợ NSX riêng.
+model ProductionReceipt {
+  id                       Int       @id @default(autoincrement())
+  productionId             Int
+  seq                      Int
+  code                     String    @unique
+  /// 1 hiệu lực, 2 đã hủy.
+  status                   Int       @default(1)
+  receivedDate             DateTime
+  quantity                 Decimal   @db.Decimal(18, 4)
+  note                     String?
+  /// Phí gia công của đợt, quy VND.
+  processingFee            Decimal   @default(0) @db.Decimal(18, 2)
+  feeForeignAmount         Decimal?  @db.Decimal(18, 2)
+  feeExchangeRate          Decimal?  @db.Decimal(18, 6)
+  manufacturerMaterialCost Decimal   @default(0) @db.Decimal(18, 2)
+  totalPayable             Decimal   @default(0) @db.Decimal(18, 2)
+  totalForeignPayable      Decimal?  @db.Decimal(18, 2)
+  /// Dòng nguyên liệu NSX thực tế của đợt (cùng dạng ProductionManufacturerMaterial).
+  manufacturerMaterials    Json      @default("[]")
+  createdById              Int
+  createdByName            String
+  updatedByName            String?
+  cancelledAt              DateTime?
+  cancelledByName          String?
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+  production               Production @relation(fields: [productionId], references: [id], onDelete: Cascade)
+
+  @@unique([productionId, seq])
+  @@index([productionId, status])
+  @@map("production_receipts")
 }
 
 model PayablePaymentBatch {
