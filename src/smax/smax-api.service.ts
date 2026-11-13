@@ -69,6 +69,8 @@ export interface ZalowebContent {
   images?: string[];
   file?: string;
   stickerId?: string;
+  // Tag thành viên nhóm: JSON [{pos, uid, len, type}] (Smax chuyển nguyên cho Zalo)
+  mentionInfo?: string;
 }
 
 /** 1 phần tin gửi vào thread (mọi kênh) — URL công khai Smax tải được. */

@@ -8,7 +8,9 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
+  Min,
   ValidateNested,
 } from 'class-validator';
 
@@ -47,6 +49,21 @@ export class ForwardMediaDto {
 
   @IsIn(['image', 'file'])
   kind: 'image' | 'file';
+}
+
+/** Tag thành viên nhóm Zalo: "@Tên" ở vị trí pos (độ dài len, gồm "@") trong text. */
+export class ChatMentionDto {
+  @IsString()
+  @Matches(/^\d{3,25}$/)
+  uid: string;
+
+  @IsInt()
+  @Min(0)
+  pos: number;
+
+  @IsInt()
+  @Min(2)
+  len: number;
 }
 
 export class SendChatMessageDto {
@@ -99,6 +116,14 @@ export class SendChatMessageDto {
   @IsString()
   @MaxLength(200)
   replyToPid?: string;
+
+  // Tag thành viên (chỉ nhóm Zalo cá nhân)
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => ChatMentionDto)
+  mentions?: ChatMentionDto[];
 
   // Messenger: gửi kèm thẻ HUMAN_AGENT → lấy lại quyền trả lời từ Meta Business AI
   @IsOptional()
@@ -247,6 +272,14 @@ export class SendThreadMessageDto {
   @IsString()
   @MaxLength(200)
   replyToPid?: string;
+
+  // Tag thành viên (chỉ nhóm Zalo cá nhân)
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => ChatMentionDto)
+  mentions?: ChatMentionDto[];
 
   // Messenger: gửi kèm thẻ HUMAN_AGENT → lấy lại quyền trả lời từ Meta Business AI
   @IsOptional()

@@ -146,6 +146,8 @@ export interface SendContent {
   stickerId?: string;
   // Trả lời tin (pid); chỉ áp cho phần chữ
   replyToPid?: string;
+  // Tag thành viên nhóm Zalo cá nhân: "@Tên" tại pos (len gồm "@") trong text gốc
+  mentions?: { uid: string; pos: number; len: number }[];
   // Chuyển tiếp ảnh/tệp đã có trên máy chủ Zalo (chỉ nhận host Zalo)
   forwardMedia?: { url: string; kind: 'image' | 'file' }[];
   // Messenger: gửi với thẻ HUMAN_AGENT → lấy lại quyền trả lời từ Meta Business AI (như "Tự phản hồi" trên Smax)
@@ -156,6 +158,27 @@ export interface SendContent {
 // Thư viện Smax (https://smax.ai/bizs/<biz>/storages): CDN có chữ ký, chỉ lấy tệp trong thư mục của biz
 const SMAX_LIBRARY_URL = /^https:\/\/cdn(-[a-z]+)?\.smax\.in\/[\w-]+\/smaxai\/bizs\/[a-f0-9]{24}\//;
 export const isSmaxLibraryUrl = (url: string) => SMAX_LIBRARY_URL.test(url || '');
+
+/**
+ * mentionInfo cho Zalo (Smax chuyển nguyên): vị trí tính trên text đã trim như tin gửi đi;
+ * bỏ tag lệch (không bắt đầu bằng "@", vượt độ dài, chồng nhau). Không còn tag → undefined.
+ */
+export function mentionInfoFor(
+  rawText: string,
+  mentions: { uid: string; pos: number; len: number }[] = [],
+): string | undefined {
+  const text = rawText.trim();
+  const shift = rawText.length - rawText.trimStart().length;
+  const out: { pos: number; uid: string; len: number; type: 0 }[] = [];
+  for (const m of [...mentions].sort((a, b) => a.pos - b.pos)) {
+    const pos = m.pos - shift;
+    const last = out[out.length - 1];
+    if (pos < 0 || pos + m.len > text.length || text[pos] !== '@') continue;
+    if (last && pos < last.pos + last.len) continue;
+    out.push({ pos, uid: m.uid, len: m.len, type: 0 });
+  }
+  return out.length ? JSON.stringify(out) : undefined;
+}
 const LIBRARY_PAGE = 30;
 // id Mongo của Smax (tệp / album Thư viện)
 const SMAX_ID = /^[a-f0-9]{24}$/;
@@ -504,11 +527,18 @@ export class SmaxChatService {
     ]);
     const raw = states ? fetched.map((m) => ({ ...m, ...states.get(m.pid) })) : fetched;
     const members = thread?.members ?? {};
+    // Ảnh thành viên Smax lưu theo thread không được làm mới (link Zalo có hạn, `time=` là hạn)
+    // → Zalo cá nhân ưu tiên ảnh bạn bè của kênh (mới); chưa kết bạn thì dùng ảnh thread
+    const friendAvatars =
+      thread && channel.platform === 'zaloweb' ? this.peekFriendAvatars(channel.pid) : {};
     // Người gửi khác kênh: tên + avatar (tin cũ tải thêm dùng lại bảng này ở client)
     const senders: Record<string, { name: string | null; avatar: string | null }> = {};
     for (const pid of new Set([...Object.keys(members), ...Object.keys(thread?.memberAvatars ?? {})])) {
       if (pid === channel.pid) continue;
-      senders[pid] = { name: members[pid] ?? null, avatar: thread?.memberAvatars?.[pid] ?? null };
+      senders[pid] = {
+        name: members[pid] ?? null,
+        avatar: friendAvatars[pid] ?? thread?.memberAvatars?.[pid] ?? null,
+      };
     }
     return {
       thread: thread ? { name: thread.name, chatType: thread.chatType } : null,
@@ -1051,6 +1081,8 @@ export class SmaxChatService {
 
     const zaloId = tid.slice(ZALOWEB_PREFIX.length);
     const to = target.kind === 'group' ? { grid: zaloId } : { uid: zaloId };
+    const mentionInfo =
+      zaloweb && target.kind === 'group' ? mentionInfoFor(dto.text ?? '', dto.mentions) : undefined;
     const steps = this.buildSteps(text, attachments, urls, [
       ...slipImageUrls,
       ...productImageUrls,
@@ -1080,7 +1112,11 @@ export class SmaxChatService {
           // Trả lời: phần chữ đi qua thread để Zalo hiện trích dẫn
           await this.sendReply(channel.pid, tid, replyToPid, step.content.message!);
         } else {
-          await this.smaxApi.sendZaloweb(channel.pid, to, step.content);
+          await this.smaxApi.sendZaloweb(
+            channel.pid,
+            to,
+            isText && mentionInfo ? { ...step.content, mentionInfo } : step.content,
+          );
         }
         sent++;
       } catch (e) {
