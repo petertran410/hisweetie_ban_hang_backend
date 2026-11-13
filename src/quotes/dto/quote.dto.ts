@@ -316,6 +316,10 @@ export class QuoteTemplatePayloadDto {
   @MaxLength(120)
   name: string;
 
+  /** Gắn với mẫu, không sửa trên form — mẫu mới / nhân bản lấy theo mẫu gốc. */
+  @IsIn(QUOTE_LAYOUTS)
+  layout: string;
+
   @IsOptional()
   @IsString()
   @MaxLength(500)

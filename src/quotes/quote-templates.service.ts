@@ -74,9 +74,24 @@ const BASE_TEMPLATES: Omit<TemplateSeed, 'isDefault'>[] = [
   },
 ];
 
-/** 3 mẫu mặc định (theo bộ khung giá); "Khách lẻ" là mặc định. Dùng cho seed. */
-export const DEFAULT_QUOTE_TEMPLATES: TemplateSeed[] = BASE_TEMPLATES.map(
-  (t, i) => ({ ...t, ...DEFAULT_QUOTE_HEADER, isDefault: i === 0 }),
+/** 6 mẫu mặc định — mỗi bộ khung giá × 2 kiểu trình bày; "Khách lẻ · Mẫu 1" là mặc định. Dùng cho seed. */
+export const DEFAULT_QUOTE_TEMPLATES: TemplateSeed[] = BASE_TEMPLATES.flatMap(
+  (t, i) => [
+    {
+      ...t,
+      ...DEFAULT_QUOTE_HEADER,
+      name: `${t.name} · Mẫu 1 Bảng giá`,
+      layout: 'classic',
+      isDefault: i === 0,
+    },
+    {
+      ...t,
+      ...DEFAULT_QUOTE_HEADER,
+      name: `${t.name} · Mẫu 2 LerMao`,
+      layout: 'brand',
+      isDefault: false,
+    },
+  ],
 );
 
 @Injectable()
@@ -166,6 +181,7 @@ export class QuoteTemplatesService {
   private data(dto: QuoteTemplatePayloadDto) {
     return {
       name: dto.name.trim(),
+      layout: dto.layout,
       logoUrl: dto.logoUrl ?? null,
       companyName: dto.companyName.trim(),
       department: dto.department.trim(),
@@ -190,6 +206,7 @@ export class QuoteTemplatesService {
     return {
       id: r.id,
       name: r.name,
+      layout: r.layout,
       logoUrl: r.logoUrl,
       companyName: r.companyName,
       department: r.department,
