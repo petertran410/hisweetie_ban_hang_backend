@@ -87,6 +87,7 @@ import { LeadsModule } from './leads/leads.module';
 import { SepayModule } from './sepay/sepay.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { PushModule } from './push/push.module';
 import { RealtimeModule } from './realtime/realtime.module';
 import { SessionModule } from './auth/session/session.module';
 import { DebtTrackingModule } from './debt-tracking/debt-tracking.module';
@@ -204,6 +205,7 @@ import { ManufacturersModule } from './manufacturers/manufacturers.module';
     SepayModule,
     PromotionsModule,
     NotificationsModule,
+    PushModule,
     RealtimeModule,
     SessionModule,
     DebtTrackingModule,

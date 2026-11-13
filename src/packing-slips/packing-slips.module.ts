@@ -6,6 +6,7 @@ import { AuditLogsModule } from '../audit-logs/audit-logs.module';
 import { N8nNotifyModule } from '../n8n-notify/n8n-notify.module';
 import { LarkSyncModule } from '../lark-sync/lark-sync.module';
 import { InternalFinanceModule } from '../internal-finance/internal-finance.module';
+import { PushModule } from '../push/push.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { InternalFinanceModule } from '../internal-finance/internal-finance.modu
     N8nNotifyModule,
     LarkSyncModule,
     InternalFinanceModule,
+    PushModule,
   ],
   controllers: [PackingSlipsController],
   providers: [PackingSlipsService],
