@@ -84,6 +84,7 @@ import { SupplierReturnsModule } from './supplier-returns/supplier-returns.modul
 import { UserBankAccountsModule } from './user-bank-accounts/user-bank-accounts.module';
 import { SmaxModule } from './smax/smax.module';
 import { LeadsModule } from './leads/leads.module';
+import { QuotesModule } from './quotes/quotes.module';
 import { SepayModule } from './sepay/sepay.module';
 import { PromotionsModule } from './promotions/promotions.module';
 import { NotificationsModule } from './notifications/notifications.module';
@@ -190,6 +191,7 @@ import { ManufacturersModule } from './manufacturers/manufacturers.module';
     UserBankAccountsModule,
     SmaxModule,
     LeadsModule,
+    QuotesModule,
     ReturnOrdersModule,
     ConsignmentReturnsModule,
     InventoryChecksModule,

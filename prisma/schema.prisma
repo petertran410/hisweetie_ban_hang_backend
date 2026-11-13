@@ -35,6 +35,8 @@ model User {
   createdConsignments                                       Consignment[]                     @relation("ConsignmentCreator")
   soldConsignments                                          Consignment[]                     @relation("ConsignmentSeller")
   createdContracts                                          Contract[]                        @relation("ContractCreator")
+  createdQuotes                                             Quote[]                           @relation("QuoteCreator")
+  updatedQuoteTemplates                                     QuoteTemplate[]                   @relation("QuoteTemplateUpdater")
   recordedCustomerDebtCollectionAttempts                    CustomerDebtCollectionAttempt[]   @relation("DebtCollectionAttemptRecorder")
   closedCustomerDebtTrackingCycles                          CustomerDebtTrackingCycle[]       @relation("DebtTrackingCycleCloser")
   createdCustomerGroups                                     CustomerGroup[]                   @relation("CustomerGroupCreator")
@@ -507,6 +509,7 @@ model Customer {
   consignmentReturns     ConsignmentReturn[]             @relation("ConsignmentReturnCustomer")
   consignments           Consignment[]
   contracts              Contract[]
+  quotes                 Quote[]
   addresses              CustomerAddress[]
   debtCollectionAttempts CustomerDebtCollectionAttempt[]
   debtNote               CustomerDebtNote?
@@ -830,6 +833,7 @@ model Product {
   formulaNsxLines                ProductFormulaNsxLine[]        @relation("FormulaNsxLineProduct")
   documents                      ProductDocument[]
   images                         ProductImage[]
+  quoteItems                     QuoteItem[]
   productionComponents           ProductionComponent[]
   productions                    Production[]
   masterProduct                  Product?                       @relation("ProductUnits", fields: [masterProductId], references: [id])
@@ -6124,4 +6128,135 @@ model AnalyticsManagementExclusion {
 
   @@unique([kind, code])
   @@map("analytics_management_exclusions")
+}
+
+/// Mẫu báo giá (Cài đặt › Mẫu báo giá). Tạo báo giá thì nội dung + khung giá được
+/// chép vào báo giá, sửa mẫu sau đó không đổi báo giá đã tạo. Không xoá — chỉ ngừng sử dụng.
+model QuoteTemplate {
+  id            Int             @id @default(autoincrement())
+  name          String
+  /// Nhóm khách: retail | chain | agency
+  customerGroup String          @map("customer_group")
+  /// Mẫu chọn sẵn của nhóm khách (mỗi nhóm đúng 1 mẫu)
+  isDefault     Boolean         @default(false) @map("is_default")
+  isActive      Boolean         @default(true) @map("is_active")
+  /// classic (Mẫu 1 · bảng giá Excel) | brand (Mẫu 2 · LerMao)
+  layout        String          @default("classic")
+  /// Khung giá mặc định: [{ key, label, minQty, maxQty, unit }]
+  tiers         Json
+  /// Tiêu đề; {MIEN} = tên miền viết hoa
+  titlePattern  String          @map("title_pattern")
+  greeting      String
+  intro         String
+  note          String          @default("")
+  closing       String
+  showMargin    Boolean         @default(false) @map("show_margin")
+  updatedById   Int?            @map("updated_by")
+  createdAt     DateTime        @default(now()) @map("created_at")
+  updatedAt     DateTime        @updatedAt @map("updated_at")
+  updatedBy     User?           @relation("QuoteTemplateUpdater", fields: [updatedById], references: [id])
+  quotes        Quote[]
+
+  @@index([customerGroup, isActive])
+  @@map("quote_templates")
+}
+
+/// Báo giá gửi khách (/khach-hang/bao-gia). isLibrary = báo giá mẫu trong Thư viện (không gắn khách).
+model Quote {
+  id              Int            @id @default(autoincrement())
+  /// BG000123 (báo giá) | TV0012 (mẫu thư viện) — sinh theo id
+  code            String         @unique
+  isLibrary       Boolean        @default(false) @map("is_library")
+  /// draft | sent | accepted | rejected | expired
+  status          String         @default("draft")
+  /// Nhóm khách: retail | chain | agency
+  customerGroup   String         @map("customer_group")
+  templateId      Int?           @map("template_id")
+  /// classic | brand
+  layout          String         @default("classic")
+  /// HN | SG | ALL
+  region          String         @default("HN")
+  /// frozen_topping | ambient_topping | powder | jam_syrup (thư viện)
+  category        String?
+  /// null = khách chung hoặc khách chưa có trong POS (chỉ in tên/SĐT/địa chỉ)
+  customerId      Int?           @map("customer_id")
+  customerCode    String?        @map("customer_code")
+  customerName    String?        @map("customer_name")
+  customerPhone   String?        @map("customer_phone")
+  customerAddress String?        @map("customer_address")
+  /// Bảng giá nguồn lúc điền giá (null = Bảng giá chung)
+  priceBookId     Int?           @map("price_book_id")
+  priceBookName   String?        @map("price_book_name")
+  title           String
+  greeting        String
+  intro           String
+  note            String         @default("")
+  closing         String
+  showMargin      Boolean        @default(false) @map("show_margin")
+  appliedFrom     DateTime       @map("applied_from") @db.Date
+  validUntil      DateTime?      @map("valid_until") @db.Date
+  sentAt          DateTime?      @map("sent_at")
+  /// Mẫu thư viện đã dùng để tạo báo giá (nếu có)
+  sourceLibraryId Int?           @map("source_library_id")
+  createdById     Int            @map("created_by")
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+  creator         User           @relation("QuoteCreator", fields: [createdById], references: [id])
+  customer        Customer?      @relation(fields: [customerId], references: [id], onDelete: SetNull)
+  template        QuoteTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  items           QuoteItem[]
+
+  @@index([isLibrary, status, createdAt])
+  @@index([createdById])
+  @@index([customerId])
+  @@map("quotes")
+}
+
+/// Dòng báo giá — chụp lại tên / quy cách / ảnh lúc báo giá (dòng nhập từ Excel có thể chưa khớp sản phẩm).
+model QuoteItem {
+  id             Int             @id @default(autoincrement())
+  quoteId        Int             @map("quote_id")
+  sortOrder      Int             @default(0) @map("sort_order")
+  productId      Int?            @map("product_id")
+  productCode    String?         @map("product_code")
+  productName    String          @map("product_name")
+  /// Quy cách đóng gói, vd "12 túi/thùng"
+  spec           String          @default("")
+  /// Đơn vị bán của giá (túi, hộp, gói…)
+  unit           String
+  imageUrl       String?         @map("image_url")
+  /// Giá Bảng giá chung của sản phẩm lúc báo giá
+  basePrice      Decimal?        @map("base_price")
+  /// Giá bảng giá nguồn lúc điền (tính % chênh lệch)
+  priceBookPrice Decimal?        @map("price_book_price")
+  comingSoon     Boolean         @default(false) @map("coming_soon")
+  note           String?
+  quote          Quote           @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  product        Product?        @relation(fields: [productId], references: [id], onDelete: SetNull)
+  tiers          QuoteItemTier[]
+
+  @@index([quoteId])
+  @@index([productId])
+  @@map("quote_items")
+}
+
+/// Khung giá của một dòng: giá áp dụng khi mua từ minQty đến maxQty (unit, mặc định thùng).
+model QuoteItemTier {
+  id          Int       @id @default(autoincrement())
+  quoteItemId Int       @map("quote_item_id")
+  sortOrder   Int       @default(0) @map("sort_order")
+  /// Khoá ghép cột: le, ctv, dl_lt10, dl_ge10, buon, chuoi…
+  key         String
+  label       String
+  minQty      Int?      @map("min_qty")
+  maxQty      Int?      @map("max_qty")
+  unit        String    @default("thùng")
+  /// Đơn giá (VNĐ, đã gồm VAT) trên 1 đơn vị bán
+  price       Decimal?
+  /// true = Sale sửa tay, không tự điền lại theo bảng giá
+  manual      Boolean   @default(false)
+  item        QuoteItem @relation(fields: [quoteItemId], references: [id], onDelete: Cascade)
+
+  @@index([quoteItemId])
+  @@map("quote_item_tiers")
 }
