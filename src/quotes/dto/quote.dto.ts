@@ -184,6 +184,19 @@ export class QuotePayloadDto {
   @Type(() => QuotePriceBookDto)
   priceBook: QuotePriceBookDto | null;
 
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  logoUrl: string | null;
+
+  @IsString()
+  @MaxLength(255)
+  companyName: string;
+
+  @IsString()
+  @MaxLength(120)
+  department: string;
+
   @IsString()
   @IsNotEmpty()
   @MaxLength(255)
@@ -302,6 +315,19 @@ export class QuoteTemplatePayloadDto {
   @IsNotEmpty()
   @MaxLength(120)
   name: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  logoUrl: string | null;
+
+  @IsString()
+  @MaxLength(255)
+  companyName: string;
+
+  @IsString()
+  @MaxLength(120)
+  department: string;
 
   @IsArray()
   @ArrayMaxSize(12)

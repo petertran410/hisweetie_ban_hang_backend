@@ -6138,6 +6138,10 @@ model QuoteTemplate {
   /// Mẫu chọn sẵn khi tạo báo giá (đúng 1 mẫu)
   isDefault     Boolean         @default(false) @map("is_default")
   isActive      Boolean         @default(true) @map("is_active")
+  /// Đầu trang: logo (null = logo LerMao mặc định), tên công ty (xuống dòng = tách dòng), phòng ban
+  logoUrl       String?         @map("logo_url")
+  companyName   String          @default("") @map("company_name")
+  department    String          @default("")
   /// Khung giá mặc định: [{ key, label, minQty, maxQty, unit }]
   tiers         Json
   /// Tiêu đề; {MIEN} = tên miền viết hoa
@@ -6180,6 +6184,10 @@ model Quote {
   /// Bảng giá nguồn lúc điền giá (null = Bảng giá chung)
   priceBookId     Int?           @map("price_book_id")
   priceBookName   String?        @map("price_book_name")
+  /// Đầu trang chép từ mẫu: logo (null = logo LerMao mặc định), tên công ty, phòng ban
+  logoUrl         String?        @map("logo_url")
+  companyName     String         @default("") @map("company_name")
+  department      String         @default("")
   title           String
   greeting        String
   intro           String

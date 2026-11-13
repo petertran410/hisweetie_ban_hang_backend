@@ -18,6 +18,11 @@ const intro = (who: string) =>
   `Lời đầu tiên, Công ty TNHH XNK Hi Sweetie Việt Nam xin trân trọng cảm ơn ${who} đã quan tâm tới sản phẩm của Công ty chúng tôi. Chúng tôi xin trân trọng gửi tới ${who.toLowerCase()} báo giá và chính sách của các sản phẩm LerMao như sau:`;
 const CLOSING =
   'Chúng tôi cam kết tiếp tục duy trì chất lượng sản phẩm ổn định, tối ưu giải pháp nguyên liệu và đồng hành cùng Quý Khách hàng trong hoạt động kinh doanh lâu dài.\nKính chúc Quý Khách hàng sức khỏe, kinh doanh thuận lợi và thành công.';
+/** Đầu trang mặc định như file báo giá tổng hợp. */
+export const DEFAULT_QUOTE_HEADER = {
+  companyName: 'CÔNG TY TNHH XUẤT NHẬP KHẨU\nHI SWEETIE VIỆT NAM',
+  department: 'PHÒNG KINH DOANH',
+};
 const tier = (
   key: string,
   label: string,
@@ -71,7 +76,7 @@ const BASE_TEMPLATES: Omit<TemplateSeed, 'isDefault'>[] = [
 
 /** 3 mẫu mặc định (theo bộ khung giá); "Khách lẻ" là mặc định. Dùng cho seed. */
 export const DEFAULT_QUOTE_TEMPLATES: TemplateSeed[] = BASE_TEMPLATES.map(
-  (t, i) => ({ ...t, isDefault: i === 0 }),
+  (t, i) => ({ ...t, ...DEFAULT_QUOTE_HEADER, isDefault: i === 0 }),
 );
 
 @Injectable()
@@ -161,6 +166,9 @@ export class QuoteTemplatesService {
   private data(dto: QuoteTemplatePayloadDto) {
     return {
       name: dto.name.trim(),
+      logoUrl: dto.logoUrl ?? null,
+      companyName: dto.companyName.trim(),
+      department: dto.department.trim(),
       tiers: dto.tiers.map((t) => ({
         key: t.key,
         label: t.label.trim(),
@@ -182,6 +190,9 @@ export class QuoteTemplatesService {
     return {
       id: r.id,
       name: r.name,
+      logoUrl: r.logoUrl,
+      companyName: r.companyName,
+      department: r.department,
       isDefault: r.isDefault,
       isActive: r.isActive,
       tiers: r.tiers,

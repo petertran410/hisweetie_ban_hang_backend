@@ -108,10 +108,14 @@ export class QuoteExcelService {
     const mid = Math.max(5, firstPrice - 1);
     const right1 = Math.min(mid + 1, last);
     const [y, m, d] = q.appliedFrom.split('-');
-    put(1, 2, mid, 'CÔNG TY TNHH XUẤT NHẬP KHẨU', { bold: true });
-    put(2, 2, mid, 'HI SWEETIE VIỆT NAM', { bold: true });
-    put(3, 2, mid, '*', { bold: true });
-    put(4, 2, mid, 'PHÒNG KINH DOANH', { bold: true });
+    // Tên công ty theo mẫu: dòng 1 · các dòng còn lại gộp vào dòng 2
+    const [co1 = '', ...coRest] = q.companyName.split('\n');
+    put(1, 2, mid, co1, { bold: true });
+    put(2, 2, mid, coRest.join(' '), { bold: true });
+    if (q.department) {
+      put(3, 2, mid, '*', { bold: true });
+      put(4, 2, mid, q.department, { bold: true });
+    }
     if (right1 <= last) {
       put(1, right1, last, 'CỘNG HOÀ XÃ HỘI CHỦ NGHĨA VIỆT NAM', {
         bold: true,

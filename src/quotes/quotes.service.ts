@@ -298,6 +298,9 @@ export class QuotesService {
       customerAddress: c?.address?.trim() || null,
       priceBookId: dto.priceBook?.id ?? null,
       priceBookName: dto.priceBook?.name ?? null,
+      logoUrl: dto.logoUrl ?? null,
+      companyName: dto.companyName.trim(),
+      department: dto.department.trim(),
       title: dto.title.trim(),
       greeting: dto.greeting,
       intro: dto.intro,
@@ -391,6 +394,9 @@ export class QuotesService {
       priceBook: r.priceBookId
         ? { id: r.priceBookId, name: r.priceBookName ?? '' }
         : null,
+      logoUrl: r.logoUrl,
+      companyName: r.companyName,
+      department: r.department,
       title: r.title,
       greeting: r.greeting,
       intro: r.intro,
