@@ -67,6 +67,7 @@ model User {
   createdInvoices                                           Invoice[]                         @relation("InvoiceCreator")
   soldInvoices                                              Invoice[]                         @relation("InvoiceSeller")
   notifications                                             Notification[]
+  pushDevices                                               PushDevice[]
   createdOrderPaymentNotes                                  OrderPaymentNote[]                @relation("OrderPaymentNoteCreator")
   createdPayments                                           OrderPayment[]                    @relation("PaymentCreator")
   createdOrderSuppliers                                     OrderSupplier[]                   @relation("OrderSupplierCreator")
@@ -4426,6 +4427,23 @@ model Notification {
   @@index([userId, readAt])
   @@index([userId, createdAt])
   @@map("notifications")
+}
+
+/// Điện thoại đã đăng nhập app mobile: Expo push token để gửi thông báo đẩy.
+/// Một token chỉ thuộc 1 user: đăng nhập user khác trên cùng máy thì token
+/// chuyển sang user đó. Token Expo báo "DeviceNotRegistered" thì bị xóa.
+model PushDevice {
+  id        Int      @id @default(autoincrement())
+  userId    Int      @map("user_id")
+  token     String   @unique
+  /// "ios" | "android"
+  platform  String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("push_devices")
 }
 
 /// Hợp đồng ký điện tử qua Documenso. Bảng proxy: lưu trạng thái + tham chiếu

@@ -43,6 +43,8 @@ import {
   withInvoicePaymentNote,
 } from '../common/payment-note.util';
 import { USER_PUBLIC_SELECT } from '../common/user-select.util';
+import { PushService } from '../push/push.service';
+import { buildDeliveryPushes } from '../push/delivery-push.util';
 
 @Injectable()
 export class PackingSlipsService {
@@ -52,6 +54,7 @@ export class PackingSlipsService {
     private n8nNotifyService: N8nNotifyService,
     private larkProductSync: LarkProductSyncService,
     private internalFinanceService: InternalFinanceService,
+    private pushService: PushService,
   ) {}
 
   async findAll(query: PackingSlipQueryDto) {
@@ -429,8 +432,54 @@ export class PackingSlipsService {
     // Zalo/Lark chỉ cần bản đầy đủ sau khi phiếu đã ghi xong. Không chờ
     // findOne này trong response, để màn hình lưu không bị đứng.
     void this.dispatchDeliveryNotifications(packingSlip.id);
+    // Báo người bán của từng hóa đơn: hàng đã giao (thông báo đẩy về điện thoại).
+    void this.pushSellersDelivered(packingSlip.id, userId);
 
     return packingSlip;
+  }
+
+  /**
+   * Thông báo đẩy "đã giao hàng thành công" tới người bán (soldBy) của các hóa
+   * đơn trong báo đơn, trừ người vừa báo đơn. `skipInvoiceIds`: hóa đơn đã có
+   * trong phiếu từ trước (đã báo rồi) khi sửa báo đơn. Không bao giờ throw.
+   */
+  private async pushSellersDelivered(
+    id: number,
+    actorId: number | undefined,
+    skipInvoiceIds?: number[],
+  ) {
+    try {
+      const slip = await this.prisma.packingSlip.findUnique({
+        where: { id },
+        select: {
+          code: true,
+          invoices: {
+            select: {
+              invoice: {
+                select: {
+                  id: true,
+                  code: true,
+                  soldById: true,
+                  customer: { select: { name: true } },
+                },
+              },
+            },
+          },
+        },
+      });
+      if (!slip) return;
+      const skip = new Set(skipInvoiceIds ?? []);
+      const only = skipInvoiceIds
+        ? slip.invoices
+            .map((row) => row.invoice?.id)
+            .filter((invId): invId is number => !!invId && !skip.has(invId))
+        : undefined;
+      await this.pushService.sendToUsers(
+        buildDeliveryPushes(slip, actorId, only),
+      );
+    } catch (err) {
+      console.error('pushSellersDelivered error:', (err as Error).message);
+    }
   }
 
   private async dispatchDeliveryNotifications(id: number) {
@@ -473,6 +522,10 @@ export class PackingSlipsService {
 
   async update(id: number, dto: UpdatePackingSlipDto, userId?: number) {
     const packingSlip = await this.findOne(id);
+    // Hóa đơn đã có trong phiếu trước khi sửa: người bán đã được báo rồi.
+    const invoiceIdsBefore = (packingSlip.invoices || [])
+      .map((row) => row.invoiceId)
+      .filter((invId): invId is number => invId != null);
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const updateData: any = {
@@ -691,6 +744,11 @@ export class PackingSlipsService {
           (err as Error).message,
         );
       }
+    }
+
+    // Thêm hóa đơn mới vào báo đơn: báo người bán của các hóa đơn đó.
+    if (dto.invoiceIds) {
+      void this.pushSellersDelivered(id, userId, invoiceIdsBefore);
     }
 
     return updated;
