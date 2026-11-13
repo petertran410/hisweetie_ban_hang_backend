@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { PrismaService } from '../../prisma/prisma.service';
+import { AnalyticsPrismaService } from './analytics-prisma.service';
 import { AnalyticsReportsService } from '../analytics-reports.service';
 import { addDays, IsoDate, todayVn } from './analytics-period';
 import {
@@ -147,7 +147,7 @@ interface TransferBase {
 @Injectable()
 export class AnalyticsKeToanService {
   constructor(
-    private prisma: PrismaService,
+    private prisma: AnalyticsPrismaService,
     // Bộ tính chung của dataset_sale — dataset kế toán không dùng (giữ để đồng bộ khung).
     private base: AnalyticsReportsService,
   ) {}

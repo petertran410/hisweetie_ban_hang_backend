@@ -4,7 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
+import { AnalyticsPrismaService } from './analytics/analytics-prisma.service';
 import {
   AnalyticsConfigListQueryDto,
   AnalyticsParentRuleDto,
@@ -19,7 +19,7 @@ import {
 // team, nhóm hàng 2026. Thay cho các quy tắc viết cứng trong Power BI.
 @Injectable()
 export class AnalyticsConfigService {
-  constructor(private prisma: PrismaService) {}
+  constructor(private prisma: AnalyticsPrismaService) {}
 
   // ── Quy tắc khách cha ───────────────────────────────────────────────────
   listParentRules(q: AnalyticsConfigListQueryDto) {

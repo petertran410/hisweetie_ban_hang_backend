@@ -173,7 +173,39 @@ describe('external production lifecycle', () => {
     row.components[0].actualGrams = 40;
     await service.send(1, undefined, 7);
     expect(Number(tx.inventoryLog.create.mock.calls[0][0].data.quantity)).toBe(-80);
-    expect(tx.product.findMany).not.toHaveBeenCalled();
+    // Chỉ đọc tên đơn vị kho để báo lỗi, không đọc lại quy cách sản phẩm.
+    expect(tx.product.findMany).toHaveBeenCalledWith({ where: { id: { in: [10] } }, select: { id: true, unit: true } });
+  });
+
+  describe('sending grams of a 20 kg carton (thùng)', () => {
+    // Thùng 20 kg = weight 20000 g → 1 g = 1/20000 thùng (hệ số lưu lúc lưu phiếu).
+    const carton = (grams: number, onHand: unknown) => {
+      const ctx = fixture();
+      ctx.row.components = [{ id: 1, componentProductId: 10, componentCode: 'T20', componentName: 'Trà 20kg', actualGrams: grams, unit: 'g', conversionFactor: 0.00005, unitsDeducted: 0 }];
+      ctx.tx.product.findMany.mockResolvedValue([{ id: 10, unit: 'Thùng' }]);
+      ctx.tx.inventory.findUnique.mockResolvedValue({ onHand, cost: 4000000 });
+      return ctx;
+    };
+
+    it('250 g deducts 0.0125 thùng from 2.6 in stock', async () => {
+      const { service, tx } = carton(250, 2.6);
+      await service.send(1, undefined, 7);
+      expect(Number(tx.inventoryLog.create.mock.calls[0][0].data.quantity)).toBe(-0.0125);
+    });
+
+    it('stock with a float residue (2.5999999999999996) still covers exactly 2.6 thùng', async () => {
+      const { service, tx } = carton(52000, new Prisma.Decimal('2.5999999999999996'));
+      await service.send(1, undefined, 7);
+      expect(Number(tx.inventoryLog.create.mock.calls[0][0].data.quantity)).toBe(-2.6);
+    });
+
+    it('a real shortage says how much is needed, in stock units and grams', async () => {
+      const { service, tx } = carton(250000, 2.6);
+      await expect(service.send(1, undefined, 7)).rejects.toThrow(
+        'Không đủ tồn kho "Trà 20kg" tại kho gửi: cần 12.5 Thùng (= 250,000 g), còn 2.6 Thùng',
+      );
+      expect(tx.inventoryLog.create).not.toHaveBeenCalled();
+    });
   });
   describe('formula-based slips and priced NSX lines', () => {
     const products = [
@@ -419,10 +451,13 @@ describe('external production lifecycle', () => {
       expect(recalcOnHandForPairs).toHaveBeenCalledWith(tx, [{ productId: 10, branchId: 2 }, { productId: 12, branchId: 2 }]);
     });
 
-    it('fails when the source stock cannot cover an increase', async () => {
+    it('fails before rewriting stock when the source cannot cover an increase (80 → 100 kg, 10 kg left)', async () => {
       const { service, tx } = sent();
-      tx.inventory.findUnique.mockResolvedValue({ onHand: -20, cost: 100, productName: 'Tea A' });
-      await expect(service.updateSent(1, dto() as any, 7)).rejects.toThrow('Không đủ tồn kho: Tea A');
+      tx.inventory.findUnique.mockResolvedValue({ onHand: 10, cost: 100, productName: 'Tea A' });
+      await expect(service.updateSent(1, dto() as any, 7)).rejects.toThrow(
+        'Không đủ tồn kho "Tea A" tại kho gửi: cần 100 kg, còn 90 kg',
+      );
+      expect(tx.inventoryLog.deleteMany).not.toHaveBeenCalled();
     });
 
     it('a changed planned cost clears an applied cost so it can be applied again', async () => {

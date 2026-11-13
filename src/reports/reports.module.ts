@@ -30,6 +30,7 @@ import {
   AnalyticsCacheInterceptor,
   AnalyticsCacheService,
 } from './analytics/analytics-cache';
+import { AnalyticsPrismaService } from './analytics/analytics-prisma.service';
 import { PrismaModule } from '../prisma/prisma.module';
 import { AuthModule } from '../auth/auth.module';
 
@@ -67,6 +68,7 @@ import { AuthModule } from '../auth/auth.module';
     ReportsPermissionGuard,
     AnalyticsCacheService,
     AnalyticsCacheInterceptor,
+    AnalyticsPrismaService,
   ],
 })
 export class ReportsModule {}

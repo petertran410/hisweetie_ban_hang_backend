@@ -4,8 +4,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { PrismaService } from '../../prisma/prisma.service';
-import { AnalyticsReportsService } from '../analytics-reports.service';
+import { AnalyticsPrismaService } from './analytics-prisma.service';
+import {
+  AnalyticsReportsService,
+  rangeDaysJoin,
+} from '../analytics-reports.service';
 import { AnalyticsAxis, AnalyticsBusinessQueryDto } from '../dto';
 import {
   CurrentPeriod,
@@ -185,7 +188,7 @@ const fmtDm = (d: IsoDate) => `${d.slice(8, 10)}/${d.slice(5, 7)}`;
 @Injectable()
 export class AnalyticsKhachHangDlclService {
   constructor(
-    private prisma: PrismaService,
+    private prisma: AnalyticsPrismaService,
     private base: AnalyticsReportsService,
   ) {}
 
@@ -1117,7 +1120,7 @@ export class AnalyticsKhachHangDlclService {
         SELECT ${idx}::int AS part, b.k AS bucket, ${Prisma.join(sel)}, ${this.metricsSql(sp.src, sp.need)}
         FROM (SELECT x.*${inner.length ? Prisma.sql`, ${Prisma.join(inner)}` : Prisma.empty}
               FROM ${Prisma.raw(sp.src === 'line' ? 'ln' : 'inv')} x) x
-        JOIN (VALUES ${values}) b(k, f, t) ON x.d BETWEEN b.f AND b.t
+        ${rangeDaysJoin(values, Prisma.raw('x.d'), 'b')}
         ${sp.where ? Prisma.sql`WHERE ${sp.where}` : Prisma.empty}
         GROUP BY GROUPING SETS (${sets}))`;
     });
@@ -1159,7 +1162,7 @@ export class AnalyticsKhachHangDlclService {
   private metricsSql(src: 'line' | 'inv', need: Need): Prisma.Sql {
     const cnt = (on: boolean | undefined, expr: Prisma.Sql) =>
       on
-        ? Prisma.sql`COUNT(DISTINCT ${expr}) FILTER (WHERE x.ok)::int`
+        ? Prisma.sql`COUNT(DISTINCT (${expr}) COLLATE "C") FILTER (WHERE x.ok)::int`
         : Prisma.sql`0::int`;
     if (src === 'inv') {
       return Prisma.sql`
@@ -1413,8 +1416,8 @@ export class AnalyticsKhachHangDlclService {
     const order: Record<DlclMetric, Prisma.Sql> = {
       amount: Prisma.sql`COALESCE(SUM(x.sub_total) FILTER (WHERE x.ok), 0)`,
       quantity: Prisma.sql`COALESCE(SUM(x.quantity), 0)`,
-      orders: Prisma.sql`COUNT(DISTINCT x.code) FILTER (WHERE x.ok)`,
-      customers: Prisma.sql`COUNT(DISTINCT COALESCE(x.customer_code, ${BLANK})) FILTER (WHERE x.ok)`,
+      orders: Prisma.sql`COUNT(DISTINCT (x.code) COLLATE "C") FILTER (WHERE x.ok)`,
+      customers: Prisma.sql`COUNT(DISTINCT (COALESCE(x.customer_code, ${BLANK})) COLLATE "C") FILTER (WHERE x.ok)`,
     };
     return Prisma.sql`x.product_name IN (
       SELECT x.product_name FROM ln x
@@ -1484,7 +1487,7 @@ export class AnalyticsKhachHangDlclService {
         GROUP BY 1
       )
       SELECT x.customer_type AS key, GROUPING(x.customer_type)::int AS g,
-        COUNT(DISTINCT COALESCE(x.parent_name, ${BLANK}))
+        COUNT(DISTINCT (COALESCE(x.parent_name, ${BLANK})) COLLATE "C")
           FILTER (WHERE date_trunc('month', x.d) = date_trunc('month', f.first_d))::int AS n
       FROM inv x LEFT JOIN nc_first f ON f.parent_key = COALESCE(x.parent_name, ${BLANK})
       WHERE ${this.base.periodCond(p)}

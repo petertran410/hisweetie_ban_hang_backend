@@ -4,8 +4,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { PrismaService } from '../../prisma/prisma.service';
-import { AnalyticsReportsService } from '../analytics-reports.service';
+import { AnalyticsPrismaService } from './analytics-prisma.service';
+import {
+  ANALYTICS_STATEMENT_TIMEOUT,
+  AnalyticsReportsService,
+  rangeDaysJoin,
+} from '../analytics-reports.service';
 import {
   CALENDAR_START,
   CurrentPeriod,
@@ -196,7 +200,7 @@ interface CteOpts {
 @Injectable()
 export class AnalyticsQuanTriService {
   constructor(
-    private prisma: PrismaService,
+    private prisma: AnalyticsPrismaService,
     private base: AnalyticsReportsService,
   ) {}
 
@@ -645,13 +649,7 @@ export class AnalyticsQuanTriService {
         .sort((a, b) => b.value - a.value),
       pivot: {
         months: pivot.months,
-        cells: r.list('cell').map((o) => ({
-          customerType: o.keys[0],
-          code: o.keys[1],
-          name: o.keys[2],
-          k: o.keys[3],
-          value: pick(o.v),
-        })),
+        ...this.pivotRows(r.list('cell'), pivot.months, pick),
         typeMonths: r.list('typeMonth').map((o) => ({
           customerType: o.keys[0],
           k: o.keys[1],
@@ -776,13 +774,7 @@ export class AnalyticsQuanTriService {
       })),
       pivot: {
         months: pivot.months,
-        cells: r.list('cell').map((o) => ({
-          category: o.keys[0],
-          code: o.keys[1],
-          name: o.keys[2],
-          k: o.keys[3],
-          value: pick(o.v),
-        })),
+        ...this.pivotRows(r.list('cell'), pivot.months, pick),
         categoryMonths: r.list('catMonth').map((o) => ({
           category: o.keys[0],
           k: o.keys[1],
@@ -1291,7 +1283,9 @@ export class AnalyticsQuanTriService {
         `COALESCE(SUM(${expr})${cond ? ` FILTER (WHERE ${cond})` : ''}, 0)::float8`,
       );
     const cnt = (expr: string, cond: string) =>
-      Prisma.raw(`COUNT(DISTINCT ${expr}) FILTER (WHERE ${cond})::float8`);
+      Prisma.raw(
+        `COUNT(DISTINCT (${expr}) COLLATE "C") FILTER (WHERE ${cond})::float8`,
+      );
     if (s.src === 'line') {
       m.amount = sum('x.sub_total', 'x.inp AND x.ok');
       if (s.counts) {
@@ -1465,12 +1459,50 @@ export class AnalyticsQuanTriService {
     const [, rows] = await this.prisma.$transaction([
       this.prisma.$queryRaw`
         SELECT set_config('work_mem', '128MB', true),
+               set_config('statement_timeout', ${ANALYTICS_STATEMENT_TIMEOUT}, true),
                set_config('enable_nestloop', 'off', true),
                set_config('enable_mergejoin', 'off', true),
                set_config('jit', 'off', true)`,
       query,
     ]);
     return new AggResult(rows);
+  }
+
+  /**
+   * Ô pivot (nhóm, mã, tên, k = "cur:YYYY-MM" | "prev:YYYY-MM") → mỗi mã 1 dòng kèm
+   * mảng giá trị theo `keys` (null = không có ô). Gọn hơn nhiều so với 1 object mỗi ô
+   * (vd. 24 nghìn ô khách × tháng). Mã trùng: ô sau ghi đè ô trước (như bảng cũ).
+   */
+  private pivotRows(
+    cells: AggOut[],
+    months: string[],
+    pick: (v: QtAgg) => number | null,
+  ) {
+    const keys = months.flatMap((m) => [`cur:${m}`, `prev:${m}`]);
+    const idx = new Map(keys.map((k, i) => [k, i]));
+    const rows = new Map<
+      string,
+      {
+        group: string | null;
+        code: string | null;
+        name: string | null;
+        values: (number | null)[];
+      }
+    >();
+    for (const o of cells) {
+      const [group = null, code = null, name = null, k = null] = o.keys;
+      const i = k === null ? undefined : idx.get(k);
+      if (i === undefined) continue;
+      const id = `${group}\u0001${code}`;
+      let row = rows.get(id);
+      if (!row) {
+        row = { group, code, name, values: keys.map(() => null) };
+        rows.set(id, row);
+      }
+      row.name = name;
+      row.values[i] = pick(o.v);
+    }
+    return { keys, rows: [...rows.values()] };
   }
 
   /** Chỉ số Hóa Đơn / Khách Hàng cần COUNT DISTINCT cấp dòng. */
@@ -1525,7 +1557,7 @@ export class AnalyticsQuanTriService {
     const { values, cond } = this.base.rangeSql(ranges);
     return {
       key: Prisma.sql`r.k`,
-      join: Prisma.sql`JOIN (VALUES ${values}) r(k, f, t) ON x.d BETWEEN r.f AND r.t`,
+      join: rangeDaysJoin(values),
       cond,
     };
   }
@@ -1564,7 +1596,7 @@ export class AnalyticsQuanTriService {
     return {
       months,
       cond: Prisma.sql`x.d BETWEEN ${min}::date AND ${max}::date`,
-      join: Prisma.sql`JOIN (VALUES ${values}) r(k, f, t) ON x.d BETWEEN r.f AND r.t`,
+      join: rangeDaysJoin(values),
       key: Prisma.sql`r.k`,
     };
   }

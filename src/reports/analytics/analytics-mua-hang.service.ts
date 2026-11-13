@@ -4,7 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { PrismaService } from '../../prisma/prisma.service';
+import { AnalyticsPrismaService } from './analytics-prisma.service';
 import { AnalyticsReportsService } from '../analytics-reports.service';
 import { addDays, todayVn } from './analytics-period';
 import {
@@ -142,7 +142,7 @@ const hasValue = (m: Record<string, N>) =>
 @Injectable()
 export class AnalyticsMuaHangService {
   constructor(
-    private prisma: PrismaService,
+    private prisma: AnalyticsPrismaService,
     private base: AnalyticsReportsService,
   ) {}
 
