@@ -6135,13 +6135,9 @@ model AnalyticsManagementExclusion {
 model QuoteTemplate {
   id            Int             @id @default(autoincrement())
   name          String
-  /// Nhóm khách: retail | chain | agency
-  customerGroup String          @map("customer_group")
-  /// Mẫu chọn sẵn của nhóm khách (mỗi nhóm đúng 1 mẫu)
+  /// Mẫu chọn sẵn khi tạo báo giá (đúng 1 mẫu)
   isDefault     Boolean         @default(false) @map("is_default")
   isActive      Boolean         @default(true) @map("is_active")
-  /// classic (Mẫu 1 · bảng giá Excel) | brand (Mẫu 2 · LerMao)
-  layout        String          @default("classic")
   /// Khung giá mặc định: [{ key, label, minQty, maxQty, unit }]
   tiers         Json
   /// Tiêu đề; {MIEN} = tên miền viết hoa
@@ -6157,7 +6153,6 @@ model QuoteTemplate {
   updatedBy     User?           @relation("QuoteTemplateUpdater", fields: [updatedById], references: [id])
   quotes        Quote[]
 
-  @@index([customerGroup, isActive])
   @@map("quote_templates")
 }
 
@@ -6169,8 +6164,6 @@ model Quote {
   isLibrary       Boolean        @default(false) @map("is_library")
   /// draft | sent | accepted | rejected | expired
   status          String         @default("draft")
-  /// Nhóm khách: retail | chain | agency
-  customerGroup   String         @map("customer_group")
   templateId      Int?           @map("template_id")
   /// classic | brand
   layout          String         @default("classic")

@@ -1,4 +1,3 @@
-export const QUOTE_GROUPS = ['retail', 'chain', 'agency'] as const;
 export const QUOTE_LAYOUTS = ['classic', 'brand'] as const;
 export const QUOTE_REGIONS = ['HN', 'SG', 'ALL'] as const;
 export const QUOTE_CATEGORIES = [
@@ -15,7 +14,6 @@ export const QUOTE_STATUSES = [
   'expired',
 ] as const;
 
-export type QuoteGroup = (typeof QUOTE_GROUPS)[number];
 export type QuoteStatus = (typeof QUOTE_STATUSES)[number];
 
 /** Nháp → Đã gửi → Khách chấp nhận / Từ chối / Hết hạn. */

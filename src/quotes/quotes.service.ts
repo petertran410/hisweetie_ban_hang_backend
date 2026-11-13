@@ -36,9 +36,13 @@ const CREATOR = {
 type QuoteRow = Prisma.QuoteGetPayload<{
   include: typeof ITEMS_INCLUDE & typeof CREATOR;
 }>;
-type QuoteListRow = Prisma.QuoteGetPayload<{
-  include: typeof CREATOR & { _count: { select: { items: true } } };
-}>;
+const LIST_INCLUDE = {
+  ...CREATOR,
+  template: { select: { name: true } },
+  _count: { select: { items: true } },
+} satisfies Prisma.QuoteInclude;
+
+type QuoteListRow = Prisma.QuoteGetPayload<{ include: typeof LIST_INCLUDE }>;
 
 /** Trạng thái đã chốt: không sửa nội dung, chỉ nhân bản. */
 /** Ghi báo giá trong transaction: DB ở xa, để dư so với mặc định 5 giây của Prisma. */
@@ -62,7 +66,7 @@ export class QuotesService {
       isLibrary: library,
       ...(!library && actor.ownOnly ? { createdById: actor.id } : {}),
       ...(q.status?.length ? { status: { in: q.status } } : {}),
-      ...(q.template?.length ? { customerGroup: { in: q.template } } : {}),
+      ...(q.templateId?.length ? { templateId: { in: q.templateId } } : {}),
       ...(q.createdById?.length
         ? {
             createdById:
@@ -92,7 +96,7 @@ export class QuotesService {
     const [rows, total] = await Promise.all([
       this.prisma.quote.findMany({
         where,
-        include: { ...CREATOR, _count: { select: { items: true } } },
+        include: LIST_INCLUDE,
         orderBy: library ? [{ id: 'asc' }] : [{ createdAt: 'desc' }],
         skip: (page - 1) * size,
         take: size,
@@ -283,7 +287,6 @@ export class QuotesService {
   private header(dto: QuotePayloadDto) {
     const c = dto.customer;
     return {
-      customerGroup: dto.template,
       templateId: dto.templateId ?? null,
       layout: dto.layout,
       region: dto.region,
@@ -380,7 +383,6 @@ export class QuotesService {
       code: r.code,
       isLibrary: r.isLibrary,
       status: r.status,
-      template: r.customerGroup,
       templateId: r.templateId,
       layout: r.layout,
       region: r.region,
@@ -433,8 +435,8 @@ export class QuotesService {
       code: r.code,
       isLibrary: r.isLibrary,
       status: r.status,
-      template: r.customerGroup,
       templateId: r.templateId,
+      templateName: r.template?.name ?? null,
       layout: r.layout,
       region: r.region,
       category: r.category,

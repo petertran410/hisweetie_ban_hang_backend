@@ -16,7 +16,6 @@ import {
 } from 'class-validator';
 import {
   QUOTE_CATEGORIES,
-  QUOTE_GROUPS,
   QUOTE_LAYOUTS,
   QUOTE_REGIONS,
   QUOTE_STATUSES,
@@ -161,9 +160,6 @@ export class QuotePayloadDto {
   @IsIn(QUOTE_STATUSES)
   status: string;
 
-  @IsIn(QUOTE_GROUPS)
-  template: string;
-
   @IsOptional()
   @IsInt()
   templateId: number | null;
@@ -253,10 +249,11 @@ export class QuoteListQueryDto {
   @IsIn(QUOTE_STATUSES, { each: true })
   status?: string[];
 
+  /** Lọc theo mẫu báo giá (Cài đặt › Mẫu báo giá). */
   @IsOptional()
-  @Transform(toArray)
-  @IsIn(QUOTE_GROUPS, { each: true })
-  template?: string[];
+  @Transform(({ value }) => toArray({ value })?.map(Number))
+  @IsInt({ each: true })
+  templateId?: number[];
 
   @IsOptional()
   @Transform(({ value }) => toArray({ value })?.map(Number))
@@ -305,12 +302,6 @@ export class QuoteTemplatePayloadDto {
   @IsNotEmpty()
   @MaxLength(120)
   name: string;
-
-  @IsIn(QUOTE_GROUPS)
-  group: string;
-
-  @IsIn(QUOTE_LAYOUTS)
-  layout: string;
 
   @IsArray()
   @ArrayMaxSize(12)

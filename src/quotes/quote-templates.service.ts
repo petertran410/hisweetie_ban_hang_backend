@@ -33,11 +33,10 @@ const tier = (
 
 type TemplateSeed = Omit<Prisma.QuoteTemplateCreateInput, 'updatedBy'>;
 
-/** Nội dung 3 nhóm khách theo file "Bảng báo giá tổng hợp 01.09.26". */
-const GROUP_TEMPLATES: Omit<TemplateSeed, 'isDefault' | 'layout'>[] = [
+/** 3 bộ khung giá + nội dung theo file "Bảng báo giá tổng hợp 01.09.26". */
+const BASE_TEMPLATES: Omit<TemplateSeed, 'isDefault'>[] = [
   {
     name: 'Khách lẻ',
-    customerGroup: 'retail',
     tiers: [tier('le', 'Giá lẻ')],
     titlePattern: 'BẢNG BÁO GIÁ LẺ {MIEN} LERMAO',
     greeting: 'Quý khách hàng',
@@ -47,7 +46,6 @@ const GROUP_TEMPLATES: Omit<TemplateSeed, 'isDefault' | 'layout'>[] = [
   },
   {
     name: 'Khách chuỗi',
-    customerGroup: 'chain',
     tiers: [tier('chuoi', 'Giá chuỗi', 1, null)],
     titlePattern: 'BẢNG BÁO GIÁ CHUỖI {MIEN} LERMAO',
     greeting: 'Quý chuỗi',
@@ -57,7 +55,6 @@ const GROUP_TEMPLATES: Omit<TemplateSeed, 'isDefault' | 'layout'>[] = [
   },
   {
     name: 'Đại lý',
-    customerGroup: 'agency',
     tiers: [
       tier('le', 'Giá lẻ'),
       tier('ctv', 'Giá CTV'),
@@ -72,22 +69,9 @@ const GROUP_TEMPLATES: Omit<TemplateSeed, 'isDefault' | 'layout'>[] = [
   },
 ];
 
-/** 6 mẫu mặc định — mỗi nhóm khách × 2 kiểu trình bày; Mẫu 1 là mặc định của nhóm. Dùng cho seed. */
-export const DEFAULT_QUOTE_TEMPLATES: TemplateSeed[] = GROUP_TEMPLATES.flatMap(
-  (t) => [
-    {
-      ...t,
-      name: `${t.name} · Mẫu 1 Bảng giá`,
-      layout: 'classic',
-      isDefault: true,
-    },
-    {
-      ...t,
-      name: `${t.name} · Mẫu 2 LerMao`,
-      layout: 'brand',
-      isDefault: false,
-    },
-  ],
+/** 3 mẫu mặc định (theo bộ khung giá); "Khách lẻ" là mặc định. Dùng cho seed. */
+export const DEFAULT_QUOTE_TEMPLATES: TemplateSeed[] = BASE_TEMPLATES.map(
+  (t, i) => ({ ...t, isDefault: i === 0 }),
 );
 
 @Injectable()
@@ -97,7 +81,7 @@ export class QuoteTemplatesService {
   async list() {
     const rows = await this.prisma.quoteTemplate.findMany({
       include: UPDATER,
-      orderBy: [{ customerGroup: 'asc' }, { isDefault: 'desc' }, { id: 'asc' }],
+      orderBy: [{ isDefault: 'desc' }, { id: 'asc' }],
     });
     return rows.map((r) => this.toConfig(r));
   }
@@ -105,7 +89,7 @@ export class QuoteTemplatesService {
   async create(dto: QuoteTemplatePayloadDto, userId: number) {
     this.validate(dto);
     const hasDefault = await this.prisma.quoteTemplate.count({
-      where: { customerGroup: dto.group, isDefault: true },
+      where: { isDefault: true },
     });
     const row = await this.prisma.quoteTemplate.create({
       data: { ...this.data(dto), isDefault: !hasDefault, updatedById: userId },
@@ -116,11 +100,7 @@ export class QuoteTemplatesService {
 
   async update(id: number, dto: QuoteTemplatePayloadDto, userId: number) {
     this.validate(dto);
-    const t = await this.find(id);
-    if (t.isDefault && dto.group !== t.customerGroup)
-      throw new BadRequestException(
-        'Mẫu mặc định không đổi nhóm khách được — đặt mẫu khác làm mặc định trước',
-      );
+    await this.find(id);
     const row = await this.prisma.quoteTemplate.update({
       where: { id },
       data: { ...this.data(dto), updatedById: userId },
@@ -129,7 +109,7 @@ export class QuoteTemplatesService {
     return this.toConfig(row);
   }
 
-  /** Mẫu chọn sẵn của nhóm khách — mỗi nhóm đúng 1 mẫu mặc định. */
+  /** Mẫu chọn sẵn khi tạo báo giá — đúng 1 mẫu mặc định. */
   async setDefault(id: number, userId: number) {
     const t = await this.find(id);
     if (!t.isActive)
@@ -138,7 +118,7 @@ export class QuoteTemplatesService {
       );
     await this.prisma.$transaction([
       this.prisma.quoteTemplate.updateMany({
-        where: { customerGroup: t.customerGroup, isDefault: true },
+        where: { isDefault: true },
         data: { isDefault: false },
       }),
       this.prisma.quoteTemplate.update({
@@ -181,8 +161,6 @@ export class QuoteTemplatesService {
   private data(dto: QuoteTemplatePayloadDto) {
     return {
       name: dto.name.trim(),
-      customerGroup: dto.group,
-      layout: dto.layout,
       tiers: dto.tiers.map((t) => ({
         key: t.key,
         label: t.label.trim(),
@@ -204,10 +182,8 @@ export class QuoteTemplatesService {
     return {
       id: r.id,
       name: r.name,
-      group: r.customerGroup,
       isDefault: r.isDefault,
       isActive: r.isActive,
-      layout: r.layout,
       tiers: r.tiers,
       titlePattern: r.titlePattern,
       greeting: r.greeting,
