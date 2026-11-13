@@ -1,9 +1,10 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { PrismaService } from '../../prisma/prisma.service';
+import { AnalyticsPrismaService } from './analytics-prisma.service';
 import {
   AnalyticsReportsService,
   VISUAL_PRODUCT_GROUPS,
+  rangeDaysJoinFrom,
 } from '../analytics-reports.service';
 import { AnalyticsBusinessQueryDto } from '../dto';
 import {
@@ -130,7 +131,7 @@ function weekNum(d: IsoDate): number {
 @Injectable()
 export class AnalyticsDinhKiService {
   constructor(
-    private prisma: PrismaService,
+    private prisma: AnalyticsPrismaService,
     private base: AnalyticsReportsService,
   ) {}
 
@@ -1554,12 +1555,12 @@ export class AnalyticsDinhKiService {
         COALESCE(SUM(${val}) FILTER (WHERE s.ok), 0)::float8 AS amount,
         COALESCE(SUM(${val}) FILTER (WHERE s.ok AND s.region = ${CENTRAL}), 0)::float8 AS central,
         ${qty} AS quantity,
-        COUNT(DISTINCT s.code) FILTER (WHERE s.ok)::int AS orders,
-        COUNT(DISTINCT COALESCE(s.customer_code, ${BLANK})) FILTER (WHERE s.ok)::int AS customers,
-        COUNT(DISTINCT s.code)::int AS orders_all,
-        COUNT(DISTINCT COALESCE(s.customer_code, ${BLANK}))::int AS customers_all
+        COUNT(DISTINCT (s.code) COLLATE "C") FILTER (WHERE s.ok)::int AS orders,
+        COUNT(DISTINCT (COALESCE(s.customer_code, ${BLANK})) COLLATE "C") FILTER (WHERE s.ok)::int AS customers,
+        COUNT(DISTINCT (s.code) COLLATE "C")::int AS orders_all,
+        COUNT(DISTINCT (COALESCE(s.customer_code, ${BLANK})) COLLATE "C")::int AS customers_all
       FROM (
-        SELECT r.k, x.* FROM ${table} x JOIN dk_r r ON x.d BETWEEN r.f AND r.t
+        SELECT r.k, x.* FROM ${table} x ${rangeDaysJoinFrom(Prisma.sql`dk_r rr`)}
         ${where ? Prisma.sql`WHERE ${where}` : Prisma.empty}
       ) s
       GROUP BY GROUPING SETS (${Prisma.join(sets)})`;
@@ -1658,7 +1659,7 @@ export class AnalyticsDinhKiService {
       ),
       last AS (SELECT code, MAX(d) AS d FROM lo GROUP BY code)
       SELECT COALESCE(SUM(cb.debt), 0)::float8 AS total,
-        COUNT(DISTINCT cb.code) FILTER (
+        COUNT(DISTINCT (cb.code) COLLATE "C") FILTER (
           WHERE cb.debt > 0 AND (l.d IS NULL OR ${today}::date - l.d > 30))::int AS over30
       FROM cb LEFT JOIN last l ON l.code = cb.code`);
     return {

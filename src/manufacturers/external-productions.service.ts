@@ -36,6 +36,21 @@ type Pair = { productId: number; branchId: number };
 const D = (value: Prisma.Decimal.Value | null | undefined) => new Prisma.Decimal(value ?? 0);
 const day = (date: Date) => date.toISOString().slice(0, 10);
 const vnd = (value: number) => value.toLocaleString('vi-VN', { maximumFractionDigits: 2 });
+const amount4 = (value: Prisma.Decimal.Value) => Number(value).toLocaleString('en-US', { maximumFractionDigits: 4 });
+/**
+ * Tồn kho có thể còn số lẻ dư (2.5999999…) do cộng trừ số thực trước đây: so
+ * sánh ở 4 số lẻ như lượng trừ kho, tránh báo thiếu khi cần vừa đúng bằng tồn.
+ */
+const stockOf = (onHand: Prisma.Decimal.Value | null | undefined) => new Prisma.Decimal(onHand ?? 0).toDecimalPlaces(4);
+/** "cần 12.5 Thùng (= 250,000 g), còn 2.6 Thùng" — để biết thiếu thật hay nhập sai đơn vị. */
+const shortage = (
+  name: string, needed: Prisma.Decimal.Value, available: Prisma.Decimal.Value,
+  stockUnit: string | null | undefined, sent?: { quantity: Prisma.Decimal.Value; unit?: string | null },
+) => {
+  const unit = stockUnit || 'đơn vị kho';
+  const asSent = sent?.unit && sent.unit !== stockUnit && sent.unit !== 'unit' ? ` (= ${amount4(sent.quantity)} ${sent.unit})` : '';
+  return `Không đủ tồn kho "${name}" tại kho gửi: cần ${amount4(needed)} ${unit}${asSent}, còn ${amount4(available)} ${unit}`;
+};
 const isLegacyLine = (line: { productId?: number | null; pricingMode?: string | null; priceUnit?: string | null }) =>
   !line.productId || line.pricingMode === 'TOTAL' || !line.priceUnit;
 
@@ -59,6 +74,7 @@ export class ExternalProductionsService {
   ) {
     const products = await this.manufacturers.validateMaterials(tx, own, supplied, strict);
     return {
+      products,
       own: own.map((line) => {
         const product = products.get(line.productId);
         const conversionFactor = ownConversion(product, line.unit);
@@ -176,12 +192,20 @@ export class ExternalProductionsService {
       const user = await tx.user.findUnique({ where: { id: userId } });
       const date = sentDate ? new Date(sentDate) : new Date();
       let value = new Prisma.Decimal(0);
+      const stockUnits = new Map((await tx.product.findMany({
+        where: { id: { in: row.components.map((line) => line.componentProductId) } }, select: { id: true, unit: true },
+      })).map((item) => [item.id, item.unit]));
       for (const component of [...row.components].sort((a, b) => a.componentProductId - b.componentProductId)) {
         await tx.$queryRaw`SELECT id FROM inventories WHERE "productId" = ${component.componentProductId} AND "branchId" = ${row.sourceBranchId} FOR UPDATE`;
         const inv = await tx.inventory.findUnique({ where: { productId_branchId: { productId: component.componentProductId, branchId: row.sourceBranchId } } });
         const units = new Prisma.Decimal(component.actualGrams).mul(component.conversionFactor ?? 1).toDecimalPlaces(4);
         if (!units.gt(0)) throw new BadRequestException(`Lượng gửi quá nhỏ sau quy đổi: ${component.componentName}`);
-        if (!inv || new Prisma.Decimal(inv.onHand).lt(units)) throw new BadRequestException(`Không đủ tồn kho: ${component.componentName}`);
+        if (!inv || stockOf(inv.onHand).lt(units)) {
+          throw new BadRequestException(shortage(
+            component.componentName, units, stockOf(inv?.onHand), stockUnits.get(component.componentProductId),
+            { quantity: component.actualGrams, unit: component.unit },
+          ));
+        }
         value = value.add(units.mul(inv.cost));
         await tx.productionComponent.update({ where: { id: component.id }, data: { unitsDeducted: units, unitCost: inv.cost } });
         await tx.inventoryLog.create({ data: {
@@ -404,6 +428,21 @@ export class ExternalProductionsService {
         value = value.add(units.mul(unitCost));
         newUnits.set(line.componentProductId, D(newUnits.get(line.componentProductId)).add(units));
         components.push({ ...line, unitsDeducted: units, unitCost });
+      }
+      // Kiểm tra trước phần tăng thêm: tồn hiện tại đã trừ lượng cũ của phiếu.
+      for (const productId of productIds) {
+        const extra = D(newUnits.get(productId)).sub(D(oldUnits.get(productId)));
+        if (!extra.gt(0)) continue;
+        const inv = await tx.inventory.findUnique({ where: { productId_branchId: { productId, branchId: row.sourceBranchId } } });
+        const available = stockOf(inv?.onHand);
+        if (available.lt(extra)) {
+          const line = rows.own.find((item) => item.componentProductId === productId)!;
+          const product = rows.products.get(productId);
+          throw new BadRequestException(shortage(
+            line.componentName, D(newUnits.get(productId)), available.add(D(oldUnits.get(productId))), product?.unit,
+            { quantity: line.actualGrams, unit: line.unit },
+          ));
+        }
       }
       await tx.inventoryLog.deleteMany({ where: { refType: 'production', refId: id, transactionType: 'PRODUCTION_OUT' } });
       for (const line of components) {

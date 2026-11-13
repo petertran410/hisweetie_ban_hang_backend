@@ -5,7 +5,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { PrismaService } from '../prisma/prisma.service';
+import { AnalyticsPrismaService } from './analytics/analytics-prisma.service';
 import { AnalyticsCacheService } from './analytics/analytics-cache';
 import { AnalyticsAxis, AnalyticsBusinessQueryDto } from './dto';
 import {
@@ -51,11 +51,51 @@ const BLANK_KEY = '__blank__';
 export const NESTLOOP_OFF_MARK = '/* analytics:nestloop-off */';
 
 /** Thiết lập cho 1 câu SQL báo cáo: tắt JIT, bộ nhớ sắp xếp 32MB, tắt nested loop nếu có dấu. */
+/**
+ * Câu báo cáo chạy quá 90 giây thì dừng: Cloudflare đã cắt request ở 100 giây,
+ * chạy tiếp chỉ tốn CPU của DB.
+ */
+export const ANALYTICS_STATEMENT_TIMEOUT = '90s';
+
+/**
+ * JOIN dữ liệu (cột ngày col) với danh sách khoảng ngày VALUES (k, from, to) — một ngày
+ * có thể thuộc nhiều khoảng. Trải mỗi khoảng thành từng ngày rồi nối bằng bằng nhau
+ * (hash join), thay cho `ON x.d BETWEEN r.f AND r.t` (duyệt lồng nhau, mỗi dòng dữ liệu
+ * so với mọi khoảng). Kết quả giống hệt; chỉ dùng được r.k sau khi nối.
+ */
+export function rangeDaysJoin(
+  values: Prisma.Sql,
+  col: Prisma.Sql = Prisma.raw('x.d'),
+  alias = 'r',
+): Prisma.Sql {
+  return rangeDaysJoinFrom(
+    Prisma.sql`(VALUES ${values}) rr(k, f, t)`,
+    col,
+    alias,
+  );
+}
+
+/** Như rangeDaysJoin nhưng khoảng ngày lấy từ một quan hệ có cột (k, f, t), alias rr. */
+export function rangeDaysJoinFrom(
+  from: Prisma.Sql,
+  col: Prisma.Sql = Prisma.raw('x.d'),
+  alias = 'r',
+): Prisma.Sql {
+  const a = Prisma.raw(alias);
+  return Prisma.sql`JOIN (
+    SELECT rr.k, g.d::date AS d
+    FROM ${from},
+         generate_series(rr.f, rr.t, interval '1 day') g(d)
+  ) ${a} ON ${a}.d = ${col}`;
+}
+
 export function analyticsSettings(sql: Prisma.Sql): Prisma.Sql {
   return sql.text.includes(NESTLOOP_OFF_MARK)
     ? Prisma.sql`SELECT set_config('jit', 'off', true), set_config('work_mem', '32MB', true),
+        set_config('statement_timeout', ${ANALYTICS_STATEMENT_TIMEOUT}, true),
         set_config('enable_nestloop', 'off', true)`
-    : Prisma.sql`SELECT set_config('jit', 'off', true), set_config('work_mem', '32MB', true)`;
+    : Prisma.sql`SELECT set_config('jit', 'off', true), set_config('work_mem', '32MB', true),
+        set_config('statement_timeout', ${ANALYTICS_STATEMENT_TIMEOUT}, true)`;
 }
 
 /** Danh sách khách cha trong bộ nhớ được tính lại sau 10 phút. */
@@ -128,7 +168,7 @@ export class AnalyticsReportsService implements OnApplicationBootstrap {
   private parentMapGen = 0;
 
   constructor(
-    private prisma: PrismaService,
+    private prisma: AnalyticsPrismaService,
     @Optional() private cache?: AnalyticsCacheService,
   ) {}
 
@@ -162,16 +202,8 @@ export class AnalyticsReportsService implements OnApplicationBootstrap {
     const sameYear = this.sameYearRanges(period, q.year, axis);
 
     const axisExpr = this.axisExpr(axis);
-    const [invCur, lineCur, invCmp, lineCmp, invSy, lineSy] = await Promise.all(
-      [
-        this.invoiceAgg(q, curDate, axisExpr),
-        this.lineAgg(q, curDate, axisExpr),
-        this.invoiceTotal(q, cmpDate),
-        this.lineTotal(q, cmpDate),
-        this.invoiceByRanges(q, sameYear),
-        this.lineByRanges(q, sameYear),
-      ],
-    );
+    const { invCur, lineCur, invCmp, lineCmp, invSy, lineSy } =
+      await this.overviewAggregates(q, curDate, cmpDate, sameYear, axisExpr);
 
     // Ghép số cấp hoá đơn + cấp dòng cho từng biểu đồ.
     const merged = (dim: Dim): MetricRow[] => {
@@ -650,107 +682,104 @@ export class AnalyticsReportsService implements OnApplicationBootstrap {
   invMetrics(): Prisma.Sql {
     return Prisma.sql`
       COALESCE(SUM(x.total) FILTER (WHERE x.ok), 0)::float8 AS amount,
-      COUNT(DISTINCT x.code) FILTER (WHERE x.ok)::int AS orders,
-      COUNT(DISTINCT COALESCE(x.parent_name, ${BLANK_KEY})) FILTER (WHERE x.ok)::int AS customers`;
+      COUNT(DISTINCT (x.code) COLLATE "C") FILTER (WHERE x.ok)::int AS orders,
+      COUNT(DISTINCT (COALESCE(x.parent_name, ${BLANK_KEY})) COLLATE "C") FILTER (WHERE x.ok)::int AS customers`;
   }
 
   lineMetrics(): Prisma.Sql {
     return Prisma.sql`
       COALESCE(SUM(x.sub_total) FILTER (WHERE x.ok), 0)::float8 AS amount,
-      COUNT(DISTINCT x.code) FILTER (WHERE x.ok)::int AS orders,
-      COUNT(DISTINCT COALESCE(x.customer_code, ${BLANK_KEY})) FILTER (WHERE x.ok)::int AS customers,
+      COUNT(DISTINCT (x.code) COLLATE "C") FILTER (WHERE x.ok)::int AS orders,
+      COUNT(DISTINCT (COALESCE(x.customer_code, ${BLANK_KEY})) COLLATE "C") FILTER (WHERE x.ok)::int AS customers,
       COALESCE(SUM(x.quantity), 0)::float8 AS quantity`;
   }
 
-  /** Số cấp hoá đơn, gom theo: tổng, năm, kỳ (trục), khách VIP, loại khách. */
-  async invoiceAgg(
+  /**
+   * Toàn bộ số của trang Tổng Quan trong 1 câu SQL: dữ liệu nền (hoá đơn, dòng hàng,
+   * khách cha, sản phẩm) dựng 1 lần cho hợp các khoảng ngày rồi gom theo từng khoảng:
+   *   - kỳ hiện tại: cấp hoá đơn (tổng, năm, kỳ, khách VIP, loại khách) và cấp dòng
+   *     (thêm ngành hàng, thương hiệu, danh mục);
+   *   - kỳ so sánh: tổng cấp hoá đơn + cấp dòng;
+   *   - "năm trước" theo từng điểm trục (mỗi điểm có khoảng ngày riêng).
+   * Thuộc tính khách/sản phẩm không phụ thuộc ngày nên kết quả giống hệt khi tính
+   * riêng từng khoảng (trước đây 6 câu, mỗi câu dựng lại dữ liệu nền).
+   */
+  async overviewAggregates(
     q: AnalyticsBusinessQueryDto,
-    dateCond: Prisma.Sql,
+    curDate: Prisma.Sql,
+    cmpDate: Prisma.Sql,
+    ranges: Range[],
     axisExpr: Prisma.Sql,
   ) {
-    const rows = await this.q<AggRow[]>(Prisma.sql`
-      WITH ${await this.baseCtes(q, dateCond)}
-      SELECT
+    const rs = ranges.length ? this.rangeSql(ranges) : null;
+    const anyDate = Prisma.sql`((${curDate}) OR (${cmpDate})${rs ? Prisma.sql` OR (${rs.cond})` : Prisma.empty})`;
+    const invDims = Prisma.sql`
         CASE WHEN GROUPING(x.y) = 0 THEN 'year' WHEN GROUPING(x.k) = 0 THEN 'period'
              WHEN GROUPING(x.vip_parent) = 0 THEN 'vip' WHEN GROUPING(x.customer_type) = 0 THEN 'ctype'
-             ELSE 'total' END AS dim,
-        COALESCE(x.y::text, x.k::text, x.vip_parent, x.customer_type) AS key,
-        ${this.invMetrics()}
-      FROM (
-        SELECT x.*, extract(year FROM x.d)::int AS y, ${axisExpr} AS k,
-               CASE WHEN x.is_vip THEN x.parent_name END AS vip_parent
-        FROM invx x
-      ) x
-      GROUP BY GROUPING SETS ((), (x.y), (x.k), (x.vip_parent), (x.customer_type))`);
-    return this.toDimMap<InvAgg>(rows);
-  }
-
-  /** Số cấp dòng hàng, gom theo các trục hoá đơn + trục sản phẩm. */
-  async lineAgg(
-    q: AnalyticsBusinessQueryDto,
-    dateCond: Prisma.Sql,
-    axisExpr: Prisma.Sql,
-  ) {
-    const rows = await this.q<AggRow[]>(Prisma.sql`
-      WITH ${await this.baseCtes(q, dateCond)}
-      SELECT
+             ELSE 'total' END`;
+    const lineDims = Prisma.sql`
         CASE WHEN GROUPING(x.y) = 0 THEN 'year' WHEN GROUPING(x.k) = 0 THEN 'period'
              WHEN GROUPING(x.vip_parent) = 0 THEN 'vip' WHEN GROUPING(x.customer_type) = 0 THEN 'ctype'
              WHEN GROUPING(x.product_type) = 0 THEN 'ptype' WHEN GROUPING(x.brand) = 0 THEN 'brand'
-             WHEN GROUPING(x.category) = 0 THEN 'category' ELSE 'total' END AS dim,
-        COALESCE(x.y::text, x.k::text, x.vip_parent, x.customer_type, x.product_type, x.brand, x.category) AS key,
-        ${this.lineMetrics()}
-      FROM (
+             WHEN GROUPING(x.category) = 0 THEN 'category' ELSE 'total' END`;
+    const withAxis = (src: Prisma.Sql) => Prisma.sql`(
         SELECT x.*, extract(year FROM x.d)::int AS y, ${axisExpr} AS k,
                CASE WHEN x.is_vip THEN x.parent_name END AS vip_parent
-        FROM line x
-      ) x
+        FROM ${src} x WHERE ${curDate}
+      ) x`;
+    const noQty = Prisma.sql`NULL::float8 AS quantity`;
+    const parts: Prisma.Sql[] = [
+      Prisma.sql`
+      SELECT 'inv' AS src, 'cur' AS win, ${invDims} AS dim,
+        COALESCE(x.y::text, x.k::text, x.vip_parent, x.customer_type) AS key,
+        ${this.invMetrics()}, ${noQty}
+      FROM ${withAxis(Prisma.sql`invx`)}
+      GROUP BY GROUPING SETS ((), (x.y), (x.k), (x.vip_parent), (x.customer_type))`,
+      Prisma.sql`
+      SELECT 'line', 'cur', ${lineDims},
+        COALESCE(x.y::text, x.k::text, x.vip_parent, x.customer_type, x.product_type, x.brand, x.category),
+        ${this.lineMetrics()}
+      FROM ${withAxis(Prisma.sql`line`)}
       GROUP BY GROUPING SETS ((), (x.y), (x.k), (x.vip_parent), (x.customer_type),
-                              (x.product_type), (x.brand), (x.category))`);
-    return this.toDimMap<LineAgg>(rows);
-  }
-
-  async invoiceTotal(
-    q: AnalyticsBusinessQueryDto,
-    dateCond: Prisma.Sql,
-  ): Promise<InvAgg> {
-    const rows = await this.q<AggRow[]>(Prisma.sql`
-      WITH ${await this.baseCtes(q, dateCond)}
-      SELECT ${this.invMetrics()} FROM invx x`);
-    return this.num(rows[0]) as InvAgg;
-  }
-
-  async lineTotal(
-    q: AnalyticsBusinessQueryDto,
-    dateCond: Prisma.Sql,
-  ): Promise<LineAgg> {
-    const rows = await this.q<AggRow[]>(Prisma.sql`
-      WITH ${await this.baseCtes(q, dateCond)}
-      SELECT ${this.lineMetrics()} FROM line x`);
-    return this.num(rows[0]) as LineAgg;
-  }
-
-  /** "Năm trước" theo từng điểm trục: mỗi điểm có (các) khoảng ngày riêng. */
-  async invoiceByRanges(q: AnalyticsBusinessQueryDto, ranges: Range[]) {
-    if (!ranges.length) return new Map<string, InvAgg>();
-    const { values, cond } = this.rangeSql(ranges);
-    const rows = await this.q<AggRow[]>(Prisma.sql`
-      WITH ${await this.baseCtes(q, cond)}
-      SELECT r.k::text AS key, ${this.invMetrics()}
-      FROM invx x JOIN (VALUES ${values}) r(k, f, t) ON x.d BETWEEN r.f AND r.t
-      GROUP BY r.k`);
-    return new Map(rows.map((r) => [String(r.key), this.num(r) as InvAgg]));
-  }
-
-  async lineByRanges(q: AnalyticsBusinessQueryDto, ranges: Range[]) {
-    if (!ranges.length) return new Map<string, LineAgg>();
-    const { values, cond } = this.rangeSql(ranges);
-    const rows = await this.q<AggRow[]>(Prisma.sql`
-      WITH ${await this.baseCtes(q, cond)}
-      SELECT r.k::text AS key, ${this.lineMetrics()}
-      FROM line x JOIN (VALUES ${values}) r(k, f, t) ON x.d BETWEEN r.f AND r.t
-      GROUP BY r.k`);
-    return new Map(rows.map((r) => [String(r.key), this.num(r) as LineAgg]));
+                              (x.product_type), (x.brand), (x.category))`,
+      Prisma.sql`
+      SELECT 'inv', 'cmp', 'total', NULL, ${this.invMetrics()}, ${noQty}
+      FROM invx x WHERE ${cmpDate}`,
+      Prisma.sql`
+      SELECT 'line', 'cmp', 'total', NULL, ${this.lineMetrics()}
+      FROM line x WHERE ${cmpDate}`,
+    ];
+    if (rs) {
+      parts.push(
+        Prisma.sql`
+      SELECT 'inv', 'sy', 'range', r.k::text, ${this.invMetrics()}, ${noQty}
+      FROM invx x ${rangeDaysJoin(rs.values)}
+      GROUP BY r.k`,
+        Prisma.sql`
+      SELECT 'line', 'sy', 'range', r.k::text, ${this.lineMetrics()}
+      FROM line x ${rangeDaysJoin(rs.values)}
+      GROUP BY r.k`,
+      );
+    }
+    const rows = await this.q<(AggRow & { src: string; win: string })[]>(
+      Prisma.sql`
+      WITH ${await this.baseCtes(q, anyDate)}
+      ${Prisma.join(parts, ' UNION ALL ')}`,
+    );
+    const pickRows = (src: string, win: string) =>
+      rows.filter((r) => r.src === src && r.win === win);
+    const byKey = (src: string) =>
+      new Map(
+        pickRows(src, 'sy').map((r) => [String(r.key), this.num(r)] as const),
+      );
+    return {
+      invCur: this.toDimMap<InvAgg>(pickRows('inv', 'cur')),
+      lineCur: this.toDimMap<LineAgg>(pickRows('line', 'cur')),
+      invCmp: this.num(pickRows('inv', 'cmp')[0]) as InvAgg,
+      lineCmp: this.num(pickRows('line', 'cmp')[0]) as LineAgg,
+      invSy: byKey('inv') as Map<string, InvAgg>,
+      lineSy: byKey('line') as Map<string, LineAgg>,
+    };
   }
 
   rangeSql(ranges: Range[]) {

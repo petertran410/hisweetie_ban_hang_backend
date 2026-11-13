@@ -7,7 +7,9 @@ import {
   SetMetadata,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { Observable, from, of, tap } from 'rxjs';
+import { Observable, finalize, from, map, of, tap } from 'rxjs';
+import { performance } from 'perf_hooks';
+import { analyticsPerf, type AnalyticsPerf } from './analytics-prisma.service';
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Cache kết quả báo cáo Phân tích (trong bộ nhớ backend).
@@ -16,6 +18,10 @@ import { Observable, from, of, tap } from 'rxjs';
 //   • Request giống nhau đang chạy cùng lúc → dùng chung 1 lần tính.
 //   • Mọi POST/PUT/PATCH/DELETE dưới /reports/analytics/ thành công → xoá cache.
 //   • GET .../config/... không cache (màn cấu hình luôn đọc mới).
+//   • Kết quả được chuyển thành chuỗi JSON đúng 1 lần, dùng cho cả cache, đo
+//     dung lượng và trả về (lần trúng cache không phải chuyển lại).
+//   • Mỗi request ghi 1 dòng log [analytics-perf]: đường dẫn + TÊN tham số (không
+//     ghi giá trị bộ lọc), thời gian, số câu SQL, thời gian DB, KB, CPU Node.
 // ═══════════════════════════════════════════════════════════════════════════
 
 const DATA_TTL = 5 * 60_000;
@@ -70,6 +76,11 @@ export class AnalyticsCacheService {
     return p;
   }
 
+  /** Đang có 1 lần tính cùng khoá (request này sẽ dùng chung kết quả). */
+  isPending(key: string) {
+    return this.pending.has(key);
+  }
+
   clear() {
     this.generation++;
     this.entries.clear();
@@ -80,7 +91,10 @@ export class AnalyticsCacheService {
   private set(key: string, value: unknown, ttl: number) {
     let bytes = 0;
     try {
-      bytes = JSON.stringify(value)?.length ?? 0;
+      bytes =
+        typeof value === 'string'
+          ? value.length
+          : (JSON.stringify(value)?.length ?? 0);
     } catch {
       return;
     }
@@ -107,13 +121,16 @@ export class AnalyticsCacheService {
 
 @Injectable()
 export class AnalyticsCacheInterceptor implements NestInterceptor {
+  private readonly logger = new Logger('AnalyticsPerf');
+
   constructor(
     private cache: AnalyticsCacheService,
     private reflector: Reflector,
   ) {}
 
   intercept(ctx: ExecutionContext, next: CallHandler): Observable<unknown> {
-    const req = ctx.switchToHttp().getRequest<{
+    const http = ctx.switchToHttp();
+    const req = http.getRequest<{
       method: string;
       path: string;
       query: Record<string, unknown>;
@@ -127,6 +144,7 @@ export class AnalyticsCacheInterceptor implements NestInterceptor {
     }
     if (path.includes('/config/')) return next.handle();
 
+    const res = http.getResponse<{ type?: (t: string) => unknown }>();
     const perUser = this.reflector.getAllAndOverride<boolean>(
       ANALYTICS_CACHE_PER_USER,
       [ctx.getHandler(), ctx.getClass()],
@@ -138,18 +156,47 @@ export class AnalyticsCacheInterceptor implements NestInterceptor {
     ].join('|');
     const ttl = OPTIONS_PATH.test(path) ? OPTIONS_TTL : DATA_TTL;
 
+    const t0 = performance.now();
+    const cpu0 = process.cpuUsage();
+    const perf: AnalyticsPerf = { queries: 0, dbMs: 0 };
+    let state = 'miss';
+    let bytes = 0;
+    // Chuỗi JSON → trả nguyên văn với Content-Type JSON (như res.json).
+    const asJson = (v: unknown) => {
+      if (typeof v !== 'string') return v;
+      bytes = v.length;
+      res.type?.('application/json');
+      return v;
+    };
+    const log = () => {
+      const cpu = process.cpuUsage(cpu0);
+      const keys = Object.keys(req.query ?? {})
+        .sort()
+        .join(',');
+      this.logger.log(
+        `analytics-perf ${path} keys=${keys || '-'} ms=${Math.round(performance.now() - t0)} ` +
+          `q=${perf.queries} db=${Math.round(perf.dbMs)}ms json=${Math.round(bytes / 1024)}KB ` +
+          `cpu=${Math.round((cpu.user + cpu.system) / 1000)}ms cache=${state}`,
+      );
+    };
+
     const hit = this.cache.get(key);
-    if (hit !== undefined) return of(hit);
+    if (hit !== undefined) {
+      state = 'hit';
+      return of(hit).pipe(map(asJson), finalize(log));
+    }
+    if (this.cache.isPending(key)) state = 'shared';
     return from(
-      this.cache.wrap(
-        key,
-        ttl,
-        () =>
-          new Promise((resolve, reject) =>
+      analyticsPerf.run(perf, () =>
+        this.cache.wrap(key, ttl, () =>
+          new Promise<unknown>((resolve, reject) =>
             next.handle().subscribe({ next: resolve, error: reject }),
+          ).then((value) =>
+            value === undefined ? value : JSON.stringify(value),
           ),
+        ),
       ),
-    );
+    ).pipe(map(asJson), finalize(log));
   }
 }
 

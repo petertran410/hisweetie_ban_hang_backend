@@ -4,8 +4,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { PrismaService } from '../../prisma/prisma.service';
-import { AnalyticsReportsService } from '../analytics-reports.service';
+import { AnalyticsPrismaService } from './analytics-prisma.service';
+import {
+  ANALYTICS_STATEMENT_TIMEOUT,
+  AnalyticsReportsService,
+} from '../analytics-reports.service';
 import {
   IsoDate,
   addDays,
@@ -159,7 +162,7 @@ export function incomeEfficiency(
 @Injectable()
 export class AnalyticsKpiSaleService {
   constructor(
-    private prisma: PrismaService,
+    private prisma: AnalyticsPrismaService,
     private base: AnalyticsReportsService,
   ) {}
 
@@ -361,7 +364,8 @@ export class AnalyticsKpiSaleService {
   ): Promise<T> {
     const sql = Prisma.sql(strings, ...(values as Prisma.Sql[]));
     const [, rows] = await this.prisma.$transaction([
-      this.prisma.$executeRaw`SET LOCAL jit = off`,
+      this.prisma.$queryRaw`SELECT set_config('jit', 'off', true),
+        set_config('statement_timeout', ${ANALYTICS_STATEMENT_TIMEOUT}, true)`,
       this.prisma.$queryRaw<T>(sql),
     ]);
     return rows;
@@ -775,7 +779,7 @@ export class AnalyticsKpiSaleService {
         FROM lnx GROUP BY 1, 2, 3, 4, 5, 6
       ),
       ia AS (
-        SELECT seller_id, seller_name, rep, COUNT(DISTINCT code)::int AS invoices
+        SELECT seller_id, seller_name, rep, COUNT(DISTINCT (code) COLLATE "C")::int AS invoices
         FROM invr GROUP BY 1, 2, 3
       ),
       la AS (

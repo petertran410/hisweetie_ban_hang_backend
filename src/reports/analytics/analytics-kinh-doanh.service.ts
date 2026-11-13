@@ -4,10 +4,11 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { PrismaService } from '../../prisma/prisma.service';
+import { AnalyticsPrismaService } from './analytics-prisma.service';
 import {
   AnalyticsReportsService,
   analyticsSettings,
+  rangeDaysJoin,
 } from '../analytics-reports.service';
 import {
   CurrentPeriod,
@@ -179,7 +180,7 @@ const ddmm = (d: IsoDate) => `${d.slice(8, 10)}/${d.slice(5, 7)}`;
 @Injectable()
 export class AnalyticsKinhDoanhService {
   constructor(
-    private prisma: PrismaService,
+    private prisma: AnalyticsPrismaService,
     private base: AnalyticsReportsService,
   ) {}
 
@@ -514,20 +515,20 @@ export class AnalyticsKinhDoanhService {
       level === 'line'
         ? Prisma.sql`
           COALESCE(SUM(x.sub_total) FILTER (WHERE x.ok), 0)::float8 AS amount,
-          COUNT(DISTINCT x.code) FILTER (WHERE x.ok)::int AS orders,
-          COUNT(DISTINCT COALESCE(x.customer_code, ${BLANK})) FILTER (WHERE x.ok)::int AS customers,
+          COUNT(DISTINCT (x.code) COLLATE "C") FILTER (WHERE x.ok)::int AS orders,
+          COUNT(DISTINCT (COALESCE(x.customer_code, ${BLANK})) COLLATE "C") FILTER (WHERE x.ok)::int AS customers,
           COALESCE(SUM(x.quantity), 0)::float8 AS quantity,
           0::int AS new_customers, 0::float8 AS new_amount,
-          COUNT(DISTINCT COALESCE(x.customer_code, ${BLANK})) FILTER (WHERE x.ok)::int AS codes,
+          COUNT(DISTINCT (COALESCE(x.customer_code, ${BLANK})) COLLATE "C") FILTER (WHERE x.ok)::int AS codes,
           MAX(x.d)::text AS max_d`
         : Prisma.sql`
           COALESCE(SUM(x.total) FILTER (WHERE x.ok), 0)::float8 AS amount,
-          COUNT(DISTINCT x.code) FILTER (WHERE x.ok)::int AS orders,
-          COUNT(DISTINCT COALESCE(x.parent_name, ${BLANK})) FILTER (WHERE x.ok)::int AS customers,
+          COUNT(DISTINCT (x.code) COLLATE "C") FILTER (WHERE x.ok)::int AS orders,
+          COUNT(DISTINCT (COALESCE(x.parent_name, ${BLANK})) COLLATE "C") FILTER (WHERE x.ok)::int AS customers,
           0::float8 AS quantity,
-          COUNT(DISTINCT COALESCE(x.parent_name, ${BLANK})) FILTER (WHERE x.is_new_cust)::int AS new_customers,
+          COUNT(DISTINCT (COALESCE(x.parent_name, ${BLANK})) COLLATE "C") FILTER (WHERE x.is_new_cust)::int AS new_customers,
           COALESCE(SUM(x.total) FILTER (WHERE x.ok AND x.is_new_cust), 0)::float8 AS new_amount,
-          COUNT(DISTINCT COALESCE(x.customer_code, ${BLANK})) FILTER (WHERE x.ok)::int AS codes,
+          COUNT(DISTINCT (COALESCE(x.customer_code, ${BLANK})) COLLATE "C") FILTER (WHERE x.ok)::int AS codes,
           MAX(x.d)::text AS max_d`;
 
     // Chỉ mang theo các cột cần cho chỉ số (hàng hẹp → sắp xếp COUNT DISTINCT nhanh hơn).
@@ -596,7 +597,7 @@ export class AnalyticsKinhDoanhService {
           SELECT ${baseCols(spec.level)}${dims.length ? Prisma.sql`, ${Prisma.join(dimCols, ', ')}` : Prisma.empty}
           FROM ${table} x WHERE ${spec.where ?? Prisma.sql`true`}
         ) x
-        JOIN (VALUES ${values}) r(k, f, t) ON x.d BETWEEN r.f AND r.t
+        ${rangeDaysJoin(values)}
         GROUP BY GROUPING SETS (${groupSets})`;
     });
 
@@ -1283,7 +1284,7 @@ export class AnalyticsKinhDoanhService {
         ) z GROUP BY code
       )
       SELECT COALESCE(SUM(c."totalDebt"), 0)::float8 AS debt,
-             COUNT(DISTINCT c.code) FILTER (WHERE c."totalDebt" > 0
+             COUNT(DISTINCT (c.code) COLLATE "C") FILTER (WHERE c."totalDebt" > 0
                AND (${today}::date - COALESCE(l.d, date '1899-12-30')) > 30)::int AS n
       FROM c LEFT JOIN last l ON l.code = c.code`;
     void q;

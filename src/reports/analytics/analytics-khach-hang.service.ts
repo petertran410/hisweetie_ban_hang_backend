@@ -4,7 +4,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { PrismaService } from '../../prisma/prisma.service';
+import { AnalyticsPrismaService } from './analytics-prisma.service';
 import {
   AnalyticsReportsService,
   CardValue,
@@ -12,6 +12,7 @@ import {
   MetricRow,
   MetricValues,
   analyticsSettings,
+  rangeDaysJoin,
 } from '../analytics-reports.service';
 import { AnalyticsBusinessQueryDto } from '../dto';
 import {
@@ -114,7 +115,7 @@ const str = (v: unknown) =>
 @Injectable()
 export class AnalyticsKhachHangService {
   constructor(
-    private prisma: PrismaService,
+    private prisma: AnalyticsPrismaService,
     private base: AnalyticsReportsService,
   ) {}
 
@@ -156,7 +157,7 @@ export class AnalyticsKhachHangService {
     const pr = ranges.length ? this.base.rangeSql(ranges) : null;
     const cmpPrevCond = pr ? Prisma.sql`(${cmpCond} OR ${pr.cond})` : cmpCond;
     const prevJoin = pr
-      ? Prisma.sql`JOIN (VALUES ${pr.values}) r(k, f, t) ON x.d BETWEEN r.f AND r.t`
+      ? rangeDaysJoin(pr.values)
       : Prisma.sql`JOIN (SELECT NULL::int AS k) r ON false`;
     const [curRows, topRows, cmpRows] = await Promise.all([
       this.run(Prisma.sql`
@@ -452,8 +453,8 @@ export class AnalyticsKhachHangService {
                  x.parent_name, x.product_code, x.wk,
                  COALESCE(SUM(x.sub_total) FILTER (WHERE x.ok), 0)::float8 AS rev_full,
                  COALESCE(SUM(x.sub_total) FILTER (WHERE x.ok AND x.inp), 0)::float8 AS amount,
-                 ${cnt(Prisma.sql`COUNT(DISTINCT x.code) FILTER (WHERE x.ok AND x.inp)`)}::int AS orders,
-                 ${cnt(Prisma.sql`COUNT(DISTINCT COALESCE(x.customer_code, ${BLANK})) FILTER (WHERE x.ok AND x.inp)`)}::int AS customers,
+                 ${cnt(Prisma.sql`COUNT(DISTINCT (x.code) COLLATE "C") FILTER (WHERE x.ok AND x.inp)`)}::int AS orders,
+                 ${cnt(Prisma.sql`COUNT(DISTINCT (COALESCE(x.customer_code, ${BLANK})) COLLATE "C") FILTER (WHERE x.ok AND x.inp)`)}::int AS customers,
                  COALESCE(SUM(x.quantity) FILTER (WHERE x.inp), 0)::float8 AS quantity,
                  bool_or(x.inp) AS has_inp
           FROM (SELECT x.*, ${WEEK_SQL} AS wk, (x.d = ANY(${dates}::date[])) AS inp FROM kline x) x
@@ -614,7 +615,7 @@ export class AnalyticsKhachHangService {
               AND x.parent_name IN (SELECT parent_name FROM kinv WHERE d >= ${M}::date)
             GROUP BY 1`,
           active: Prisma.sql`
-            SELECT COUNT(DISTINCT COALESCE(x.parent_name, ${BLANK})) FILTER (WHERE x.ok)::int AS n
+            SELECT COUNT(DISTINCT (COALESCE(x.parent_name, ${BLANK})) COLLATE "C") FILTER (WHERE x.ok)::int AS n
             FROM kinv x WHERE x.d >= ${M}::date`,
         })}`),
       // Dòng hàng 3 tháng trước M: doanh số khách cần chăm sóc + danh sách hành động theo SKU.
@@ -804,7 +805,7 @@ export class AnalyticsKhachHangService {
             SELECT x.parent_name, MIN(fp.first_d)::text AS first_d,
                    STRING_AGG(DISTINCT x.customer_type, ', ') AS customer_type,
                    STRING_AGG(DISTINCT x.region, ', ') AS region,
-                   COUNT(DISTINCT x.code) FILTER (WHERE x.ok)::int AS orders,
+                   COUNT(DISTINCT (x.code) COLLATE "C") FILTER (WHERE x.ok)::int AS orders,
                    COALESCE(SUM(x.total) FILTER (WHERE x.ok), 0)::float8 AS amount
             FROM kinv x LEFT JOIN fp ON fp.pkey = COALESCE(x.parent_name, ${BLANK})
             WHERE x.new_cust
@@ -1010,14 +1011,31 @@ export class AnalyticsKhachHangService {
       }
       byName.set(name, e);
     }
+    // Sản phẩm của từng khách gửi dạng gọn [mã, doanh số, hoá đơn, khách, sản lượng];
+    // tên sản phẩm gửi 1 lần trong productNames (trước đây lặp lại ở mọi khách → ~3 MB).
+    const viCompare = new Intl.Collator('vi').compare;
+    const productNames: Record<string, string> = {};
     const rows = [...byName.values()]
+      .sort((a, b) => viCompare(a.name, b.name))
       .map((e) => ({
-        ...e,
-        products: [...e.products.values()].sort((a, b) =>
-          a.name.localeCompare(b.name, 'vi'),
-        ),
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name, 'vi'));
+        name: e.name,
+        lastOrder: e.lastOrder,
+        churnDay: e.churnDay,
+        value: e.value,
+        products: [...e.products.values()]
+          .sort((a, b) => viCompare(a.name, b.name))
+          .map((p) => {
+            productNames[p.code] = p.name;
+            const v = p.value;
+            return [p.code, v.amount, v.orders, v.customers, v.quantity] as [
+              string,
+              number,
+              number,
+              number,
+              number,
+            ];
+          }),
+      }));
 
     return {
       period: period ? this.periodInfo(period, q.year) : null,
@@ -1030,6 +1048,7 @@ export class AnalyticsKhachHangService {
           .filter((r) => r.parent_name != null)
           .map((r) => str(r.parent_name)),
       ).size,
+      productNames,
       rows,
     };
   }
@@ -1628,7 +1647,7 @@ export class AnalyticsKhachHangService {
 
   extraMetrics(): Prisma.Sql {
     return Prisma.sql`
-      COUNT(DISTINCT COALESCE(x.parent_name, ${BLANK})) FILTER (WHERE x.new_cust)::int AS new_customers,
+      COUNT(DISTINCT (COALESCE(x.parent_name, ${BLANK})) COLLATE "C") FILTER (WHERE x.new_cust)::int AS new_customers,
       COALESCE(SUM(x.total) FILTER (WHERE x.ok AND x.new_cust), 0)::float8 AS rev_new,
       COALESCE(SUM(x.total) FILTER (WHERE x.ok AND x.is_l1), 0)::float8 AS rev_l1,
       COALESCE(SUM(x.total) FILTER (WHERE x.ok AND x.is_l2), 0)::float8 AS rev_l2`;
