@@ -167,6 +167,22 @@ describe('external production lifecycle', () => {
     expect(result.supplied[0]).toMatchObject({ productId: null, description: 'Nguyên liệu NSX bổ sung', amount: 500 });
   });
 
+  it('backdates the stock-out to the chosen send date (goods left before the slip was made)', async () => {
+    const { service, tx, row } = fixture();
+    const yesterday = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
+    await service.send(1, yesterday, 7);
+    expect(tx.inventoryLog.create.mock.calls[0][0].data.transactionDate.toISOString()).toBe(yesterday);
+    expect(row.sentDate.toISOString()).toBe(yesterday);
+  });
+
+  it('rejects a send date in the future or an invalid one before touching stock', async () => {
+    const { service, tx } = fixture();
+    const tomorrow = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+    await expect(service.send(1, tomorrow, 7)).rejects.toThrow('Ngày gửi không được sau thời điểm hiện tại');
+    await expect(service.send(1, 'not-a-date', 7)).rejects.toThrow('Ngày gửi không hợp lệ');
+    expect(tx.inventoryLog.create).not.toHaveBeenCalled();
+  });
+
   it('snapshots conversion instead of reading a changed product when sending', async () => {
     const { service, tx, row } = fixture();
     row.components[0].conversionFactor = 2;
