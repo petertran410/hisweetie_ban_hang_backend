@@ -25,7 +25,12 @@ export interface QuoteActor {
 const ITEMS_INCLUDE = {
   items: {
     orderBy: { sortOrder: 'asc' },
-    include: { tiers: { orderBy: { sortOrder: 'asc' } } },
+    include: {
+      tiers: { orderBy: { sortOrder: 'asc' } },
+      // Tên POS hiện tại — cho dòng chưa lưu tên đầy đủ (dòng cũ, dòng lấy từ Thư viện)
+      // + loại hàng (Hàng lạnh → bông tuyết ở cột Hình ảnh khi in)
+      product: { select: { name: true, cargoType: true } },
+    },
   },
 } satisfies Prisma.QuoteInclude;
 
@@ -411,7 +416,8 @@ export class QuotesService {
         id: String(it.id),
         productId: it.productId,
         productCode: it.productCode,
-        fullName: it.fullName,
+        fullName: it.fullName ?? it.product?.name ?? null,
+        cold: it.product?.cargoType === 'COLD',
         productName: it.productName,
         weight: it.weight,
         spec: it.spec,

@@ -123,6 +123,11 @@ export class QuoteItemDto {
   @IsBoolean()
   comingSoon?: boolean;
 
+  /** Hàng lạnh — lấy từ sản phẩm POS khi đọc, không lưu. */
+  @IsOptional()
+  @IsBoolean()
+  cold?: boolean;
+
   @IsOptional()
   @IsString()
   @MaxLength(500)

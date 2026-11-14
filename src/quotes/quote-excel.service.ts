@@ -196,7 +196,7 @@ export class QuoteExcelService {
         i + 1,
         // Tên hiển thị + khối lượng, vd "Gấu Lermao - Mứt Xoài Xanh 1kg"
         [it.productName, it.weight].filter(Boolean).join(' '),
-        it.spec ? `(${it.spec})` : '',
+        it.spec,
         '',
         ...cols.map((x) =>
           it.comingSoon
