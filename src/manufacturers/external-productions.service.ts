@@ -35,6 +35,16 @@ type Pair = { productId: number; branchId: number };
 
 const D = (value: Prisma.Decimal.Value | null | undefined) => new Prisma.Decimal(value ?? 0);
 const day = (date: Date) => date.toISOString().slice(0, 10);
+/**
+ * Ngày gửi = ngày ghi trừ tồn hàng mình gửi. Cho chọn lùi (hàng đi trước khi
+ * làm phiếu) nhưng không được sau hiện tại (lệch vài phút đồng hồ vẫn nhận).
+ */
+const sentAt = (value: string | Date) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) throw new BadRequestException('Ngày gửi không hợp lệ');
+  if (date.getTime() > Date.now() + 10 * 60 * 1000) throw new BadRequestException('Ngày gửi không được sau thời điểm hiện tại');
+  return date;
+};
 const vnd = (value: number) => value.toLocaleString('vi-VN', { maximumFractionDigits: 2 });
 const amount4 = (value: Prisma.Decimal.Value) => Number(value).toLocaleString('en-US', { maximumFractionDigits: 4 });
 /**
@@ -190,7 +200,7 @@ export class ExternalProductionsService {
       if (!manufacturer?.isActive) throw new BadRequestException('Nhà sản xuất đã ngừng hoạt động');
       const product = await tx.product.findUniqueOrThrow({ where: { id: row.productId } });
       const user = await tx.user.findUnique({ where: { id: userId } });
-      const date = sentDate ? new Date(sentDate) : new Date();
+      const date = sentDate ? sentAt(sentDate) : new Date();
       let value = new Prisma.Decimal(0);
       const stockUnits = new Map((await tx.product.findMany({
         where: { id: { in: row.components.map((line) => line.componentProductId) } }, select: { id: true, unit: true },
@@ -386,7 +396,7 @@ export class ExternalProductionsService {
       if (currency !== row.feeCurrency && active.length) throw new BadRequestException('Phiếu đã có đợt nhận, không đổi được tiền tệ');
       const quantity = Number(dto.quantity);
       if (!(quantity > 0)) throw new BadRequestException('Sản lượng phải lớn hơn 0');
-      const sentDate = dto.sentDate ? new Date(dto.sentDate) : row.sentDate ?? new Date();
+      const sentDate = dto.sentDate ? sentAt(dto.sentDate) : row.sentDate ?? new Date();
       if (active.some((item) => day(item.receivedDate) < day(sentDate))) {
         throw new BadRequestException('Ngày gửi không được sau ngày nhận của các đợt');
       }

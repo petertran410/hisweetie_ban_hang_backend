@@ -27,14 +27,18 @@ export class PrintTemplatesController {
   @Get()
   @RequirePermissions('print_templates:view')
   findAll(
+    @Req() req: any,
     @Query('templateFor') templateFor?: string,
     @Query('isActive') isActive?: string,
   ) {
-    return this.printTemplatesService.findAll({
-      templateFor,
-      isActive:
-        isActive === 'true' ? true : isActive === 'false' ? false : undefined,
-    });
+    return this.printTemplatesService.findAll(
+      {
+        templateFor,
+        isActive:
+          isActive === 'true' ? true : isActive === 'false' ? false : undefined,
+      },
+      req.user?.id,
+    );
   }
 
   @Get('variables/:templateFor')

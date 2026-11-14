@@ -9,6 +9,13 @@ import { pickCustomerAddress } from '../common/address-resolver.util';
 import { INVOICE_STATUS } from '../invoices/dto/invoice-status.constants';
 import * as QRCode from 'qrcode';
 import { USER_PUBLIC_SELECT } from '../common/user-select.util';
+import {
+  mapProductionExternal,
+  PRODUCTION_EXTERNAL,
+  PRODUCTION_EXTERNAL_DEFAULT_TEMPLATE,
+  PRODUCTION_EXTERNAL_ITEM_KEYS,
+  PRODUCTION_EXTERNAL_VARIABLES,
+} from './production-external-print';
 
 @Injectable()
 export class PrintTemplatesService {
@@ -16,13 +23,46 @@ export class PrintTemplatesService {
 
   // ==================== TEMPLATE CRUD ====================
 
-  async findAll(params: { templateFor?: string; isActive?: boolean }) {
+  async findAll(
+    params: { templateFor?: string; isActive?: boolean },
+    userId?: number,
+  ) {
+    if (params.templateFor === PRODUCTION_EXTERNAL && userId) {
+      await this.ensureProductionExternalDefault(userId);
+    }
     return this.prisma.printTemplate.findMany({
       where: {
         ...(params.templateFor && { templateFor: params.templateFor }),
         ...(params.isActive !== undefined && { isActive: params.isActive }),
       },
       orderBy: [{ isDefault: 'desc' }, { createdAt: 'desc' }],
+    });
+  }
+
+  /**
+   * Phiếu gửi sản xuất chưa có mẫu nào → tạo mẫu mặc định (không có biến tiền)
+   * một lần, để in được ngay mà không cần chạy seed. Đã có mẫu thì không đụng.
+   */
+  private async ensureProductionExternalDefault(userId: number) {
+    const count = await this.prisma.printTemplate.count({
+      where: { templateFor: PRODUCTION_EXTERNAL },
+    });
+    if (count) return;
+    await this.prisma.printTemplate.createMany({
+      data: [
+        {
+          name: 'Phiếu gửi sản xuất mặc định',
+          code: 'GSX_DEFAULT',
+          templateFor: PRODUCTION_EXTERNAL,
+          content: PRODUCTION_EXTERNAL_DEFAULT_TEMPLATE,
+          isActive: true,
+          isDefault: true,
+          paperSize: 'A5',
+          orientation: 'portrait',
+          createdBy: userId,
+        },
+      ],
+      skipDuplicates: true,
     });
   }
 
@@ -89,6 +129,25 @@ export class PrintTemplatesService {
       where: { templateFor, isActive: true },
       orderBy: [{ group: 'asc' }, { sortOrder: 'asc' }],
     });
+    // Biến dựng sẵn trong code (phiếu gửi sản xuất) — biến cùng key trong DB được ưu tiên.
+    if (templateFor === PRODUCTION_EXTERNAL) {
+      const keys = new Set(variables.map((v) => v.key));
+      for (const v of PRODUCTION_EXTERNAL_VARIABLES) {
+        if (keys.has(v.key)) continue;
+        variables.push({
+          id: 0,
+          templateFor,
+          key: v.key,
+          label: v.label,
+          group: v.group,
+          dataType: 'string',
+          description: v.description ?? null,
+          isActive: true,
+          sortOrder: v.sortOrder,
+          isItemVariable: v.isItemVariable,
+        } as (typeof variables)[number]);
+      }
+    }
 
     return variables.reduce(
       (acc, v) => {
@@ -159,7 +218,11 @@ export class PrintTemplatesService {
       where: { templateFor, isItemVariable: true, isActive: true },
       select: { key: true },
     });
-    return new Set(vars.map((v) => v.key));
+    const keys = new Set(vars.map((v) => v.key));
+    if (templateFor === PRODUCTION_EXTERNAL) {
+      for (const key of PRODUCTION_EXTERNAL_ITEM_KEYS) keys.add(key);
+    }
+    return keys;
   }
 
   private replaceItemVariables(
@@ -315,6 +378,10 @@ export class PrintTemplatesService {
         return await this.mapWarehouseExport(
           await this.loadInvoiceForWarehouseExport(entityId),
         );
+      case PRODUCTION_EXTERNAL:
+        return mapProductionExternal(
+          await this.loadProductionExternal(entityId),
+        );
       default:
         throw new BadRequestException(
           `Unsupported templateFor: ${templateFor}`,
@@ -323,6 +390,27 @@ export class PrintTemplatesService {
   }
 
   // ==================== LOADERS ====================
+
+  /** Phiếu gửi sản xuất (NSX). Không lấy trường tiền nào vào dữ liệu in. */
+  private async loadProductionExternal(id: number) {
+    const entity = await this.prisma.production.findUnique({
+      where: { id },
+      include: {
+        components: {
+          orderBy: { id: 'asc' },
+          include: { componentProduct: { select: { unit: true } } },
+        },
+        manufacturerMaterials: { orderBy: { id: 'asc' } },
+        manufacturer: true,
+        sourceBranch: true,
+        destinationBranch: true,
+        creator: { select: { name: true } },
+      },
+    });
+    if (!entity?.manufacturerId)
+      throw new NotFoundException('Không tìm thấy phiếu gửi sản xuất');
+    return entity;
+  }
 
   private async loadInvoice(id: number) {
     const entity = await this.prisma.invoice.findUnique({
