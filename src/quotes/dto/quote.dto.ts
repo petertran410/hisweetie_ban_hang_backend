@@ -73,10 +73,22 @@ export class QuoteItemDto {
   @MaxLength(60)
   productCode: string | null;
 
+  /** Tên sản phẩm POS đầy đủ lúc thêm (null = dòng không lấy từ POS). */
+  @IsOptional()
+  @IsString()
+  @MaxLength(255)
+  fullName?: string | null;
+
+  /** Tên hiển thị trên báo giá. */
   @IsString()
   @IsNotEmpty()
   @MaxLength(255)
   productName: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(40)
+  weight?: string;
 
   @IsString()
   @MaxLength(120)

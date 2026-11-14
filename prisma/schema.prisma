@@ -6222,7 +6222,12 @@ model QuoteItem {
   sortOrder      Int             @default(0) @map("sort_order")
   productId      Int?            @map("product_id")
   productCode    String?         @map("product_code")
+  /// Tên sản phẩm POS đầy đủ lúc thêm, vd "Gấu Lermao - Mứt Xoài Xanh 1kg (12 Túi/Thùng)"
+  fullName       String?         @map("full_name")
+  /// Tên hiển thị trên báo giá (mặc định tách từ tên đầy đủ), vd "Gấu Lermao - Mứt Xoài Xanh"
   productName    String          @map("product_name")
+  /// Khối lượng, vd "1kg" — in sau tên hiển thị
+  weight         String          @default("")
   /// Quy cách đóng gói, vd "12 túi/thùng"
   spec           String          @default("")
   /// Đơn vị bán của giá (túi, hộp, gói…)

@@ -194,7 +194,8 @@ export class QuoteExcelService {
       const r = 10 + i;
       const values: (string | number | null)[] = [
         i + 1,
-        it.productName,
+        // Tên hiển thị + khối lượng, vd "Gấu Lermao - Mứt Xoài Xanh 1kg"
+        [it.productName, it.weight].filter(Boolean).join(' '),
         it.spec ? `(${it.spec})` : '',
         '',
         ...cols.map((x) =>
