@@ -1648,7 +1648,7 @@ export class AnalyticsDinhKiService {
     >(Prisma.sql`
       WITH cb AS (
         SELECT DISTINCT ON (c.code) c.code, COALESCE(c."totalDebt", 0)::float8 AS debt
-        FROM customers c ORDER BY c.code, c.id
+        FROM customers c WHERE c."isActive" ORDER BY c.code, c.id
       ),
       lo AS (
         SELECT c.code, MAX((i."purchaseDate" + interval '7 hour')::date) AS d

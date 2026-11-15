@@ -1086,8 +1086,8 @@ export class AnalyticsKhachHangService {
         FROM customer_demand_lines l
         JOIN customer_demand_months m ON m.id = l.demand_month_id
         JOIN customer_demands d ON d.id = m.demand_id
-        JOIN customers c ON c.id = d.customer_id
-        JOIN products p ON p.id = l.product_id
+        JOIN customers c ON c.id = d.customer_id AND c."isActive"
+        JOIN products p ON p.id = l.product_id AND p."isActive"
         WHERE m.status = 'CONFIRMED'
           AND extract(year FROM m.demand_month)::int = ${q.year}
           AND extract(month FROM m.demand_month)::int = ANY(${months}::int[])
@@ -1231,7 +1231,7 @@ export class AnalyticsKhachHangService {
               JOIN analytics_sale_team_members m ON m.user_id = i."soldById"
               JOIN analytics_sale_teams t ON t.id = m.team_id AND t.is_sale
               WHERE i.status <> 2 AND i."customerId" IS NOT NULL)
-            AND c.name IS NOT NULL
+            AND c.name IS NOT NULL AND c."isActive"
           ORDER BY 1`,
         lake
           ? this.prisma.$queryRaw<{ name: string }[]>`
@@ -1242,13 +1242,15 @@ export class AnalyticsKhachHangService {
           UNION SELECT unnest(ARRAY['Nhóm B','Nhóm C','Chưa Phân Loại'])
           ORDER BY 1`,
         this.prisma.$queryRaw<{ name: string }[]>`
-          SELECT DISTINCT parent_name AS name FROM products WHERE parent_name IS NOT NULL ORDER BY 1`,
+          SELECT DISTINCT parent_name AS name FROM products
+          WHERE parent_name IS NOT NULL AND "isActive" ORDER BY 1`,
         this.prisma.$queryRaw<{ name: string }[]>`
           SELECT DISTINCT tm.name FROM products p JOIN trade_marks tm ON tm.id = p."tradeMarkId"
-          WHERE tm.name IS NOT NULL ORDER BY 1`,
+          WHERE tm.name IS NOT NULL AND p."isActive" ORDER BY 1`,
         this.prisma.$queryRaw<{ code: string; name: string }[]>`
           SELECT DISTINCT ON (p.code) p.code, p.name FROM products p
-          WHERE p.id IN (SELECT DISTINCT "productId" FROM invoice_details WHERE "productId" IS NOT NULL)
+          WHERE p."isActive"
+            AND p.id IN (SELECT DISTINCT "productId" FROM invoice_details WHERE "productId" IS NOT NULL)
           ORDER BY p.code, p.id`,
       ]);
 
@@ -1534,8 +1536,8 @@ export class AnalyticsKhachHangService {
             SELECT p.code AS product_code, (i."purchaseDate" + interval '7 hour')::date AS d
             FROM invoice_details dd
             JOIN invoices i ON i.id = dd."invoiceId"
-            JOIN customers c ON c.id = i."customerId"
-            JOIN products p ON p.id = dd."productId"
+            JOIN customers c ON c.id = i."customerId" AND c."isActive"
+            JOIN products p ON p.id = dd."productId" AND p."isActive"
             WHERE i.status <> 2 AND i."soldById" IS DISTINCT FROM 2
               AND c.code NOT IN (SELECT customer_code FROM analytics_customer_lists WHERE list_key = 'internal_customers')
             ${
@@ -1545,8 +1547,9 @@ export class AnalyticsKhachHangService {
             SELECT od."productCode", (o."purchaseDate" + interval '7 hour')::date
             FROM data_lake.invoice_detail od
             JOIN data_lake.invoice o ON o.code = od."invoiceCode"
-            JOIN customers c ON c.code = o."customerCode"
+            JOIN customers c ON c.code = o."customerCode" AND c."isActive"
             WHERE o.status <> 2
+              AND od."productCode" NOT IN (SELECT code FROM products WHERE NOT "isActive")
               AND c.code NOT IN (SELECT customer_code FROM analytics_customer_lists WHERE list_key = 'internal_customers')`
                 : Prisma.empty
             }
