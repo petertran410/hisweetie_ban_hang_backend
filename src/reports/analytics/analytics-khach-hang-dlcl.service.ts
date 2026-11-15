@@ -8,6 +8,8 @@ import { AnalyticsPrismaService } from './analytics-prisma.service';
 import {
   AnalyticsReportsService,
   rangeDaysJoin,
+  ACTIVE_CUSTOMER,
+  ACTIVE_PRODUCT,
 } from '../analytics-reports.service';
 import { AnalyticsAxis, AnalyticsBusinessQueryDto } from '../dto';
 import {
@@ -203,11 +205,11 @@ export class AnalyticsKhachHangDlclService {
         this.base.dataLakeReady().then(
           () =>
             this.prisma.$queryRaw<{ name: string }[]>`
-            WITH ${this.base.custCte(Prisma.sql`c.id IN (SELECT DISTINCT "customerId" FROM invoices WHERE status <> 2 AND "customerId" IS NOT NULL)`)}
+            WITH ${this.base.custCte(Prisma.sql`c."isActive" AND c.id IN (SELECT DISTINCT "customerId" FROM invoices WHERE status <> 2 AND "customerId" IS NOT NULL)`)}
             SELECT DISTINCT parent_name AS name FROM cust ORDER BY 1`,
         ),
         this.prisma.$queryRaw<{ name: string }[]>`
-          SELECT DISTINCT name FROM products WHERE name IS NOT NULL ORDER BY 1`,
+          SELECT DISTINCT name FROM products WHERE name IS NOT NULL AND "isActive" ORDER BY 1`,
         this.productTypes(),
         this.brands(),
       ]);
@@ -1000,7 +1002,9 @@ export class AnalyticsKhachHangDlclService {
                COALESCE(od.quantity, 0)::float8, COALESCE(od.price, 0)::float8, COALESCE(od.discount, 0)::float8,
                (COALESCE(od.quantity, 0) * COALESCE(od.price, 0) - COALESCE(od.quantity, 0) * COALESCE(od.discount, 0))::float8
         FROM data_lake.invoice_detail od
-        JOIN inv x ON NOT x.is_new AND x.code = od."invoiceCode"`
+        JOIN inv x ON NOT x.is_new AND x.code = od."invoiceCode"
+        LEFT JOIN products p ON p.code = od."productCode"
+        WHERE ${ACTIVE_PRODUCT}`
       : Prisma.empty;
 
     return Prisma.sql`
@@ -1029,6 +1033,7 @@ export class AnalyticsKhachHangDlclService {
         FROM invoice_details d
         JOIN inv x ON x.is_new AND x.id = d."invoiceId"
         LEFT JOIN products p ON p.id = d."productId"
+        WHERE ${ACTIVE_PRODUCT}
         ${oldLines}
       ),
       ln AS (
@@ -1057,8 +1062,9 @@ export class AnalyticsKhachHangDlclService {
         SELECT od."productCode", (o."purchaseDate" + interval '7 hour')::date
         FROM data_lake.invoice_detail od
         JOIN data_lake.invoice o ON o.code = od."invoiceCode"
-        JOIN customers c ON c.code = o."customerCode"
-        WHERE o.status <> 2 AND NOT EXISTS (SELECT 1 FROM dl_internal di WHERE di.code = c.code)`
+        JOIN customers c ON c.code = o."customerCode" AND c."isActive"
+        WHERE o.status <> 2 AND NOT EXISTS (SELECT 1 FROM dl_internal di WHERE di.code = c.code)
+          AND od."productCode" NOT IN (SELECT code FROM products WHERE NOT "isActive")`
       : Prisma.empty;
     return Prisma.sql`
       dl_internal AS (
@@ -1070,8 +1076,8 @@ export class AnalyticsKhachHangDlclService {
           SELECT p.code AS product_code, (i."purchaseDate" + interval '7 hour')::date AS d
           FROM invoice_details dd
           JOIN invoices i ON i.id = dd."invoiceId"
-          JOIN products p ON p.id = dd."productId"
-          JOIN customers c ON c.id = i."customerId"
+          JOIN products p ON p.id = dd."productId" AND p."isActive"
+          JOIN customers c ON c.id = i."customerId" AND c."isActive"
           WHERE i.status <> 2 AND i."soldById" IS DISTINCT FROM 2
             AND NOT EXISTS (SELECT 1 FROM dl_internal di WHERE di.code = c.code)
           ${old}
@@ -1457,7 +1463,7 @@ export class AnalyticsKhachHangDlclService {
         UNION ALL
         SELECT c.code, (o."purchaseDate" + interval '7 hour')::date
         FROM data_lake.invoice o LEFT JOIN customers c ON c.code = o."customerCode"
-        WHERE o.status <> 2`
+        WHERE o.status <> 2 AND ${ACTIVE_CUSTOMER}`
       : Prisma.empty;
     const rows = await this.base.q<
       { key: string | null; g: number; n: number }[]
@@ -1467,7 +1473,7 @@ export class AnalyticsKhachHangDlclService {
       nc_all AS (
         SELECT c.code AS customer_code, (i."purchaseDate" + interval '7 hour')::date AS d
         FROM invoices i LEFT JOIN customers c ON c.id = i."customerId"
-        WHERE i.status <> 2 AND i."soldById" IS DISTINCT FROM 2
+        WHERE i.status <> 2 AND i."soldById" IS DISTINCT FROM 2 AND ${ACTIVE_CUSTOMER}
         ${oldAll}
       ),
       nc_cust AS (
@@ -1757,14 +1763,15 @@ export class AnalyticsKhachHangDlclService {
 
   private async productTypes(): Promise<string[]> {
     const rows = await this.prisma.$queryRaw<{ name: string }[]>`
-      SELECT DISTINCT parent_name AS name FROM products WHERE parent_name IS NOT NULL ORDER BY 1`;
+      SELECT DISTINCT parent_name AS name FROM products
+      WHERE parent_name IS NOT NULL AND "isActive" ORDER BY 1`;
     return rows.map((r) => r.name);
   }
 
   private async brands(): Promise<string[]> {
     const rows = await this.prisma.$queryRaw<{ name: string }[]>`
       SELECT DISTINCT tm.name FROM products p JOIN trade_marks tm ON tm.id = p."tradeMarkId"
-      WHERE tm.name IS NOT NULL ORDER BY 1`;
+      WHERE tm.name IS NOT NULL AND p."isActive" ORDER BY 1`;
     return rows.map((r) => r.name);
   }
 }

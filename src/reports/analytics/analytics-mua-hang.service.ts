@@ -81,7 +81,8 @@ type N = number | null;
 
 /** Phạm vi sản phẩm theo filter trang / report của Power BI. */
 interface ProductScope {
-  activeOnly?: boolean; // dim_product[is_active] = true (report Thu Mua)
+  /** Không còn dùng: mọi trang đều chỉ tính sản phẩm còn hoạt động (xem pfCte). */
+  activeOnly?: boolean;
   excludeTypes?: boolean; // Chuyển Kho / Hàng Loại B
   excludeBoduo?: boolean; // Chuyển Kho: NOT brand = Boduo
   origins?: string[]; // Nguồn Hàng
@@ -153,7 +154,7 @@ export class AnalyticsMuaHangService {
     const distinct = (col: 'product_type' | 'brand' | 'category' | 'origin') =>
       this.prisma.$queryRaw<{ v: string | null }[]>`
         WITH ${this.prodCte()}
-        SELECT DISTINCT ${Prisma.raw(col)} AS v FROM pp ORDER BY 1 NULLS LAST`;
+        SELECT DISTINCT ${Prisma.raw(col)} AS v FROM pp WHERE is_active ORDER BY 1 NULLS LAST`;
     const toOpts = (rows: { v: string | null }[]) =>
       rows.map((r) => r.v ?? MUA_HANG_BLANK);
 
@@ -181,7 +182,8 @@ export class AnalyticsMuaHangService {
       this.prisma.$queryRaw<
         { code: string; name: string; is_active: boolean }[]
       >`
-          SELECT code, rtrim(name) AS name, "isActive" AS is_active FROM products ORDER BY name, code`,
+          SELECT code, rtrim(name) AS name, "isActive" AS is_active FROM products
+          WHERE "isActive" ORDER BY name, code`,
       this.prisma.$queryRaw<{ y: number }[]>`
           WITH r AS (
             SELECT min("purchaseDate" + interval '7 hour') AS lo, max("purchaseDate" + interval '7 hour') AS hi FROM invoices
@@ -191,7 +193,7 @@ export class AnalyticsMuaHangService {
           FROM r`,
       this.prisma.$queryRaw<{ id: number; code: string; name: string }[]>`
           SELECT DISTINCT c.id, c.code, c.name FROM customer_demands d
-          JOIN customers c ON c.id = d.customer_id ORDER BY c.name`,
+          JOIN customers c ON c.id = d.customer_id WHERE c."isActive" ORDER BY c.name`,
     ]);
 
     return {
@@ -608,6 +610,7 @@ export class AnalyticsMuaHangService {
       FROM customer_demand_lines l
       JOIN customer_demand_months m ON m.id = l.demand_month_id
       JOIN customer_demands cd ON cd.id = m.demand_id
+      JOIN customers dc ON dc.id = cd.customer_id AND dc."isActive"
       JOIN products p ON p.id = l.product_id
       JOIN pf ON pf.code = p.code
       WHERE ${Prisma.join(conds, ' AND ')}
@@ -731,7 +734,8 @@ export class AnalyticsMuaHangService {
   /** pf: sản phẩm sau filter trang + slicer (alias pr trong điều kiện). */
   pfCte(q: MuaHangFilterDto, scope: ProductScope): Prisma.Sql {
     const conds: Prisma.Sql[] = [];
-    if (scope.activeOnly) conds.push(Prisma.sql`pr.is_active`);
+    // Mọi trang Thu Mua / Chuyển Kho chỉ tính sản phẩm còn hoạt động (như bộ lọc).
+    conds.push(Prisma.sql`pr.is_active`);
     if (scope.excludeTypes)
       conds.push(Prisma.sql`pr.product_type IS NOT NULL
         AND lower(pr.product_type) <> ALL(${CK_EXCLUDED_TYPES.map((s) => s.toLowerCase())}::text[])`);
@@ -859,6 +863,8 @@ export class AnalyticsMuaHangService {
     const conds: Prisma.Sql[] = [
       Prisma.sql`i.status <> 2`,
       Prisma.sql`NOT EXISTS (SELECT 1 FROM analytics_purchase_excluded_sellers e WHERE e.user_id = i."soldById")`,
+      // Bỏ hoá đơn của khách ngừng hoạt động (khách lẻ vẫn tính).
+      Prisma.sql`NOT EXISTS (SELECT 1 FROM customers c WHERE c.id = i."customerId" AND NOT c."isActive")`,
     ];
     if (q.year) {
       const from = `${q.year}-01-01`;

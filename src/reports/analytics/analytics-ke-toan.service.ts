@@ -195,15 +195,15 @@ export class AnalyticsKeToanService {
         FROM products p
         JOIN onhand o ON o.product_id = p.id
         WHERE (o.onhand_hn IS NOT NULL OR o.onhand_sg IS NOT NULL)
-          AND ${typeCond} AND ${nameCond}
+          AND p."isActive" AND ${typeCond} AND ${nameCond}
         ORDER BY p.code
       `),
       this.prisma.$queryRaw<{ v: string | null }[]>(Prisma.sql`
-        SELECT DISTINCT p.parent_name AS v FROM products p ORDER BY 1 NULLS FIRST
+        SELECT DISTINCT p.parent_name AS v FROM products p WHERE p."isActive" ORDER BY 1 NULLS FIRST
       `),
       // Slicer Tên Hàng bị slicer Loại Hàng lọc chéo (cùng bảng product).
       this.prisma.$queryRaw<{ v: string }[]>(Prisma.sql`
-        SELECT DISTINCT p.name AS v FROM products p WHERE ${typeCond} ORDER BY 1
+        SELECT DISTINCT p.name AS v FROM products p WHERE p."isActive" AND ${typeCond} ORDER BY 1
       `),
     ]);
 
@@ -555,7 +555,7 @@ export class AnalyticsKeToanService {
                  CASE WHEN lower(p.name) LIKE '%bảo quản tủ đông%' THEN 3 ELSE 5 END AS lead_time
           FROM products p
           LEFT JOIN trade_marks tm ON p."tradeMarkId" = tm.id
-          WHERE ${prodFilter} ${nameFilter}
+          WHERE p."isActive" AND ${prodFilter} ${nameFilter}
         ),
         onhand AS (
           SELECT pi."productId" AS product_id,
@@ -629,7 +629,7 @@ export class AnalyticsKeToanService {
       this.prisma.$queryRaw<{ v: string }[]>(Prisma.sql`
         SELECT DISTINCT p.name AS v
         FROM products p LEFT JOIN trade_marks tm ON p."tradeMarkId" = tm.id
-        WHERE ${prodFilter}
+        WHERE p."isActive" AND ${prodFilter}
         ORDER BY 1
       `),
     ]);

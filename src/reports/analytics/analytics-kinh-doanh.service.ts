@@ -404,13 +404,14 @@ export class AnalyticsKinhDoanhService {
       const old = lake
         ? Prisma.sql`UNION ALL
           SELECT o."customerCode", (o."purchaseDate" + interval '7 hour')::date
-          FROM data_lake.invoice o WHERE o.status <> 2 AND o."customerCode" IS NOT NULL`
+          FROM data_lake.invoice o WHERE o.status <> 2 AND o."customerCode" IS NOT NULL
+            AND o."customerCode" NOT IN (SELECT code FROM customers WHERE NOT "isActive")`
         : Prisma.empty;
       const rows = await this.qr<{ p: string; d: string }[]>`
         WITH allinv AS (
           SELECT c.code, MIN((i."purchaseDate" + interval '7 hour')::date) AS d
           FROM invoices i JOIN customers c ON c.id = i."customerId"
-          WHERE i.status <> 2 GROUP BY c.code
+          WHERE i.status <> 2 AND c."isActive" GROUP BY c.code
           ${old}
         ),
         firsts AS (SELECT code, MIN(d) AS d FROM allinv GROUP BY code),
@@ -753,7 +754,7 @@ export class AnalyticsKinhDoanhService {
       if (q.customerType)
         cc.push(Prisma.sql`cu.customer_type = ${q.customerType}`);
       const r = await this.qr<{ v: number }[]>`
-        WITH ${this.base.custCte(Prisma.sql`true`)}
+        WITH ${this.base.custCte(Prisma.sql`c."isActive"`)}
         SELECT COALESCE(SUM(c."totalDebt"), 0)::float8 AS v
         FROM cust cu JOIN customers c ON c.id = cu.id
         WHERE ${Prisma.join(cc, ' AND ')}
@@ -762,7 +763,7 @@ export class AnalyticsKinhDoanhService {
     }
     const r = await this.qr<{ v: number }[]>`
       SELECT COALESCE(SUM(c."totalDebt"), 0)::float8 AS v FROM (
-        SELECT DISTINCT ON (code) * FROM customers ORDER BY code, id
+        SELECT DISTINCT ON (code) * FROM customers WHERE "isActive" ORDER BY code, id
       ) c ${where}`;
     return Number(r[0]?.v ?? 0);
   }
@@ -897,25 +898,25 @@ export class AnalyticsKinhDoanhService {
       demandCustomers,
     ] = await Promise.all([
       this.qr<{ v: string }[]>`
-          SELECT DISTINCT parent_name AS v FROM products WHERE parent_name IS NOT NULL ORDER BY 1`,
+          SELECT DISTINCT parent_name AS v FROM products WHERE parent_name IS NOT NULL AND "isActive" ORDER BY 1`,
       this.qr<{ v: string }[]>`
           SELECT DISTINCT tm.name AS v FROM trade_marks tm
-          JOIN products p ON p."tradeMarkId" = tm.id ORDER BY 1`,
+          JOIN products p ON p."tradeMarkId" = tm.id WHERE p."isActive" ORDER BY 1`,
       this.qr<{ v: string }[]>`
-          SELECT DISTINCT child_name AS v FROM products WHERE child_name IS NOT NULL ORDER BY 1`,
+          SELECT DISTINCT child_name AS v FROM products WHERE child_name IS NOT NULL AND "isActive" ORDER BY 1`,
       this.qr<{ code: string; name: string }[]>`
           SELECT DISTINCT ON (p.code) p.code, p.name FROM products p
-          WHERE EXISTS (SELECT 1 FROM invoice_details d WHERE d."productId" = p.id)
+          WHERE p."isActive" AND EXISTS (SELECT 1 FROM invoice_details d WHERE d."productId" = p.id)
           ORDER BY p.code, p.id`,
       this.qr<{ v: string }[]>`
-          WITH ${this.base.custCte(Prisma.sql`c.id IN (SELECT DISTINCT "customerId" FROM invoices WHERE status <> 2 AND "purchaseDate" >= now() - interval '2 year')`)}
+          WITH ${this.base.custCte(Prisma.sql`c."isActive" AND c.id IN (SELECT DISTINCT "customerId" FROM invoices WHERE status <> 2 AND "purchaseDate" >= now() - interval '2 year')`)}
           SELECT DISTINCT parent_name AS v FROM cust WHERE parent_name IS NOT NULL ORDER BY 1`,
       this.qr<{ v: string }[]>`
           SELECT name AS v FROM customer_groups
           WHERE name IN ('Khách chuỗi','Khách lẻ','Khách buôn') ORDER BY 1`,
       this.qr<{ code: string; name: string }[]>`
           SELECT DISTINCT c.code, c.name FROM customer_demands cd
-          JOIN customers c ON c.id = cd.customer_id ORDER BY c.name`,
+          JOIN customers c ON c.id = cd.customer_id WHERE c."isActive" ORDER BY c.name`,
     ]);
     return {
       productTypes: types.map((r) => r.v),
@@ -1275,7 +1276,7 @@ export class AnalyticsKinhDoanhService {
   async debtOver30(q: KdQueryDto, today: IsoDate) {
     const lake = await this.base.dataLakeReady();
     const r = await this.qr<{ debt: number; n: number }[]>`
-      WITH c AS (SELECT DISTINCT ON (code) id, code, "totalDebt" FROM customers ORDER BY code, id),
+      WITH c AS (SELECT DISTINCT ON (code) id, code, "totalDebt" FROM customers WHERE "isActive" ORDER BY code, id),
       last AS (
         SELECT code, MAX(d) AS d FROM (
           SELECT c.code, (i."purchaseDate" + interval '7 hour')::date AS d
@@ -2284,8 +2285,8 @@ export class AnalyticsKinhDoanhService {
       FROM customer_demands d
       JOIN customer_demand_months dm ON dm.demand_id = d.id
       JOIN customer_demand_lines l ON l.demand_month_id = dm.id
-      JOIN customers c ON c.id = d.customer_id
-      JOIN products pr ON pr.id = l.product_id
+      JOIN customers c ON c.id = d.customer_id AND c."isActive"
+      JOIN products pr ON pr.id = l.product_id AND pr."isActive"
       WHERE dm.status <> 'CANCELLED' AND dm.demand_month BETWEEN ${from}::date AND ${to}::date
         AND extract(month FROM dm.demand_month)::int = ANY(${p.months}::int[]) ${custCond}
       GROUP BY 1, 2, 3, 4`;
@@ -2618,7 +2619,7 @@ export class AnalyticsKinhDoanhService {
         SUM(pi.reserved)::float8 AS reserved, SUM(pi."nearExpiryQuantity")::float8 AS near,
         SUM(pi."damagedQuantity")::float8 AS damaged, SUM(pi."promoQuantity")::float8 AS promo
       FROM inventories pi
-      JOIN products p ON p.id = pi."productId"
+      JOIN products p ON p.id = pi."productId" AND p."isActive"
       LEFT JOIN branches b ON b.id = pi."branchId"
       LEFT JOIN prod pr ON pr.code = p.code
       WHERE true ${this.prodConds(q, Prisma.raw('p.code'))}

@@ -9,6 +9,7 @@ import {
   ANALYTICS_STATEMENT_TIMEOUT,
   AnalyticsReportsService,
   rangeDaysJoin,
+  ACTIVE_PRODUCT,
 } from '../analytics-reports.service';
 import {
   CALENDAR_START,
@@ -834,12 +835,12 @@ export class AnalyticsQuanTriService {
         SELECT DISTINCT ON (p.code) p.code, p.name, pr.product_type, p.middle_name AS origin,
                pr.category, pr.brand, pr.group2026
         FROM products p JOIN prod pr ON pr.code = p.code
-        WHERE lower(pr.product_type) IN (${Prisma.join(typesLower)})
+        WHERE p."isActive" AND lower(pr.product_type) IN (${Prisma.join(typesLower)})
         ORDER BY p.code, p.id`,
       this.prisma.$queryRaw<
         { parent_name: string; customer_type: string | null; is_vip: boolean }[]
       >`
-        WITH ${this.base.custCte(Prisma.sql`c.code IN (
+        WITH ${this.base.custCte(Prisma.sql`c."isActive" AND c.code IN (
           SELECT c2.code FROM invoices i JOIN customers c2 ON c2.id = i."customerId"
           WHERE i.status <> 2 AND (i."purchaseDate" + interval '7 hour')::date >= ${since}::date
           ${oldCustomers})`)}
@@ -1041,7 +1042,7 @@ export class AnalyticsQuanTriService {
         JOIN seller s ON s.kiot_viet_id::text = o."soldById"
         JOIN customers c ON c.code = o."customerCode"
         JOIN chan ch ON ch.id = COALESCE(o."saleChannelId", 1)
-        WHERE o.status <> 2`
+        WHERE o.status <> 2 AND c."isActive"`
       : Prisma.empty;
 
     // Dòng hàng chỉ giữ các cột cần dùng để CTE (vật chất hoá) nằm gọn trong bộ nhớ.
@@ -1055,7 +1056,9 @@ export class AnalyticsQuanTriService {
                COALESCE(od.quantity, 0)::float8 AS quantity, COALESCE(od.price, 0)::float8 AS price,
                COALESCE(od.discount, 0)::float8 AS discount
         FROM data_lake.invoice_detail od
-        JOIN invx x ON NOT x.is_new AND x.code = od."invoiceCode"`
+        JOIN invx x ON NOT x.is_new AND x.code = od."invoiceCode"
+        LEFT JOIN products p ON p.code = od."productCode"
+        WHERE ${ACTIVE_PRODUCT}`
       : Prisma.empty;
 
     // Lịch sử mua (cho Is New Customer This Month / Customer_Status): mọi hoá đơn
@@ -1143,7 +1146,7 @@ export class AnalyticsQuanTriService {
         FROM return_orders r
         LEFT JOIN invoices i ON i.id = r."invoiceId"
         JOIN seller s ON s.user_id = COALESCE(i."soldById", r."createdBy")
-        JOIN customers c ON c.id = COALESCE(i."customerId", r."customerId")
+        JOIN customers c ON c.id = COALESCE(i."customerId", r."customerId") AND c."isActive"
         JOIN chan ch ON ch.id = COALESCE(i."saleChannelId", 1)
         WHERE r.status <> 5
           AND (r."createdAt" + interval '7 hour')::date BETWEEN ${CALENDAR_START}::date AND ${today}::date
@@ -1169,6 +1172,7 @@ export class AnalyticsQuanTriService {
         LEFT JOIN prod pr ON pr.code = rd."productCode"
         LEFT JOIN pinfo pi ON pi.code = rd."productCode"
         LEFT JOIN pcost pc ON pc.code = rd."productCode"
+        WHERE COALESCE(pi.is_active, true)
       )`
       : Prisma.empty;
 
@@ -1176,7 +1180,7 @@ export class AnalyticsQuanTriService {
       ${this.base.prodCte()},
       pinfo AS (
         SELECT DISTINCT ON (p.code) p.code, p.name, p.middle_name AS origin,
-               COALESCE(p."basePrice", 0)::float8 AS base_price
+               COALESCE(p."basePrice", 0)::float8 AS base_price, p."isActive" AS is_active
         FROM products p ORDER BY p.code, p.id
       ),
       pcost AS (
@@ -1211,13 +1215,27 @@ export class AnalyticsQuanTriService {
         JOIN seller s ON s.user_id = i."soldById"
         JOIN customers c ON c.id = i."customerId"
         JOIN chan ch ON ch.id = COALESCE(i."saleChannelId", 1)
-        WHERE i.status <> 2
+        WHERE i.status <> 2 AND c."isActive"
         ${oldInvoices}
       ),
-      inv_raw AS (
+      inv_rng AS (
         SELECT * FROM inv_all x
         WHERE x.d >= ${CALENDAR_START}::date AND x.d <= ${today}::date AND ${dateCond}
       ),
+      -- Chỉ tính sản phẩm còn hoạt động (trừ tiền dòng ngừng hoạt động khỏi tổng hoá đơn).
+      ${this.base.inactiveLineCtes('inv_rng', lake)},
+      inv_raw AS (${this.base.activeInvoiceSelect('inv_rng', lake, [
+        'id',
+        'code',
+        'd',
+        'total',
+        'discount',
+        'ok',
+        'customer_code',
+        'is_new',
+        'team_id',
+        'group_source',
+      ])}),
       ${returns}
       ${hist}
       ${this.base.custCte(custScope)},
@@ -1245,6 +1263,7 @@ export class AnalyticsQuanTriService {
         FROM invoice_details d
         JOIN invx x ON x.is_new AND x.id = d."invoiceId"
         LEFT JOIN products p ON p.id = d."productId"
+        WHERE ${ACTIVE_PRODUCT}
         ${oldLines}
       ),
       line AS (

@@ -98,6 +98,20 @@ export function analyticsSettings(sql: Prisma.Sql): Prisma.Sql {
         set_config('statement_timeout', ${ANALYTICS_STATEMENT_TIMEOUT}, true)`;
 }
 
+/**
+ * Báo cáo Phân tích chỉ tính khách / sản phẩm CÒN HOẠT ĐỘNG (giống bộ lọc, chỉ liệt kê
+ * mục đang hoạt động). Hoá đơn không có khách / dòng không khớp sản phẩm vẫn tính.
+ * Dùng với LEFT JOIN customers c / products p.
+ */
+export const ACTIVE_CUSTOMER = Prisma.sql`(c.id IS NULL OR c."isActive")`;
+export const ACTIVE_PRODUCT = Prisma.sql`(p.id IS NULL OR p."isActive")`;
+/** Cột gom theo hoá đơn: tiền + số dòng của sản phẩm ngừng hoạt động, tổng số dòng (alias dòng = t, sản phẩm = p). */
+const INACT_COLS = (t: Prisma.Sql) => Prisma.sql`
+  COALESCE(SUM(ROUND(COALESCE(${t}.quantity, 0) * COALESCE(${t}.price, 0) - COALESCE(${t}.quantity, 0) * COALESCE(${t}.discount, 0)))
+    FILTER (WHERE p."isActive" IS FALSE), 0)::float8 AS off_amount,
+  COUNT(*)::int AS n_all,
+  COUNT(*) FILTER (WHERE p."isActive" IS FALSE)::int AS n_off`;
+
 /** Danh sách khách cha trong bộ nhớ được tính lại sau 10 phút. */
 const PARENT_MAP_TTL = 10 * 60_000;
 
@@ -316,7 +330,7 @@ export class AnalyticsReportsService implements OnApplicationBootstrap {
         UNION SELECT unnest(ARRAY['Nhóm B','Nhóm C','Chưa Phân Loại'])
         ORDER BY 1`,
         this.prisma.$queryRaw<{ name: string }[]>`
-        WITH ${this.custCte(Prisma.sql`c.id IN (SELECT "customerId" FROM vip)`)}
+        WITH ${this.custCte(Prisma.sql`c."isActive" AND c.id IN (SELECT "customerId" FROM vip)`)}
         SELECT DISTINCT parent_name AS name FROM cust WHERE parent_name IS NOT NULL ORDER BY 1`,
         lake
           ? this.prisma.$queryRaw<{ name: string }[]>`
@@ -610,7 +624,7 @@ export class AnalyticsReportsService implements OnApplicationBootstrap {
         FROM data_lake.invoice o
         JOIN seller s ON s.kiot_viet_id::text = o."soldById"
         LEFT JOIN customers c ON c.code = o."customerCode"
-        WHERE o.status <> 2`
+        WHERE o.status <> 2 AND ${ACTIVE_CUSTOMER}`
       : Prisma.empty;
 
     const lineCols = Prisma.sql`x.code, x.d, x.ok, x.customer_code, x.parent_name, x.customer_type, x.is_vip`;
@@ -621,7 +635,9 @@ export class AnalyticsReportsService implements OnApplicationBootstrap {
                COALESCE(od.quantity, 0)::float8 AS quantity,
                (COALESCE(od.quantity, 0) * COALESCE(od.price, 0) - COALESCE(od.quantity, 0) * COALESCE(od.discount, 0))::float8 AS sub_total
         FROM data_lake.invoice_detail od
-        JOIN invx x ON NOT x.is_new AND x.code = od."invoiceCode"`
+        JOIN invx x ON NOT x.is_new AND x.code = od."invoiceCode"
+        LEFT JOIN products p ON p.code = od."productCode"
+        WHERE ${ACTIVE_PRODUCT}`
       : Prisma.empty;
 
     const q2 = q as { region?: string; customerType?: string };
@@ -646,13 +662,15 @@ export class AnalyticsReportsService implements OnApplicationBootstrap {
         FROM invoices i
         JOIN seller s ON s.user_id = i."soldById"
         LEFT JOIN customers c ON c.id = i."customerId"
-        WHERE i.status <> 2
+        WHERE i.status <> 2 AND ${ACTIVE_CUSTOMER}
         ${oldInvoices}
       ),
-      inv_raw AS (
+      inv_rng AS (
         SELECT * FROM inv_all x
         WHERE x.d >= ${CALENDAR_START}::date AND x.d <= ${todayVn()}::date AND ${dateCond}
       ),
+      ${this.inactiveLineCtes('inv_rng', lake)},
+      inv_raw AS (${this.activeInvoiceSelect('inv_rng', lake, ['id', 'code', 'd', 'total', 'ok', 'customer_code', 'is_new'])}),
       ${this.custCte(Prisma.sql`c.code IN (SELECT customer_code FROM inv_raw WHERE customer_code IS NOT NULL)`)},
       invx AS (
         SELECT x.*, cu.parent_name, cu.customer_type, cu.is_vip, cu.region
@@ -667,6 +685,7 @@ export class AnalyticsReportsService implements OnApplicationBootstrap {
         FROM invoice_details d
         JOIN invx x ON x.is_new AND x.id = d."invoiceId"
         LEFT JOIN products p ON p.id = d."productId"
+        WHERE ${ACTIVE_PRODUCT}
         ${oldLines}
       ),
       line AS (
@@ -677,6 +696,55 @@ export class AnalyticsReportsService implements OnApplicationBootstrap {
         LEFT JOIN prod pr ON pr.code = l.product_code
         ${prodWhere}
       )`;
+  }
+
+  /**
+   * CTE inact_new / inact_old: theo từng hoá đơn của CTE `rng` (cột id, code, is_new) —
+   * tiền + số dòng của sản phẩm ngừng hoạt động và tổng số dòng hàng.
+   */
+  inactiveLineCtes(rng: string, lake: boolean): Prisma.Sql {
+    const r = Prisma.raw(rng);
+    const old = lake
+      ? Prisma.sql`,
+      inact_old AS (
+        SELECT od."invoiceCode" AS code, ${INACT_COLS(Prisma.sql`od`)}
+        FROM data_lake.invoice_detail od
+        JOIN ${r} x ON NOT x.is_new AND x.code = od."invoiceCode"
+        LEFT JOIN products p ON p.code = od."productCode"
+        GROUP BY od."invoiceCode"
+      )`
+      : Prisma.empty;
+    return Prisma.sql`
+      inact_new AS (
+        SELECT d."invoiceId" AS id, ${INACT_COLS(Prisma.sql`d`)}
+        FROM invoice_details d
+        JOIN ${r} x ON x.is_new AND x.id = d."invoiceId"
+        LEFT JOIN products p ON p.id = d."productId"
+        GROUP BY d."invoiceId"
+      )${old}`;
+  }
+
+  /**
+   * SELECT hoá đơn từ CTE `rng` chỉ tính sản phẩm còn hoạt động: total trừ tiền các dòng
+   * sản phẩm ngừng hoạt động; bỏ hoá đơn chỉ toàn sản phẩm ngừng hoạt động.
+   * cols: cột giữ lại theo thứ tự (phải có 'total'). Cần inactiveLineCtes(rng) đứng trước.
+   */
+  activeInvoiceSelect(rng: string, lake: boolean, cols: string[]): Prisma.Sql {
+    const pick = (c: string) =>
+      lake
+        ? Prisma.raw(`COALESCE(an.${c}, ao.${c}, 0)`)
+        : Prisma.raw(`COALESCE(an.${c}, 0)`);
+    const list = cols.map((c) =>
+      c === 'total'
+        ? Prisma.sql`(x.total - ${pick('off_amount')})::float8 AS total`
+        : Prisma.raw(`x.${c}`),
+    );
+    return Prisma.sql`
+      SELECT ${Prisma.join(list, ', ')}
+      FROM ${Prisma.raw(rng)} x
+      LEFT JOIN inact_new an ON x.is_new AND an.id = x.id
+      ${lake ? Prisma.sql`LEFT JOIN inact_old ao ON NOT x.is_new AND ao.code = x.code` : Prisma.empty}
+      WHERE NOT (${pick('n_all')} > 0 AND ${pick('n_all')} = ${pick('n_off')})`;
   }
 
   invMetrics(): Prisma.Sql {
