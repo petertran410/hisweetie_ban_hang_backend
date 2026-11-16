@@ -1820,6 +1820,8 @@ model LeadForm {
   cskhUserId     Int?                 @map("cskh_user_id")
   successMessage String?              @map("success_message") @db.Text
   isActive       Boolean              @default(true) @map("is_active")
+  /// Form đang gắn với QR chung leadform.hisweetievietnam.com — tối đa 1 form
+  isQrTarget     Boolean              @default(false) @map("is_qr_target")
   createdById    Int                  @map("created_by_id")
   createdAt      DateTime             @default(now()) @map("created_at")
   updatedAt      DateTime             @updatedAt @map("updated_at")

@@ -9,15 +9,17 @@ import {
   Post,
   Query,
   Req,
+  Res,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
-import { Request } from 'express';
+import { Request, Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { Public } from '../auth/decorators/public.decorator';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { LeadFormsService } from './lead-forms.service';
 import {
+  LeadFormQrTargetDto,
   LeadFormSubmissionsQueryDto,
   SubmitLeadFormDto,
   UpsertLeadFormDto,
@@ -57,6 +59,17 @@ export class LeadFormsController {
     return this.service.update(id, dto, this.actor(req));
   }
 
+  /** Gắn / bỏ gắn form với QR chung — chỉ 1 form được gắn. */
+  @Patch(':id/qr-target')
+  @RequirePermissions('leads:update')
+  setQrTarget(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: LeadFormQrTargetDto,
+    @Req() req: any,
+  ) {
+    return this.service.setQrTarget(id, dto.isQrTarget, this.actor(req));
+  }
+
   @Delete(':id')
   @RequirePermissions('leads:update')
   remove(@Param('id', ParseIntPipe) id: number, @Req() req: any) {
@@ -79,6 +92,16 @@ export class LeadFormsController {
 @Controller('public/lead-forms')
 export class PublicLeadFormsController {
   constructor(private readonly service: LeadFormsService) {}
+
+  /**
+   * QR chung: Cloudflare chuyển leadform.hisweetievietnam.com về đây → 302 tới form đang gắn.
+   * 302 + no-store (không dùng 301) để đổi form là QR đổi theo ngay, trình duyệt không nhớ đích cũ.
+   */
+  @Get('qr/redirect')
+  async qrRedirect(@Res() res: Response) {
+    res.setHeader('Cache-Control', 'no-store');
+    res.redirect(302, await this.service.qrRedirectUrl());
+  }
 
   @Get(':slug')
   get(@Param('slug') slug: string) {
