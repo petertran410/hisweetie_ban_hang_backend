@@ -54,3 +54,48 @@ describe('TransfersService.getInTransitSummary', () => {
     expect(findMany).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Modal tồn kho ở trang Bán hàng gọi không kèm branchId rồi gom theo
+ * toBranchId — thiếu field này thì mọi chi nhánh hiện 0.
+ */
+describe('TransfersService.getInTransitDetailByProduct', () => {
+  it('trả toBranchId/fromBranchId, tổng khớp getInTransitSummary', async () => {
+    const findMany = jest.fn().mockResolvedValue([
+      {
+        sendQuantity: 200,
+        receivedQuantity: 0,
+        transfer: {
+          id: 9,
+          code: 'TRF002677',
+          fromBranchId: 6,
+          toBranchId: 1,
+          fromBranchName: 'Kho Hà Nội',
+          toBranchName: 'Kho Sài Gòn',
+          transferredDate: new Date('2026-11-14T10:41:09Z'),
+          createdAt: new Date('2026-11-14T10:40:00Z'),
+          status: 2,
+        },
+      },
+    ]);
+    const service = new TransfersService(
+      { transferDetail: { findMany } } as any,
+      {} as any,
+      {} as any,
+    );
+
+    const res = await service.getInTransitDetailByProduct(7526);
+
+    expect(findMany.mock.calls[0][0].where).toEqual({
+      productId: 7526,
+      transfer: { status: 2 },
+    });
+    expect(res.data[0]).toMatchObject({
+      code: 'TRF002677',
+      fromBranchId: 6,
+      toBranchId: 1,
+      quantity: 200,
+    });
+    expect(res.sumQuantity).toBe(200);
+  });
+});
