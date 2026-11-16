@@ -244,3 +244,64 @@ describe('LeadFormsService', () => {
     expect(data.formSubmissions.create.answers).toContainEqual({ key: 'category', label: 'Bạn là', value: 'Khách chuỗi' });
   });
 });
+
+describe('LeadFormsService — QR chung', () => {
+  it('gắn form B: bỏ gắn form A đang gắn trong cùng transaction, ghi lịch sử', async () => {
+    const { service, prisma, auditLogs } = makeService();
+    prisma.leadForm.findFirst = jest
+      .fn()
+      .mockResolvedValue({ id: 1, name: 'Form A' });
+    prisma.leadForm.updateMany = jest.fn().mockReturnValue('unset');
+    prisma.leadForm.update = jest.fn().mockReturnValue('set');
+    prisma.$transaction = jest.fn().mockResolvedValue([]);
+
+    await service.setQrTarget(3, true, { id: 7, name: 'CSKH' });
+
+    expect(prisma.leadForm.updateMany).toHaveBeenCalledWith({
+      where: { isQrTarget: true, id: { not: 3 } },
+      data: { isQrTarget: false },
+    });
+    expect(prisma.leadForm.update).toHaveBeenCalledWith({
+      where: { id: 3 },
+      data: { isQrTarget: true },
+    });
+    expect(prisma.$transaction).toHaveBeenCalledWith(['unset', 'set']);
+    expect(auditLogs.create.mock.calls[0][0].message).toContain('thay "Form A"');
+  });
+
+  it('bỏ gắn: chỉ cập nhật form đó, không đụng form khác', async () => {
+    const { service, prisma } = makeService();
+    prisma.leadForm.updateMany = jest.fn();
+    prisma.leadForm.update = jest.fn().mockReturnValue('set');
+    prisma.$transaction = jest.fn().mockResolvedValue([]);
+
+    await service.setQrTarget(3, false, { id: 7, name: 'CSKH' });
+
+    expect(prisma.leadForm.updateMany).not.toHaveBeenCalled();
+    expect(prisma.$transaction).toHaveBeenCalledWith(['set']);
+  });
+
+  it('đích chuyển hướng: form đang gắn và đang mở → /f/<slug>', async () => {
+    const { service, prisma } = makeService();
+    prisma.leadForm.findFirst = jest
+      .fn()
+      .mockResolvedValue({ slug: 'hopca', isActive: true });
+    await expect(service.qrRedirectUrl()).resolves.toBe(
+      'https://pos.test/f/hopca',
+    );
+  });
+
+  it('đích chuyển hướng: chưa gắn form hoặc form đã tắt → /f/closed', async () => {
+    const { service, prisma } = makeService();
+    prisma.leadForm.findFirst = jest.fn().mockResolvedValue(null);
+    await expect(service.qrRedirectUrl()).resolves.toBe(
+      'https://pos.test/f/closed',
+    );
+    prisma.leadForm.findFirst = jest
+      .fn()
+      .mockResolvedValue({ slug: 'hopca', isActive: false });
+    await expect(service.qrRedirectUrl()).resolves.toBe(
+      'https://pos.test/f/closed',
+    );
+  });
+});
