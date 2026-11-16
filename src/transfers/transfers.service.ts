@@ -2998,7 +2998,11 @@ export class TransfersService {
     return result;
   }
 
-  /** Danh sách phiếu Đang chuyển chứa sản phẩm (modal khi bấm số "Đang đi đường"). */
+  /**
+   * Danh sách phiếu Đang chuyển chứa sản phẩm (modal khi bấm số "Đang đi đường").
+   * Không truyền branchId → mọi tuyến; modal tồn kho ở trang Bán hàng gom theo
+   * toBranchId để ra SL đang về từng chi nhánh.
+   */
   async getInTransitDetailByProduct(productId: number, branchId?: number) {
     const details = await this.prisma.transferDetail.findMany({
       where: {
@@ -3015,6 +3019,8 @@ export class TransfersService {
           select: {
             id: true,
             code: true,
+            fromBranchId: true,
+            toBranchId: true,
             fromBranchName: true,
             toBranchName: true,
             transferredDate: true,
@@ -3031,6 +3037,8 @@ export class TransfersService {
       return {
         transferId: d.transfer.id,
         code: d.transfer.code,
+        fromBranchId: d.transfer.fromBranchId,
+        toBranchId: d.transfer.toBranchId,
         fromBranchName: d.transfer.fromBranchName,
         toBranchName: d.transfer.toBranchName,
         transferredDate: d.transfer.transferredDate?.toISOString() ?? null,

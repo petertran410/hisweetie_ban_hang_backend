@@ -180,9 +180,13 @@ export class TransfersController {
     );
   }
 
-  /** Cột "Đang đi đường" ở danh sách hàng hóa (phiếu Đang chuyển tới chi nhánh). */
+  /**
+   * Cột "Đang đi đường" ở danh sách hàng hóa (phiếu Đang chuyển tới chi nhánh).
+   * Mở cho products:view: người xem hàng hóa thấy số liệu dù không có quyền
+   * Chuyển hàng (khi đó UI không cho bấm sang trang phiếu).
+   */
   @Get('in-transit-summary')
-  @RequirePermissions('transfers:view')
+  @RequireAnyPermission('products:view', 'transfers:view')
   getInTransitSummary(
     @Query('productIds') productIds?: string,
     @Query('branchId') branchId?: string,
@@ -198,7 +202,7 @@ export class TransfersController {
   }
 
   @Get('in-transit-detail')
-  @RequirePermissions('transfers:view')
+  @RequireAnyPermission('products:view', 'transfers:view')
   getInTransitDetail(
     // Đọc từng tham số (không dùng DTO): ValidationPipe forbidNonWhitelisted
     // sẽ chặn branchId nếu gộp vào ProductTransferQueryDto.
