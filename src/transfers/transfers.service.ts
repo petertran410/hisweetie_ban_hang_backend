@@ -2967,6 +2967,86 @@ export class TransfersService {
     return { data, total: data.length, sumQuantity };
   }
 
+  /**
+   * Cột "Đang đi đường" ở danh sách hàng hóa: tổng SL trên phiếu chuyển hàng
+   * đang ở trạng thái Đang chuyển (status = 2), mọi tuyến. Có branchId → chỉ
+   * phiếu chuyển TỚI chi nhánh đó (hàng sắp về), giống "Đặt NCC".
+   *
+   * Cùng quy tắc với getPlanningSummary: đếm toàn bộ sendQuantity, không trừ
+   * receivedQuantity (dữ liệu bẩn trên phiếu Đang chuyển), không đếm phiếu
+   * Đã nhận (phần nhận thiếu đã hoàn về tồn kho bên gửi).
+   */
+  async getInTransitSummary(productIds: number[], branchId?: number) {
+    const result: Record<number, number> = {};
+    if (!productIds.length) return result;
+    for (const id of productIds) result[id] = 0;
+
+    const details = await this.prisma.transferDetail.findMany({
+      where: {
+        productId: { in: productIds },
+        transfer: {
+          status: 2,
+          ...(branchId ? { toBranchId: branchId } : {}),
+        },
+      },
+      select: { productId: true, sendQuantity: true },
+    });
+
+    for (const d of details) {
+      result[d.productId] += Math.max(0, Number(d.sendQuantity || 0));
+    }
+    return result;
+  }
+
+  /** Danh sách phiếu Đang chuyển chứa sản phẩm (modal khi bấm số "Đang đi đường"). */
+  async getInTransitDetailByProduct(productId: number, branchId?: number) {
+    const details = await this.prisma.transferDetail.findMany({
+      where: {
+        productId,
+        transfer: {
+          status: 2,
+          ...(branchId ? { toBranchId: branchId } : {}),
+        },
+      },
+      select: {
+        sendQuantity: true,
+        receivedQuantity: true,
+        transfer: {
+          select: {
+            id: true,
+            code: true,
+            fromBranchName: true,
+            toBranchName: true,
+            transferredDate: true,
+            createdAt: true,
+            status: true,
+          },
+        },
+      },
+      orderBy: { transfer: { createdAt: 'desc' } },
+    });
+
+    const data = details.map((d) => {
+      const sendQty = Number(d.sendQuantity || 0);
+      return {
+        transferId: d.transfer.id,
+        code: d.transfer.code,
+        fromBranchName: d.transfer.fromBranchName,
+        toBranchName: d.transfer.toBranchName,
+        transferredDate: d.transfer.transferredDate?.toISOString() ?? null,
+        createdAt: d.transfer.createdAt.toISOString(),
+        sendQuantity: sendQty,
+        receivedQuantity: Number(d.receivedQuantity || 0),
+        quantity: Math.max(0, sendQty),
+        status: d.transfer.status,
+        statusLabel: 'Đang chuyển',
+      };
+    });
+
+    const sumQuantity = data.reduce((sum, r) => sum + r.quantity, 0);
+    return { data, total: data.length, sumQuantity };
+  }
+
   async getPromisedHNByProduct(productId: number) {
     const { branchHNId } = await this.resolvePlanningBranchIds();
     const items = await this.prisma.orderItem.findMany({

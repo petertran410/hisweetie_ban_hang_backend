@@ -1,4 +1,12 @@
-import { IsOptional, IsBoolean } from 'class-validator';
+import {
+  IsOptional,
+  IsBoolean,
+  IsArray,
+  ArrayMaxSize,
+  IsInt,
+  Min,
+  Max,
+} from 'class-validator';
 
 export class UpdateSettingsDto {
   @IsOptional()
@@ -36,4 +44,27 @@ export class UpdateSettingsDto {
   @IsOptional()
   @IsBoolean()
   contractDocumensoSyncCronEnabled?: boolean;
+
+  /** User nhận tin Lark khi KH đổi mã số thuế (rỗng = tắt). */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  larkTaxCodeNotifyUserIds?: number[];
+
+  /** User được giao task Lark khi có KH mới (rỗng = tắt). */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsInt({ each: true })
+  @Min(1, { each: true })
+  larkNewCustomerTaskUserIds?: number[];
+
+  /** Hạn task KH mới = lúc tạo + N ngày. */
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(30)
+  larkNewCustomerTaskDueDays?: number;
 }

@@ -11,6 +11,7 @@ describe('CustomersService.getShippingFeeHistory', () => {
       {} as any,
       {} as any,
       {} as any,
+      {} as any,
     );
   };
 
@@ -127,5 +128,74 @@ describe('CustomersService.getShippingFeeHistory', () => {
         take: 20,
       }),
     );
+  });
+});
+
+describe('CustomersService.update → thông báo Lark đổi mã số thuế', () => {
+  const buildService = (before: any, after: any) => {
+    const notify = {
+      notifyTaxCodeChangedAsync: jest.fn(),
+      createNewCustomerTaskAsync: jest.fn(),
+    };
+    const tx = { customer: { update: jest.fn().mockResolvedValue(after) } };
+    const prisma = {
+      customer: { findUnique: jest.fn().mockResolvedValue(before) },
+      customerGroupDetail: { findMany: jest.fn().mockResolvedValue([]) },
+      user: { findUnique: jest.fn().mockResolvedValue({ name: 'Bình' }) },
+      $transaction: jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
+    };
+    const service = new CustomersService(
+      prisma as any,
+      { create: jest.fn() } as any,
+      { syncSingleAsync: jest.fn() } as any,
+      {} as any,
+      notify as any,
+    );
+    return { service, notify };
+  };
+
+  const base = { id: 7, code: 'KH7', name: 'A', isActive: true };
+
+  it('gửi khi mã số thuế đổi', async () => {
+    const { service, notify } = buildService(
+      { ...base, taxCode: '0101' },
+      { ...base, taxCode: '0202' },
+    );
+
+    await service.update(7, { taxCode: '0202' } as any, 3);
+
+    expect(notify.notifyTaxCodeChangedAsync).toHaveBeenCalledWith({
+      customerId: 7,
+      oldTaxCode: '0101',
+      newTaxCode: '0202',
+      actorUserId: 3,
+    });
+  });
+
+  it('gửi khi thêm mã số thuế lần đầu', async () => {
+    const { service, notify } = buildService(
+      { ...base, taxCode: null },
+      { ...base, taxCode: '0303' },
+    );
+
+    await service.update(7, { taxCode: '0303' } as any);
+
+    expect(notify.notifyTaxCodeChangedAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it('không gửi khi chỉ sửa trường khác hoặc MST chỉ khác khoảng trắng / null ↔ rỗng', async () => {
+    const cases = [
+      [{ taxCode: '0101' }, { taxCode: '0101', name: 'B' }],
+      [{ taxCode: '0101' }, { taxCode: ' 0101 ' }],
+      [{ taxCode: null }, { taxCode: '' }],
+    ];
+    for (const [before, after] of cases) {
+      const { service, notify } = buildService(
+        { ...base, ...before },
+        { ...base, ...after },
+      );
+      await service.update(7, { name: 'B' } as any);
+      expect(notify.notifyTaxCodeChangedAsync).not.toHaveBeenCalled();
+    }
   });
 });

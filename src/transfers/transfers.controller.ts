@@ -180,6 +180,41 @@ export class TransfersController {
     );
   }
 
+  /** Cột "Đang đi đường" ở danh sách hàng hóa (phiếu Đang chuyển tới chi nhánh). */
+  @Get('in-transit-summary')
+  @RequirePermissions('transfers:view')
+  getInTransitSummary(
+    @Query('productIds') productIds?: string,
+    @Query('branchId') branchId?: string,
+  ) {
+    const ids = (productIds || '')
+      .split(',')
+      .map((s) => Number(s.trim()))
+      .filter((n) => Number.isInteger(n) && n > 0);
+    return this.transfersService.getInTransitSummary(
+      ids,
+      branchId ? +branchId : undefined,
+    );
+  }
+
+  @Get('in-transit-detail')
+  @RequirePermissions('transfers:view')
+  getInTransitDetail(
+    // Đọc từng tham số (không dùng DTO): ValidationPipe forbidNonWhitelisted
+    // sẽ chặn branchId nếu gộp vào ProductTransferQueryDto.
+    @Query('productId') productId: string,
+    @Query('branchId') branchId?: string,
+  ) {
+    const id = Number(productId);
+    if (!Number.isInteger(id) || id <= 0) {
+      return { data: [], total: 0, sumQuantity: 0 };
+    }
+    return this.transfersService.getInTransitDetailByProduct(
+      id,
+      branchId ? +branchId : undefined,
+    );
+  }
+
   @Get('promised-hn-by-product')
   @RequireAnyPermission('transfer_planning:view', 'transfers:view')
   getPromisedHNByProduct(@Query() query: ProductTransferQueryDto) {

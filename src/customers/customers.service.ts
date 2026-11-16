@@ -27,6 +27,7 @@ import { ImportBalanceAdjustmentsDto } from './dto/import-balance-adjustment.dto
 import { Response } from 'express';
 import * as ExcelJS from 'exceljs';
 import { LarkCustomerSyncService } from '../lark-sync/services/lark-customer-sync.service';
+import { LarkCustomerNotificationService } from '../lark-sync/services/lark-customer-notification.service';
 import { INVOICE_STATUS } from '../invoices/dto';
 
 /** Gộp `groupId` (cũ, 1 nhóm) và `groupIds` (nhiều nhóm) thành danh sách id duy nhất. */
@@ -59,6 +60,7 @@ export class CustomersService {
     private auditLogsService: AuditLogsService,
     private larkCustomerSync: LarkCustomerSyncService,
     private tiktokOutbox: TiktokEventsOutboxService,
+    private larkCustomerNotification: LarkCustomerNotificationService,
   ) {}
 
   async exportCustomers(
@@ -958,6 +960,11 @@ export class CustomersService {
 
     // Đẩy khách hàng mới lên Lark (fire-and-forget, chỉ KH đang hoạt động)
     this.larkCustomerSync.syncSingleAsync(customer.id);
+    // Tạo task Lark cho người được chọn ở /cai-dat/thong-bao-lark (fire-and-forget)
+    this.larkCustomerNotification.createNewCustomerTaskAsync(
+      customer.id,
+      userId,
+    );
 
     return {
       ...customer,
@@ -1165,6 +1172,19 @@ export class CustomersService {
 
     // Đẩy thay đổi khách hàng lên Lark (fire-and-forget, chỉ KH đang hoạt động)
     this.larkCustomerSync.syncSingleAsync(customer.id);
+
+    // Đổi mã số thuế (kể cả thêm mới / xoá trắng) → nhắn riêng người được chọn ở /cai-dat/thong-bao-lark
+    const normTaxCode = (v: string | null | undefined) => (v ?? '').trim();
+    if (
+      normTaxCode(existingCustomer.taxCode) !== normTaxCode(customer.taxCode)
+    ) {
+      this.larkCustomerNotification.notifyTaxCodeChangedAsync({
+        customerId: customer.id,
+        oldTaxCode: existingCustomer.taxCode,
+        newTaxCode: customer.taxCode,
+        actorUserId: userId,
+      });
+    }
 
     return {
       ...customer,
@@ -2852,6 +2872,19 @@ export class CustomersService {
     );
     await workbook.xlsx.write(res);
     res.end();
+  }
+
+  /**
+   * Sale PIC của khách (lưu ở chính sách công nợ). POS gọi ngay lúc bấm tạo
+   * đơn/hóa đơn để chặn khách chưa gắn Sale PIC — chỉ cần quyền xem khách,
+   * không cần quyền công nợ như /debt-tracking/policy/:id.
+   */
+  async getSalePic(customerId: number) {
+    const policy = await this.prisma.customerDebtPolicy.findUnique({
+      where: { customerId },
+      select: { salePicId: true },
+    });
+    return { salePicId: policy?.salePicId ?? null };
   }
 
   async getShippingFeeHistory(customerId: number) {
