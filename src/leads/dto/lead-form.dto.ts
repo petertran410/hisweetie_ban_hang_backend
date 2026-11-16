@@ -114,6 +114,12 @@ export class UpsertLeadFormDto {
   isActive?: boolean;
 }
 
+/** Gắn / bỏ gắn form với QR chung (leadform.hisweetievietnam.com). */
+export class LeadFormQrTargetDto {
+  @IsBoolean()
+  isQrTarget: boolean;
+}
+
 export class SubmitLeadFormDto {
   /** key trường → giá trị (chuỗi; chọn nhiều = mảng; khu vực = { provinceCode, provinceName, wardCode, wardName }) */
   @IsObject()

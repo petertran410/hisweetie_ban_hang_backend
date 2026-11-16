@@ -470,12 +470,60 @@ export class LeadFormsService {
     return v;
   }
 
+  // ---------- QR chung (leadform.hisweetievietnam.com) ----------
+
+  /** Gắn form với QR chung — chỉ 1 form: gắn form này thì bỏ gắn form đang gắn. */
+  async setQrTarget(id: number, on: boolean, actor: Actor) {
+    const form = await this.prisma.leadForm.findUnique({ where: { id } });
+    if (!form) throw new NotFoundException('Không tìm thấy form');
+    const prev = on
+      ? await this.prisma.leadForm.findFirst({
+          where: { isQrTarget: true, id: { not: id } },
+          select: { id: true, name: true },
+        })
+      : null;
+    await this.prisma.$transaction([
+      ...(on
+        ? [
+            this.prisma.leadForm.updateMany({
+              where: { isQrTarget: true, id: { not: id } },
+              data: { isQrTarget: false },
+            }),
+          ]
+        : []),
+      this.prisma.leadForm.update({ where: { id }, data: { isQrTarget: on } }),
+    ]);
+    await this.audit(
+      actor,
+      'LEAD_FORM_QR_TARGET',
+      id,
+      on
+        ? `Gắn QR chung vào form "${form.name}"${prev ? ` (thay "${prev.name}")` : ''}`
+        : `Bỏ gắn QR chung khỏi form "${form.name}"`,
+      { on, previousFormId: prev?.id ?? null },
+    );
+    return { ok: true };
+  }
+
+  /** Đích chuyển hướng của QR chung: form đang gắn (và đang mở), không có thì trang "Form tạm đóng". */
+  async qrRedirectUrl() {
+    const form = await this.prisma.leadForm.findFirst({
+      where: { isQrTarget: true },
+      select: { slug: true, isActive: true },
+    });
+    return form?.isActive
+      ? `${this.frontendUrl}/f/${form.slug}`
+      : `${this.frontendUrl}/f/closed`;
+  }
+
   private async uniqueSlug(raw: string, excludeId?: number) {
     const base = slugifyVietnamese(raw).slice(0, 50).replace(/-+$/, '');
     if (!LEAD_FORM_SLUG.test(base))
       throw new BadRequestException('Đường dẫn form không hợp lệ');
     for (let i = 1; i < 100; i++) {
       const slug = i === 1 ? base : `${base}-${i}`;
+      // "closed" là trang "Form tạm đóng" (/f/closed) của QR chung
+      if (slug === 'closed') continue;
       const taken = await this.prisma.leadForm.findUnique({ where: { slug } });
       if (!taken || taken.id === excludeId) return slug;
     }
