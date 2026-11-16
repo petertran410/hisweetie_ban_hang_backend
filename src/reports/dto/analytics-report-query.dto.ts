@@ -181,6 +181,18 @@ export class AnalyticsProductGroupUpdateDto {
   groupName!: string;
 }
 
+/** Nhóm hàng hiển thị (dim_product[visual_product_group]); "Khác" = không thuộc nhóm nào. */
+export const ANALYTICS_VISUAL_GROUPS = [
+  '1.Boduo',
+  '2.Trong nước',
+  '3.Nhập khẩu',
+  '4.Lermao',
+  '5.Phượng Hoàng',
+  '6.Sữa tươi',
+  '8.OEM - Khác',
+  'Khác',
+];
+
 export class AnalyticsConfigListQueryDto {
   @IsOptional()
   @IsString()
@@ -212,4 +224,46 @@ export class AnalyticsPreviewParentQueryDto {
   @IsString()
   @IsNotEmpty()
   search!: string;
+}
+
+/**
+ * Quy tắc nhóm hàng hiển thị (Cấu hình › Nhóm hàng hiển thị). Điều kiện để trống = không xét;
+ * PATCH gửi lại đủ các trường như POST.
+ */
+export class AnalyticsVisualGroupRuleDto {
+  @Type(() => Number)
+  @IsInt()
+  priority!: number;
+
+  @IsOptional()
+  @IsString()
+  productCode?: string | null;
+
+  @IsOptional()
+  @IsString()
+  productType?: string | null;
+
+  @IsOptional()
+  @IsString()
+  origin?: string | null;
+
+  @IsOptional()
+  @IsString()
+  brand?: string | null;
+
+  @IsOptional()
+  @IsString()
+  category?: string | null;
+
+  @IsOptional()
+  @IsString()
+  nameContains?: string | null;
+
+  /** null = mọi báo cáo; 'sale' = Kinh Doanh, Định Kì…; 'purchasing' = Thu Mua, Chuyển Kho. */
+  @IsOptional()
+  @IsIn(['sale', 'purchasing'])
+  reportScope?: 'sale' | 'purchasing' | null;
+
+  @IsIn(ANALYTICS_VISUAL_GROUPS)
+  visualGroup!: string;
 }

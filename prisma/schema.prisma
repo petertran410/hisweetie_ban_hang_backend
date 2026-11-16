@@ -4433,9 +4433,6 @@ model Notification {
   @@map("notifications")
 }
 
-/// Điện thoại đã đăng nhập app mobile: Expo push token để gửi thông báo đẩy.
-/// Một token chỉ thuộc 1 user: đăng nhập user khác trên cùng máy thì token
-/// chuyển sang user đó. Token Expo báo "DeviceNotRegistered" thì bị xóa.
 model PushDevice {
   id        Int      @id @default(autoincrement())
   userId    Int      @map("user_id")
@@ -4450,8 +4447,6 @@ model PushDevice {
   @@map("push_devices")
 }
 
-/// Hợp đồng ký điện tử qua Documenso. Bảng proxy: lưu trạng thái + tham chiếu
-/// envelope bên Documenso, không lưu nội dung PDF (PDF đã ký tải về uploads/contracts/).
 model Contract {
   id                 Int       @id @default(autoincrement())
   customerId         Int       @map("customer_id")
@@ -5797,6 +5792,28 @@ model AnalyticsProductGroup {
 
   @@index([groupName])
   @@map("analytics_product_groups")
+}
+
+// Quy tắc "Nhóm hàng hiển thị" (1.Boduo, 2.Trong nước…) của báo cáo Phân tích — thay cột tính DAX
+// dim_product[visual_product_group]. Xét theo priority tăng dần, sản phẩm khớp quy tắc đầu tiên thì
+// lấy visual_group; không khớp → "Khác". Điều kiện null = không xét (xem analytics-visual-group-rules.ts).
+// report_scope: null = mọi báo cáo | 'sale' (Kinh Doanh, Định Kì…) | 'purchasing' (Thu Mua, Chuyển Kho).
+model AnalyticsVisualGroupRule {
+  id           Int      @id @default(autoincrement())
+  priority     Int      @default(0)
+  productCode  String?  @map("product_code")
+  productType  String?  @map("product_type")
+  origin       String?
+  brand        String?
+  category     String?
+  nameContains String?  @map("name_contains")
+  reportScope  String?  @map("report_scope")
+  visualGroup  String   @map("visual_group")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@index([priority])
+  @@map("analytics_product_visual_groups")
 }
 
 // ===== Báo cáo Phân tích — bảng cấu hình / chỉ tiêu của từng báo cáo =====

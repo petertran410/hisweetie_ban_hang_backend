@@ -6,6 +6,10 @@ import {
 import { Prisma } from '@prisma/client';
 import { AnalyticsPrismaService } from './analytics-prisma.service';
 import { AnalyticsReportsService } from '../analytics-reports.service';
+import {
+  VISUAL_GROUP_EXPR,
+  visualGroupLateral,
+} from './analytics-visual-group-rules';
 import { addDays, todayVn } from './analytics-period';
 import {
   MUA_HANG_BLANK,
@@ -690,18 +694,8 @@ export class AnalyticsMuaHangService {
           ${this.ci(Prisma.sql`p.middle_name`)} AS origin,
           ${this.ci(Prisma.sql`p.child_name`)} AS category,
           ${this.ci(Prisma.sql`tm.name`)} AS brand,
-          CASE
-            WHEN ${type} = ${t('Hàng thương mại')} AND ${brand} = 'boduo' THEN '1.Boduo'
-            WHEN ${type} = ${t('Hàng thương hiệu')} AND ${brand} = 'lermao' THEN '4.Lermao'
-            WHEN ${type} = ${t('Hàng thương hiệu')} AND ${brand} = ${t('Phượng Hoàng')} THEN '5.Phượng Hoàng'
-            WHEN ${type} = ${t('Hàng thương hiệu')} THEN '3.Nhập khẩu'
-            WHEN ${type} = ${t('Hàng thương mại')} AND ${brand} = 'western' THEN '6.Sữa tươi'
-            WHEN ${type} = ${t('Hàng OEM')} THEN '8.OEM - Khác'
-            WHEN ${type} = ${t('Hàng thương mại')}
-                 AND ${origin} IN (${t('Nhập khẩu Chính Ngạch')}, ${t('Nhập khẩu khác')}) THEN '3.Nhập khẩu'
-            WHEN ${type} = ${t('Hàng thương mại')} AND ${origin} = ${t('Nội địa')} THEN '2.Trong nước'
-            ELSE 'Khác'
-          END AS visual_group,
+          -- Nhóm hiển thị: quy tắc trong Cấu hình › Nhóm hàng hiển thị (bản dataset_purchasing).
+          ${VISUAL_GROUP_EXPR} AS visual_group,
           CASE
             WHEN ${type} = ${t('Dụng cụ pha chế')} THEN 'Dụng Cụ Pha Chế'
             WHEN ${type} = ${t('Mẫu thử')} THEN 'Mẫu Thử'
@@ -728,6 +722,7 @@ export class AnalyticsMuaHangService {
         FROM products p
         LEFT JOIN trade_marks tm ON tm.id = p."tradeMarkId"
         LEFT JOIN analytics_product_groups g ON g.product_code = p.code
+        ${visualGroupLateral('purchasing')}
       )`;
   }
 

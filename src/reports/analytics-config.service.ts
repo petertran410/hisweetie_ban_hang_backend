@@ -1,10 +1,13 @@
 import {
   BadRequestException,
   Injectable,
+  Logger,
   NotFoundException,
+  OnApplicationBootstrap,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { AnalyticsPrismaService } from './analytics/analytics-prisma.service';
+import { DEFAULT_VISUAL_GROUP_RULES } from './analytics/analytics-visual-group-rules';
 import {
   AnalyticsConfigListQueryDto,
   AnalyticsParentRuleDto,
@@ -13,12 +16,15 @@ import {
   AnalyticsProductGroupUpdateDto,
   AnalyticsSaleTeamDto,
   AnalyticsSaleTeamUpdateDto,
+  AnalyticsVisualGroupRuleDto,
 } from './dto';
 
 // Cấu hình cho báo cáo Phân tích: quy tắc khách cha, team sale, thành viên
-// team, nhóm hàng 2026. Thay cho các quy tắc viết cứng trong Power BI.
+// team, nhóm hàng 2026, quy tắc nhóm hàng hiển thị. Thay cho các quy tắc viết cứng trong Power BI.
 @Injectable()
-export class AnalyticsConfigService {
+export class AnalyticsConfigService implements OnApplicationBootstrap {
+  private readonly logger = new Logger(AnalyticsConfigService.name);
+
   constructor(private prisma: AnalyticsPrismaService) {}
 
   // ── Quy tắc khách cha ───────────────────────────────────────────────────
@@ -237,6 +243,119 @@ export class AnalyticsConfigService {
       this.prisma.analyticsProductGroup.findUnique({ where: { id } }),
     );
     await this.prisma.analyticsProductGroup.delete({ where: { id } });
+    return { success: true };
+  }
+
+  // ── Quy tắc nhóm hàng hiển thị (1.Boduo, 2.Trong nước…) ─────────────────
+  /** Bảng trống (vừa tạo) → nạp quy tắc gốc của Power BI để báo cáo không ra toàn "Khác". */
+  async onApplicationBootstrap() {
+    try {
+      if ((await this.prisma.analyticsVisualGroupRule.count()) === 0) {
+        await this.prisma.analyticsVisualGroupRule.createMany({
+          data: DEFAULT_VISUAL_GROUP_RULES,
+        });
+        this.logger.log(
+          `Nạp ${DEFAULT_VISUAL_GROUP_RULES.length} quy tắc nhóm hàng hiển thị mặc định`,
+        );
+      }
+    } catch (e) {
+      this.logger.warn(
+        `Chưa nạp được quy tắc nhóm hàng hiển thị (bảng analytics_product_visual_groups?): ${(e as Error).message}`,
+      );
+    }
+  }
+
+  listVisualGroupRules() {
+    return this.prisma.$queryRaw<
+      {
+        id: number;
+        priority: number;
+        productCode: string | null;
+        productName: string | null;
+        productType: string | null;
+        origin: string | null;
+        brand: string | null;
+        category: string | null;
+        nameContains: string | null;
+        reportScope: string | null;
+        visualGroup: string;
+      }[]
+    >`
+      SELECT r.id, r.priority, r.product_code AS "productCode", p.name AS "productName",
+             r.product_type AS "productType", r.origin, r.brand, r.category,
+             r.name_contains AS "nameContains", r.report_scope AS "reportScope",
+             r.visual_group AS "visualGroup"
+      FROM analytics_product_visual_groups r
+      LEFT JOIN LATERAL (
+        SELECT name FROM products WHERE code = r.product_code LIMIT 1
+      ) p ON true
+      ORDER BY r.priority, r.id`;
+  }
+
+  /** Giá trị chọn được cho điều kiện (sản phẩm đang hoạt động), gộp không phân biệt hoa thường. */
+  async visualGroupRuleOptions() {
+    const rows = await this.prisma.$queryRaw<{ f: string; v: string }[]>`
+      SELECT 'brand' AS f, min(tm.name) AS v
+      FROM products p JOIN trade_marks tm ON tm.id = p."tradeMarkId"
+      WHERE p."isActive" AND btrim(COALESCE(tm.name, '')) <> ''
+      GROUP BY lower(tm.name)
+      UNION ALL
+      SELECT 'category', min(p.child_name) FROM products p
+      WHERE p."isActive" AND btrim(COALESCE(p.child_name, '')) <> ''
+      GROUP BY lower(p.child_name)
+      UNION ALL
+      SELECT 'origin', min(p.middle_name) FROM products p
+      WHERE p."isActive" AND btrim(COALESCE(p.middle_name, '')) <> ''
+      GROUP BY lower(p.middle_name)
+      UNION ALL
+      SELECT 'productType', min(p.parent_name) FROM products p
+      WHERE p."isActive" AND btrim(COALESCE(p.parent_name, '')) <> ''
+      GROUP BY lower(p.parent_name)
+      ORDER BY 1, 2`;
+    const out: Record<
+      'brand' | 'category' | 'origin' | 'productType',
+      string[]
+    > = { brand: [], category: [], origin: [], productType: [] };
+    for (const r of rows) out[r.f as keyof typeof out]?.push(r.v);
+    return out;
+  }
+
+  private ruleData(dto: AnalyticsVisualGroupRuleDto) {
+    const clean = (v?: string | null) => (v ?? '').trim() || null;
+    return {
+      priority: dto.priority,
+      productCode: clean(dto.productCode),
+      productType: clean(dto.productType),
+      origin: clean(dto.origin),
+      brand: clean(dto.brand),
+      category: clean(dto.category),
+      nameContains: clean(dto.nameContains),
+      reportScope: dto.reportScope ?? null,
+      visualGroup: dto.visualGroup,
+    };
+  }
+
+  createVisualGroupRule(dto: AnalyticsVisualGroupRuleDto) {
+    return this.prisma.analyticsVisualGroupRule.create({
+      data: this.ruleData(dto),
+    });
+  }
+
+  async updateVisualGroupRule(id: number, dto: AnalyticsVisualGroupRuleDto) {
+    await this.ensure(
+      this.prisma.analyticsVisualGroupRule.findUnique({ where: { id } }),
+    );
+    return this.prisma.analyticsVisualGroupRule.update({
+      where: { id },
+      data: this.ruleData(dto),
+    });
+  }
+
+  async deleteVisualGroupRule(id: number) {
+    await this.ensure(
+      this.prisma.analyticsVisualGroupRule.findUnique({ where: { id } }),
+    );
+    await this.prisma.analyticsVisualGroupRule.delete({ where: { id } });
     return { success: true };
   }
 

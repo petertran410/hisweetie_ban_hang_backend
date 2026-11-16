@@ -7,7 +7,15 @@ import {
 import { Prisma } from '@prisma/client';
 import { AnalyticsPrismaService } from './analytics/analytics-prisma.service';
 import { AnalyticsCacheService } from './analytics/analytics-cache';
-import { AnalyticsAxis, AnalyticsBusinessQueryDto } from './dto';
+import {
+  ANALYTICS_VISUAL_GROUPS,
+  AnalyticsAxis,
+  AnalyticsBusinessQueryDto,
+} from './dto';
+import {
+  VISUAL_GROUP_EXPR,
+  visualGroupLateral,
+} from './analytics/analytics-visual-group-rules';
 import {
   CALENDAR_START,
   CurrentPeriod,
@@ -44,9 +52,14 @@ const CUSTOMER_TYPE_GROUPS = ['Khách chuỗi', 'Khách lẻ', 'Khách buôn'];
 /** Giá trị đại diện cho "trống" khi đếm khách (DISTINCTCOUNT của DAX tính BLANK là 1 giá trị). */
 const BLANK_KEY = '__blank__';
 /**
- * Đánh dấu trong SQL: lọc theo vùng / nhóm khách / loại khách làm Postgres đoán còn rất
- * ít hoá đơn rồi chọn ghép từng dòng giữa các CTE (vd. 32k × 68k dòng → 1–3 phút).
- * Câu có dấu này chạy với enable_nestloop = off (chỉ trong transaction của câu đó).
+ * Đánh dấu trong SQL: câu có dấu này chạy với enable_nestloop = off (chỉ trong
+ * transaction của câu đó). baseCtes luôn gắn dấu này.
+ * Lý do: ngày hoá đơn là biểu thức ((purchaseDate + 7 giờ)::date) nên Postgres không có
+ * thống kê, đoán khoảng ngày chỉ còn ~2 hoá đơn (thực tế vài chục nghìn) rồi chọn ghép
+ * từng dòng: tra index 1 lần cho mỗi hoá đơn / dòng hàng, quét lại CTE cho từng dòng.
+ * Bảng nhỏ (vài trăm nghìn dòng) nên quét cả bảng + hash join luôn rẻ và ổn định hơn:
+ * Tổng Quan cả năm 1,4 s → 1,0 s; lọc nhóm hàng 4,7 s → 0,55 s; lọc vùng / nhóm khách
+ * từng mất 1–3 phút. Khoảng ngày rất ngắn chậm thêm vài chục ms (không đáng kể).
  */
 export const NESTLOOP_OFF_MARK = '/* analytics:nestloop-off */';
 
@@ -115,16 +128,7 @@ const INACT_COLS = (t: Prisma.Sql) => Prisma.sql`
 /** Danh sách khách cha trong bộ nhớ được tính lại sau 10 phút. */
 const PARENT_MAP_TTL = 10 * 60_000;
 
-export const VISUAL_PRODUCT_GROUPS = [
-  '1.Boduo',
-  '2.Trong nước',
-  '3.Nhập khẩu',
-  '4.Lermao',
-  '5.Phượng Hoàng',
-  '6.Sữa tươi',
-  '8.OEM - Khác',
-  'Khác',
-];
+export const VISUAL_PRODUCT_GROUPS = ANALYTICS_VISUAL_GROUPS;
 
 export interface MetricValues {
   amount: number; // Doanh số
@@ -415,6 +419,9 @@ export class AnalyticsReportsService implements OnApplicationBootstrap {
     try {
       const t = Date.now();
       // Đúng công thức khách cha của custCte, chỉ giữ khách có khách cha khác tên mình.
+      // Ghép quy tắc theo tập thay vì dò ~125 quy tắc cho từng khách: lower() tính 1 lần
+      // mỗi khách, quy tắc theo mã ghép bằng hash, rồi lấy quy tắc ưu tiên nhất
+      // (priority, id) — kết quả giống hệt, nhanh hơn ~5 lần (2,2 s → 0,4 s).
       const rows = await this.q<
         { id: number; parent_name: string; max_id: number }[]
       >(Prisma.sql`
@@ -422,18 +429,25 @@ export class AnalyticsReportsService implements OnApplicationBootstrap {
             SELECT id, match_type, lower(pattern) AS pat, parent_name, priority
             FROM analytics_customer_parent_rules WHERE is_active
           ),
-          cb AS (
-            SELECT DISTINCT ON (c.code) c.id, c.code, c.name
+          cb AS MATERIALIZED (
+            SELECT DISTINCT ON (c.code) c.id, c.name,
+                   lower(c.code) AS lcode, lower(c.name) AS lname
             FROM customers c ORDER BY c.code, c.id
           ),
+          hit AS (
+            SELECT cb.id, r.parent_name, r.priority, r.id AS rule_id
+            FROM cb JOIN rules r ON r.match_type = 'code' AND r.pat = cb.lcode
+            UNION ALL
+            SELECT cb.id, r.parent_name, r.priority, r.id
+            FROM cb JOIN rules r ON r.match_type = 'name_contains' AND strpos(cb.lname, r.pat) > 0
+          ),
+          best AS (
+            SELECT DISTINCT ON (id) id, parent_name
+            FROM hit ORDER BY id, priority, rule_id
+          ),
           m AS (
-            SELECT cb.id, cb.name, (
-              SELECT r.parent_name FROM rules r
-              WHERE (r.match_type = 'code' AND lower(cb.code) = r.pat)
-                 OR (r.match_type = 'name_contains' AND strpos(lower(cb.name), r.pat) > 0)
-              ORDER BY r.priority, r.id LIMIT 1
-            ) AS parent_name
-            FROM cb
+            SELECT cb.id, cb.name, b.parent_name
+            FROM cb LEFT JOIN best b ON b.id = cb.id
           )
           SELECT m.id, m.parent_name, (SELECT COALESCE(MAX(id), 0) FROM customers)::int AS max_id
           FROM m WHERE m.parent_name IS NOT NULL AND m.parent_name IS DISTINCT FROM m.name
@@ -558,22 +572,12 @@ export class AnalyticsReportsService implements OnApplicationBootstrap {
             WHEN (p."createdAt" + interval '7 hour')::date > date '2025-12-01'
                  AND lower(p.parent_name) IN (lower('Hàng thương mại'), lower('Hàng OEM')) THEN 'Nhóm B'
             ELSE 'Chưa Phân Loại' END) AS group2026,
-          CASE
-            WHEN lower(p.parent_name) = lower('Hàng thương mại') AND lower(tm.name) = 'boduo' THEN '1.Boduo'
-            WHEN strpos(lower(p.name), 'boduo') > 0 THEN '1.Boduo'
-            WHEN lower(p.parent_name) = lower('Hàng thương hiệu') AND lower(tm.name) = 'lermao' THEN '4.Lermao'
-            WHEN lower(p.parent_name) = lower('Hàng thương hiệu') AND lower(tm.name) = lower('Phượng Hoàng') THEN '5.Phượng Hoàng'
-            WHEN lower(p.parent_name) = lower('Hàng thương hiệu') THEN '3.Nhập khẩu'
-            WHEN lower(p.parent_name) = lower('Hàng thương mại') AND lower(tm.name) = 'western' THEN '6.Sữa tươi'
-            WHEN lower(p.parent_name) = lower('Hàng OEM') THEN '8.OEM - Khác'
-            WHEN lower(p.parent_name) = lower('Hàng thương mại')
-                 AND lower(p.middle_name) IN (lower('Nhập khẩu Chính Ngạch'), lower('Nhập khẩu khác')) THEN '3.Nhập khẩu'
-            WHEN lower(p.parent_name) = lower('Hàng thương mại') AND lower(p.middle_name) = lower('Nội địa') THEN '2.Trong nước'
-            ELSE 'Khác'
-          END AS visual_group
+          -- Nhóm hiển thị: quy tắc trong Cấu hình › Nhóm hàng hiển thị (bản dataset_sale).
+          ${VISUAL_GROUP_EXPR} AS visual_group
         FROM products p
         LEFT JOIN trade_marks tm ON tm.id = p."tradeMarkId"
         LEFT JOIN analytics_product_groups g ON g.product_code = p.code
+        ${visualGroupLateral('sale')}
         ORDER BY p.code, p.id
       )`;
   }
@@ -640,11 +644,8 @@ export class AnalyticsReportsService implements OnApplicationBootstrap {
         WHERE ${ACTIVE_PRODUCT}`
       : Prisma.empty;
 
-    const q2 = q as { region?: string; customerType?: string };
-    const mark =
-      q2.region || q.customerGroupId || q2.customerType
-        ? Prisma.raw(NESTLOOP_OFF_MARK)
-        : Prisma.empty;
+    // Luôn tắt nested loop cho câu dựng trên baseCtes (xem NESTLOOP_OFF_MARK).
+    const mark = Prisma.raw(NESTLOOP_OFF_MARK);
 
     return Prisma.sql`
       ${mark}

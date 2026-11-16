@@ -40,6 +40,7 @@ import {
   AnalyticsMemberUpdateDto,
   AnalyticsProductGroupDto,
   AnalyticsProductGroupUpdateDto,
+  AnalyticsVisualGroupRuleDto,
   AnalyticsPreviewParentQueryDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -679,5 +680,40 @@ export class ReportsController {
   @ReportPermission({ key: 'reports:analytics_config' })
   deleteAnalyticsProductGroup(@Param('id', ParseIntPipe) id: number) {
     return this.analyticsConfigService.deleteProductGroup(id);
+  }
+
+  // Quy tắc nhóm hàng hiển thị (1.Boduo, 2.Trong nước…) — thay cột tính DAX visual_product_group.
+  @Get('analytics/config/product-visual-groups')
+  @ReportPermission({ key: 'reports:analytics_config' })
+  listAnalyticsVisualGroupRules() {
+    return this.analyticsConfigService.listVisualGroupRules();
+  }
+
+  // Giá trị chọn được cho điều kiện: loại hàng / nguồn gốc / thương hiệu / danh mục.
+  @Get('analytics/config/product-visual-groups/options')
+  @ReportPermission({ key: 'reports:analytics_config' })
+  analyticsVisualGroupRuleOptions() {
+    return this.analyticsConfigService.visualGroupRuleOptions();
+  }
+
+  @Post('analytics/config/product-visual-groups')
+  @ReportPermission({ key: 'reports:analytics_config' })
+  createAnalyticsVisualGroupRule(@Body() dto: AnalyticsVisualGroupRuleDto) {
+    return this.analyticsConfigService.createVisualGroupRule(dto);
+  }
+
+  @Patch('analytics/config/product-visual-groups/:id')
+  @ReportPermission({ key: 'reports:analytics_config' })
+  updateAnalyticsVisualGroupRule(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: AnalyticsVisualGroupRuleDto,
+  ) {
+    return this.analyticsConfigService.updateVisualGroupRule(id, dto);
+  }
+
+  @Delete('analytics/config/product-visual-groups/:id')
+  @ReportPermission({ key: 'reports:analytics_config' })
+  deleteAnalyticsVisualGroupRule(@Param('id', ParseIntPipe) id: number) {
+    return this.analyticsConfigService.deleteVisualGroupRule(id);
   }
 }
