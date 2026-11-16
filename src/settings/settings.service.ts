@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { UpdateSettingsDto } from './dto';
 import { AuditLogsService } from 'src/audit-logs/audit-logs.service';
@@ -50,7 +50,17 @@ export class SettingsService {
       misaDictionaryCronEnabled: settings.misaDictionaryCronEnabled,
       contractDocumensoSyncCronEnabled:
         settings.contractDocumensoSyncCronEnabled,
+      larkTaxCodeNotifyUserIds: settings.larkTaxCodeNotifyUserIds,
+      larkNewCustomerTaskUserIds: settings.larkNewCustomerTaskUserIds,
+      larkNewCustomerTaskDueDays: settings.larkNewCustomerTaskDueDays,
     };
+
+    const larkTaxCodeNotifyUserIds = await this.normalizeLarkRecipients(
+      dto.larkTaxCodeNotifyUserIds,
+    );
+    const larkNewCustomerTaskUserIds = await this.normalizeLarkRecipients(
+      dto.larkNewCustomerTaskUserIds,
+    );
 
     const updated = await this.prisma.settings.update({
       where: { id: settings.id },
@@ -64,6 +74,9 @@ export class SettingsService {
         larkProductRetryCronEnabled: dto.larkProductRetryCronEnabled,
         misaDictionaryCronEnabled: dto.misaDictionaryCronEnabled,
         contractDocumensoSyncCronEnabled: dto.contractDocumensoSyncCronEnabled,
+        larkTaxCodeNotifyUserIds,
+        larkNewCustomerTaskUserIds,
+        larkNewCustomerTaskDueDays: dto.larkNewCustomerTaskDueDays,
       },
     });
 
@@ -90,5 +103,34 @@ export class SettingsService {
     }
 
     return updated;
+  }
+
+  /** Người dùng chọn được ở /cai-dat/thong-bao-lark: đang hoạt động và đã gắn Lark ID. */
+  getLarkRecipients() {
+    return this.prisma.user.findMany({
+      where: { isActive: true, larkUserId: { not: null } },
+      select: { id: true, name: true, email: true },
+      orderBy: { name: 'asc' },
+    });
+  }
+
+  /** Bỏ trùng + chỉ nhận user đang hoạt động đã gắn Lark; undefined = không đổi. */
+  private async normalizeLarkRecipients(ids?: number[]) {
+    if (ids === undefined) return undefined;
+    const unique = [...new Set(ids)];
+    if (!unique.length) return unique;
+
+    const valid = await this.prisma.user.findMany({
+      where: { id: { in: unique }, isActive: true, larkUserId: { not: null } },
+      select: { id: true },
+    });
+    const validIds = new Set(valid.map((u) => u.id));
+    const invalid = unique.filter((id) => !validIds.has(id));
+    if (invalid.length) {
+      throw new BadRequestException(
+        `Người dùng #${invalid.join(', #')} không hoạt động hoặc chưa gắn Lark`,
+      );
+    }
+    return unique;
   }
 }

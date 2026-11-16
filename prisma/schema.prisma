@@ -2537,6 +2537,12 @@ model Settings {
   leadGreetingTemplate             String?   @map("lead_greeting_template")
   leadFriendTemplate               String?   @map("lead_friend_template")
   leadLarkTemplate                 String?   @map("lead_lark_template")
+  /// User POS (đã gắn Lark) nhận tin riêng khi KH đổi mã số thuế — /cai-dat/thong-bao-lark. Rỗng = tắt.
+  larkTaxCodeNotifyUserIds         Int[]     @default([]) @map("lark_tax_code_notify_user_ids")
+  /// User được giao task Lark khi có KH mới tạo tay trên POS. Rỗng = tắt.
+  larkNewCustomerTaskUserIds       Int[]     @default([]) @map("lark_new_customer_task_user_ids")
+  /// Hạn task KH mới = lúc tạo KH + N ngày.
+  larkNewCustomerTaskDueDays       Int       @default(1) @map("lark_new_customer_task_due_days")
 
   @@map("settings")
 }

@@ -235,6 +235,13 @@ export class CustomersController {
     return this.customersService.getShippingFeeHistory(+id);
   }
 
+  @Get(':id/sale-pic')
+  @RequirePermissions('customers:view')
+  @ApiOperation({ summary: 'Sale PIC đang gắn cho khách hàng' })
+  getSalePic(@Param('id') id: string) {
+    return this.customersService.getSalePic(+id);
+  }
+
   @Get(':id')
   @RequirePermissions('customers:view')
   @ApiOperation({ summary: 'Lấy chi tiết khách hàng theo ID' })

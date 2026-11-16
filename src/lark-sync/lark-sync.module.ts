@@ -18,6 +18,7 @@ import { LarkExpenseReviewNotificationService } from './services/lark-expense-re
 import { LarkSecurityNotificationService } from './services/lark-security-notification.service';
 import { LarkInvoiceQuantityNotificationService } from './services/lark-invoice-quantity-notification.service';
 import { LarkOrderPriceNotificationService } from './services/lark-order-price-notification.service';
+import { LarkCustomerNotificationService } from './services/lark-customer-notification.service';
 
 @Module({
   imports: [ConfigModule, PrismaModule],
@@ -39,6 +40,7 @@ import { LarkOrderPriceNotificationService } from './services/lark-order-price-n
     LarkDebtNotificationService,
     LarkExpenseReviewNotificationService,
     LarkSecurityNotificationService,
+    LarkCustomerNotificationService,
   ],
   exports: [
     LARK_CLIENT,
@@ -52,6 +54,7 @@ import { LarkOrderPriceNotificationService } from './services/lark-order-price-n
     LarkDebtNotificationService,
     LarkExpenseReviewNotificationService,
     LarkUserDirectoryService,
+    LarkCustomerNotificationService,
   ],
 })
 export class LarkSyncModule {}
