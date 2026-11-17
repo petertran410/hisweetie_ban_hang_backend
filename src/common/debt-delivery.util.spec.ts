@@ -3,6 +3,7 @@ import {
   assertCanCreateInvoiceForCustomer,
   assertPrepaidPolicySatisfied,
   hasOpenStopDeliveryHold,
+  isDebtRuleUnset,
 } from './debt-delivery.util';
 
 describe('debt delivery lifecycle guard', () => {
@@ -168,5 +169,32 @@ describe('assertCanConfirmOrder', () => {
     const db = buildDb(order({ customerId: null, customer: null }));
     await expect(assertCanConfirmOrder(db, 1)).resolves.toBeUndefined();
     expect(db.debtTicketCustomer.findFirst).not.toHaveBeenCalled();
+  });
+});
+
+describe('isDebtRuleUnset', () => {
+  it('khách chưa có policy hoặc NONE không bắt trả đủ là "Chưa thiết lập"', () => {
+    expect(isDebtRuleUnset(null)).toBe(true);
+    expect(
+      isDebtRuleUnset({
+        debtRuleType: 'NONE',
+        requireFullPaymentForInvoice: false,
+      }),
+    ).toBe(true);
+  });
+
+  it('"Không công nợ" và các quy tắc cho nợ là đã thiết lập', () => {
+    expect(
+      isDebtRuleUnset({
+        debtRuleType: 'NONE',
+        requireFullPaymentForInvoice: true,
+      }),
+    ).toBe(false);
+    expect(
+      isDebtRuleUnset({
+        debtRuleType: 'TERM_DAYS',
+        requireFullPaymentForInvoice: false,
+      }),
+    ).toBe(false);
   });
 });

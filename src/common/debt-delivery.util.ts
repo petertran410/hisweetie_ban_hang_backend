@@ -103,6 +103,26 @@ export function requiresFullPayment(
 }
 
 /**
+ * "Chưa thiết lập" công nợ: khách cũ chưa có policy, hoặc NONE mà không bắt
+ * trả đủ. Dùng để nhắc người dùng thiết lập, không dùng để chặn.
+ */
+export function isDebtRuleUnset(
+  policy:
+    | {
+        debtRuleType?: string | null;
+        requireFullPaymentForInvoice?: boolean | null;
+      }
+    | null
+    | undefined,
+): boolean {
+  if (!policy) return true;
+  return (
+    (policy.debtRuleType ?? 'NONE') === 'NONE' &&
+    policy.requireFullPaymentForInvoice !== true
+  );
+}
+
+/**
  * Khách "không công nợ" phải thanh toán đủ trước khi ra hóa đơn / xác nhận
  * đơn. Thu tiền mặt khi giao thì không chặn.
  */

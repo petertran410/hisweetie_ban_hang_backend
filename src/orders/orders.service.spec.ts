@@ -496,3 +496,62 @@ describe('OrdersService update — chặn xác nhận đơn theo công nợ', ()
     expect(confirmed.tx.debtTicketCustomer.findFirst).not.toHaveBeenCalled();
   });
 });
+
+describe('OrdersService create → nhắc thiết lập công nợ', () => {
+  const run = async (policy: any, customerId: number | null = 3) => {
+    const order = { id: 7, code: 'DH000007', branchId: 1, customer: null };
+    const tx: any = {
+      product: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            { id: 10, code: 'A', name: 'Bánh A', conversionValue: 1 },
+          ]),
+      },
+      inventory: {
+        findMany: jest.fn().mockResolvedValue([{ productId: 10, onHand: 9 }]),
+      },
+      customerAddress: { findMany: jest.fn().mockResolvedValue([]) },
+      customerDebtPolicy: { findUnique: jest.fn().mockResolvedValue(policy) },
+      order: {
+        findFirst: jest.fn().mockResolvedValue({ id: 6 }),
+        create: jest.fn().mockResolvedValue(order),
+        findUnique: jest.fn().mockResolvedValue(order),
+      },
+      user: { findUnique: jest.fn().mockResolvedValue({ name: 'NV' }) },
+      $executeRaw: jest.fn().mockResolvedValue(1),
+    };
+    const prisma = { $transaction: jest.fn(async (cb: any) => cb(tx)) };
+    const service = buildService(prisma);
+    jest.spyOn(service as any, 'processOrderPromotions').mockResolvedValue({
+      effectiveItems: [{ productId: 10, quantity: 1, unitPrice: 100 }],
+      extraDiscount: 0,
+      logs: [],
+    });
+    jest.spyOn(service as any, 'calculateTotals').mockResolvedValue(undefined);
+    const result = await service.create(
+      { branchId: 1, priceBookId: 0, customerId, items: [] } as any,
+      9,
+    );
+    return { result, tx };
+  };
+
+  it('khách cũ chưa có policy → debtPolicyUnset = true', async () => {
+    const { result } = await run(null);
+    expect(result.debtPolicyUnset).toBe(true);
+  });
+
+  it('khách "Không công nợ" → không nhắc', async () => {
+    const { result } = await run({
+      debtRuleType: 'NONE',
+      requireFullPaymentForInvoice: true,
+    });
+    expect(result.debtPolicyUnset).toBe(false);
+  });
+
+  it('khách vãng lai → không tra policy, không nhắc', async () => {
+    const { result, tx } = await run(null, null);
+    expect(result.debtPolicyUnset).toBe(false);
+    expect(tx.customerDebtPolicy.findUnique).not.toHaveBeenCalled();
+  });
+});

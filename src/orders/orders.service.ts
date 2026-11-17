@@ -30,7 +30,10 @@ import { LarkOrderSyncService } from 'src/lark-sync/services/lark-order-sync.ser
 import { LarkOrderNotificationService } from 'src/lark-sync/services/lark-order-notification.service';
 import { LarkOrderPriceNotificationService } from 'src/lark-sync/services/lark-order-price-notification.service';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
-import { assertCanConfirmOrder } from '../common/debt-delivery.util';
+import {
+  assertCanConfirmOrder,
+  isDebtRuleUnset,
+} from '../common/debt-delivery.util';
 import { RealtimeService } from 'src/realtime/realtime.service';
 import { searchCustomerIds } from '../common/customer-search.util';
 import { PromotionsService } from '../promotions/promotions.service';
@@ -768,7 +771,20 @@ export class OrdersService {
       //   this.larkOrderSync.syncSingleAsync(finalOrder.id);
       // }
 
-      return { order: finalOrder, warnings };
+      // Khách cũ chưa thiết lập công nợ → FE nhắc người dùng (không chặn).
+      const debtPolicyUnset = dto.customerId
+        ? isDebtRuleUnset(
+            await tx.customerDebtPolicy.findUnique({
+              where: { customerId: dto.customerId },
+              select: {
+                debtRuleType: true,
+                requireFullPaymentForInvoice: true,
+              },
+            }),
+          )
+        : false;
+
+      return { order: finalOrder, warnings, debtPolicyUnset };
     }, ORDER_TX_OPTIONS);
 
     this.flushAuditLogs(pendingAuditLogs);

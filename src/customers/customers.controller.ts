@@ -20,6 +20,7 @@ import {
   CreateCustomerDto,
   UpdateCustomerDto,
   UpdateCustomerCommentsDto,
+  UpdateCustomerStatusDto,
   CustomerQueryDto,
   BulkCreateCustomerDto,
   BulkUpdateCustomerDto,
@@ -338,6 +339,19 @@ export class CustomersController {
       dto.comments,
       req.user?.id,
     );
+  }
+
+  // Ngừng hoạt động / kích hoạt. Quyền customers:delete hiển thị là
+  // "Ngừng hoạt động" (khách hàng không bao giờ bị xóa thật).
+  @Patch(':id/status')
+  @RequirePermissions('customers:delete')
+  @ApiOperation({ summary: 'Ngừng hoạt động / kích hoạt khách hàng' })
+  async updateStatus(
+    @Param('id') id: string,
+    @Body() dto: UpdateCustomerStatusDto,
+    @Req() req: any,
+  ) {
+    return this.customersService.updateStatus(+id, dto.isActive, req.user?.id);
   }
 
   @Delete(':id')
