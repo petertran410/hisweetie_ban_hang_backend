@@ -1086,6 +1086,8 @@ export class PriceBooksService {
   async exportProductsWithMultiplePrices(
     query: ProductsWithPricesQueryDto,
     res: Response,
+    // false khi user thiếu products:view_cost_price → bỏ cột giá vốn.
+    includeCost = true,
   ): Promise<void> {
     const priceBookIds = query.priceBookIds || [];
     const realPriceBookIds = priceBookIds.filter((id) => id > 0);
@@ -1117,7 +1119,7 @@ export class PriceBooksService {
       { header: 'Mã hàng', key: 'code', width: 16 },
       { header: 'Tên hàng', key: 'name', width: 40 },
       { header: 'Đơn vị tính', key: 'unit', width: 16 },
-      { header: 'Giá vốn', key: 'cost', width: 18 },
+      ...(includeCost ? [{ header: 'Giá vốn', key: 'cost', width: 18 }] : []),
       ...selectedPriceBooks.map((priceBook) => ({
         header: priceBook.name,
         key: `priceBook_${priceBook.id}`,

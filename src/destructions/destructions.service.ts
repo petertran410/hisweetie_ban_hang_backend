@@ -118,6 +118,8 @@ export class DestructionsService {
   async exportDestructions(
     query: DestructionQueryDto,
     res: Response,
+    // false khi user thiếu products:view_cost_price → bỏ cột giá trị hủy.
+    includeCost = true,
   ): Promise<void> {
     const where = this.buildDestructionWhere(query);
 
@@ -141,7 +143,7 @@ export class DestructionsService {
       { header: 'Tổng giá trị hủy', key: 'totalValue', width: 18 },
       { header: 'Ghi chú', key: 'note', width: 30 },
       { header: 'Trạng thái', key: 'status', width: 14 },
-    ];
+    ].filter((c) => includeCost || c.key !== 'totalValue');
 
     const headerRow = sheet.getRow(1);
     headerRow.font = { bold: true, size: 11 };
@@ -201,6 +203,8 @@ export class DestructionsService {
   async exportDestructionsDetail(
     query: DestructionQueryDto,
     res: Response,
+    // false khi user thiếu products:view_cost_price → bỏ cột đơn giá/thành tiền.
+    includeCost = true,
   ): Promise<void> {
     const where = this.buildDestructionWhere(query);
 
@@ -225,7 +229,9 @@ export class DestructionsService {
       { header: 'Đơn giá', key: 'price', width: 14 },
       { header: 'Thành tiền', key: 'lineTotal', width: 16 },
       { header: 'Ghi chú dòng', key: 'lineNote', width: 30 },
-    ];
+    ].filter(
+      (c) => includeCost || (c.key !== 'price' && c.key !== 'lineTotal'),
+    );
 
     const headerRow = sheet.getRow(1);
     headerRow.font = { bold: true, size: 11 };
@@ -331,8 +337,13 @@ export class DestructionsService {
     const status = isDraft ? 1 : 2;
     const destructionDate = isDraft ? null : new Date();
 
+    const details = await this.fillMissingPrices(
+      dto.destructionDetails,
+      dto.branchId,
+    );
+
     let totalValue = 0;
-    for (const detail of dto.destructionDetails) {
+    for (const detail of details) {
       totalValue += Number(detail.quantity) * Number(detail.price);
     }
 
@@ -350,7 +361,7 @@ export class DestructionsService {
           note: dto.note,
           totalValue,
           details: {
-            create: dto.destructionDetails.map((detail) => {
+            create: details.map((detail) => {
               const product = detail as any;
               return {
                 productId: detail.productId,
@@ -452,9 +463,16 @@ export class DestructionsService {
       }
     }
 
-    if (dto.destructionDetails) {
+    const details = dto.destructionDetails
+      ? await this.fillMissingPrices(
+          dto.destructionDetails,
+          destruction.branchId,
+        )
+      : undefined;
+
+    if (details) {
       let totalValue = 0;
-      for (const detail of dto.destructionDetails) {
+      for (const detail of details) {
         totalValue += Number(detail.quantity) * Number(detail.price);
       }
       updateData.totalValue = totalValue;
@@ -463,10 +481,10 @@ export class DestructionsService {
     const touchedProductIds = new Set<number>();
 
     const updated = await this.prisma.$transaction(async (tx) => {
-      if (dto.destructionDetails) {
+      if (details) {
         await tx.destructionDetail.deleteMany({ where: { destructionId: id } });
         await tx.destructionDetail.createMany({
-          data: dto.destructionDetails.map((detail) => {
+          data: details.map((detail) => {
             const product = detail as any;
             return {
               destructionId: id,
@@ -669,6 +687,36 @@ export class DestructionsService {
     });
 
     return { message: 'Destruction cancelled successfully' };
+  }
+
+  /**
+   * Điền giá vốn cho các dòng không gửi `price`. FE bỏ trống price khi user
+   * thiếu quyền products:view_cost_price (API products đã bỏ cost) → lấy giá
+   * vốn hiện tại của sản phẩm tại chi nhánh phiếu hủy, để giá trị hủy không bị
+   * ghi 0. Cùng ý tưởng với resolveItemPrice bên order-suppliers.
+   */
+  private async fillMissingPrices<
+    T extends { productId: number; price?: number | null },
+  >(details: T[], branchId: number): Promise<(T & { price: number })[]> {
+    const missingIds = [
+      ...new Set(
+        details.filter((d) => d.price == null).map((d) => d.productId),
+      ),
+    ];
+    const costByProduct = new Map<number, number>();
+    if (missingIds.length > 0) {
+      const inventories = await this.prisma.inventory.findMany({
+        where: { branchId, productId: { in: missingIds } },
+        select: { productId: true, cost: true },
+      });
+      for (const inv of inventories) {
+        costByProduct.set(inv.productId, Number(inv.cost));
+      }
+    }
+    return details.map((d) => ({
+      ...d,
+      price: d.price ?? costByProduct.get(d.productId) ?? 0,
+    }));
   }
 
   private async generateCode(): Promise<string> {

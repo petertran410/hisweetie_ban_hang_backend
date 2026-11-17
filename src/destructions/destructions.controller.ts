@@ -22,6 +22,7 @@ import {
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { RequirePermissions } from 'src/auth/decorators/permissions.decorator';
+import { requestHasPermission } from '../auth/request-permissions';
 
 @ApiTags('Destructions')
 @ApiBearerAuth()
@@ -38,7 +39,11 @@ export class DestructionsController {
 
   @Get('export')
   @RequirePermissions('destructions:export')
-  async export(@Query() query: DestructionQueryDto, @Res() res: Response) {
+  async export(
+    @Query() query: DestructionQueryDto,
+    @Res() res: Response,
+    @Req() req: any,
+  ) {
     const now = new Date();
     const pad = (n: number) => String(n).padStart(2, '0');
     const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
@@ -52,7 +57,12 @@ export class DestructionsController {
       `attachment; filename=XuatHuy_${ts}.xlsx`,
     );
 
-    await this.destructionsService.exportDestructions(query, res);
+    // Thiếu quyền xem giá vốn → file không có cột giá trị hủy.
+    await this.destructionsService.exportDestructions(
+      query,
+      res,
+      requestHasPermission(req, 'products:view_cost_price'),
+    );
   }
 
   @Get('export-detail')
@@ -60,6 +70,7 @@ export class DestructionsController {
   async exportDetail(
     @Query() query: DestructionQueryDto,
     @Res() res: Response,
+    @Req() req: any,
   ) {
     const now = new Date();
     const pad = (n: number) => String(n).padStart(2, '0');
@@ -74,7 +85,11 @@ export class DestructionsController {
       `attachment; filename=XuatHuy_ChiTiet_${ts}.xlsx`,
     );
 
-    await this.destructionsService.exportDestructionsDetail(query, res);
+    await this.destructionsService.exportDestructionsDetail(
+      query,
+      res,
+      requestHasPermission(req, 'products:view_cost_price'),
+    );
   }
 
   @Get(':id')
