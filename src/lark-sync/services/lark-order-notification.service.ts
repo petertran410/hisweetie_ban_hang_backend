@@ -5,6 +5,8 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { LARK_CLIENT } from '../lark-client.provider';
 import { ORDER_STATUS } from '../../orders/dto/order-status.constants';
 
+type LarkMentionUser = { name: string | null; larkUserId: string | null };
+
 /**
  * Gửi card "ĐƠN HÀNG ĐÃ ĐƯỢC CHỐT" vào Lark group khi order chuyển sang
  * trạng thái "Đã xác nhận" (status = 5).
@@ -14,6 +16,10 @@ import { ORDER_STATUS } from '../../orders/dto/order-status.constants';
  *   - LARK_CONFIRMED_CHAT_ID_SG  ← branchId = 1
  *
  * Branch khác: skip silently.
+ *
+ * Dòng "Nhân viên" (người bán) và "Người xác nhận" (người lưu đơn ở trạng
+ * thái Đã xác nhận) tag người đó trên Lark qua `users.lark_user_id` (open_id);
+ * user chưa liên kết Lark thì ghi tên dạng text.
  */
 @Injectable()
 export class LarkOrderNotificationService {
@@ -34,34 +40,49 @@ export class LarkOrderNotificationService {
   /**
    * Fire-and-forget — không throw, không block caller.
    */
-  notifyOrderConfirmedAsync(orderId: number): void {
-    this.notifyOrderConfirmed(orderId).catch((err) => {
+  notifyOrderConfirmedAsync(orderId: number, confirmedById?: number): void {
+    this.notifyOrderConfirmed(orderId, confirmedById).catch((err) => {
       this.logger.error(
         `notifyOrderConfirmed #${orderId} unexpected error: ${err?.message || err}`,
       );
     });
   }
 
-  async notifyOrderConfirmed(orderId: number): Promise<void> {
-    const order = await this.prisma.order.findUnique({
-      where: { id: orderId },
-      include: {
-        branch: { select: { id: true, name: true } },
-        soldBy: { select: { name: true } },
-        customer: {
-          include: {
-            addresses: {
-              orderBy: [{ isDefault: 'desc' }, { id: 'asc' }],
-              take: 1,
+  /**
+   * @param confirmedById user vừa lưu đơn ở trạng thái Đã xác nhận — hiện ở
+   *   dòng "Người xác nhận". Không truyền thì bỏ dòng này.
+   */
+  async notifyOrderConfirmed(
+    orderId: number,
+    confirmedById?: number,
+  ): Promise<void> {
+    const [order, confirmer] = await Promise.all([
+      this.prisma.order.findUnique({
+        where: { id: orderId },
+        include: {
+          branch: { select: { id: true, name: true } },
+          soldBy: { select: { name: true, larkUserId: true } },
+          customer: {
+            include: {
+              addresses: {
+                orderBy: [{ isDefault: 'desc' }, { id: 'asc' }],
+                take: 1,
+              },
             },
           },
+          items: {
+            include: { product: { select: { name: true } } },
+            orderBy: { id: 'asc' },
+          },
         },
-        items: {
-          include: { product: { select: { name: true } } },
-          orderBy: { id: 'asc' },
-        },
-      },
-    });
+      }),
+      confirmedById
+        ? this.prisma.user.findUnique({
+            where: { id: confirmedById },
+            select: { name: true, larkUserId: true },
+          })
+        : Promise.resolve(null),
+    ]);
 
     if (!order) {
       this.logger.warn(`Order #${orderId} not found, skip notification`);
@@ -92,7 +113,7 @@ export class LarkOrderNotificationService {
       return;
     }
 
-    const card = this.buildCard(order);
+    const card = this.buildCard(order, confirmer);
 
     try {
       const res = await this.client.im.message.create({
@@ -125,13 +146,15 @@ export class LarkOrderNotificationService {
   // CARD BUILDER
   // =============================================
 
-  private buildCard(order: any): Record<string, any> {
+  private buildCard(
+    order: any,
+    confirmer: LarkMentionUser | null,
+  ): Record<string, any> {
     const branchName = this.formatBranchName(order.branch?.name);
     const orderCode = order.code || '';
     const dateStr = this.formatDateTime(order.orderDate);
     const customerLine = this.formatCustomer(order.customer);
     const addressLine = this.formatAddress(order.customer);
-    const sellerName = order.soldBy?.name || '';
     const note = (order.description || '').trim();
     const orderUrl =
       this.config.get<string>('FRONTEND_URL') || 'http://localhost:3050';
@@ -143,8 +166,13 @@ export class LarkOrderNotificationService {
       `**Ngày:** ${dateStr}`,
       `**Khách hàng:** ${customerLine}`,
       `**Địa chỉ:** ${addressLine}`,
-      `**Nhân viên:** ${sellerName}`,
+      `**Nhân viên:** ${this.formatUserMention(order.soldBy)}`,
     ];
+    if (confirmer) {
+      headerLines.push(
+        `**Người xác nhận:** ${this.formatUserMention(confirmer)}`,
+      );
+    }
     if (note) {
       headerLines.push(`**Ghi Chú:** ${note}`);
     }
@@ -234,6 +262,14 @@ export class LarkOrderNotificationService {
         },
       ],
     };
+  }
+
+  /** Tag user trên Lark (larkUserId là open_id); chưa liên kết Lark thì ghi tên. */
+  private formatUserMention(user?: LarkMentionUser | null): string {
+    if (!user) return '';
+    return user.larkUserId
+      ? `<at id=${user.larkUserId}></at>`
+      : (user.name ?? '');
   }
 
   private formatBranchName(name?: string | null): string {

@@ -27,6 +27,7 @@ import {
 } from '../common/inventory-log.util';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 import { USER_PUBLIC_SELECT } from '../common/user-select.util';
+import { fillMissingPricesFromCost } from '../common/fill-missing-prices.util';
 
 @Injectable()
 export class DestructionsService {
@@ -337,7 +338,9 @@ export class DestructionsService {
     const status = isDraft ? 1 : 2;
     const destructionDate = isDraft ? null : new Date();
 
-    const details = await this.fillMissingPrices(
+    // Dòng không gửi price (user thiếu quyền xem giá vốn) → lấy giá vốn hiện tại.
+    const details = await fillMissingPricesFromCost(
+      this.prisma,
       dto.destructionDetails,
       dto.branchId,
     );
@@ -464,7 +467,8 @@ export class DestructionsService {
     }
 
     const details = dto.destructionDetails
-      ? await this.fillMissingPrices(
+      ? await fillMissingPricesFromCost(
+          this.prisma,
           dto.destructionDetails,
           destruction.branchId,
         )
@@ -687,36 +691,6 @@ export class DestructionsService {
     });
 
     return { message: 'Destruction cancelled successfully' };
-  }
-
-  /**
-   * Điền giá vốn cho các dòng không gửi `price`. FE bỏ trống price khi user
-   * thiếu quyền products:view_cost_price (API products đã bỏ cost) → lấy giá
-   * vốn hiện tại của sản phẩm tại chi nhánh phiếu hủy, để giá trị hủy không bị
-   * ghi 0. Cùng ý tưởng với resolveItemPrice bên order-suppliers.
-   */
-  private async fillMissingPrices<
-    T extends { productId: number; price?: number | null },
-  >(details: T[], branchId: number): Promise<(T & { price: number })[]> {
-    const missingIds = [
-      ...new Set(
-        details.filter((d) => d.price == null).map((d) => d.productId),
-      ),
-    ];
-    const costByProduct = new Map<number, number>();
-    if (missingIds.length > 0) {
-      const inventories = await this.prisma.inventory.findMany({
-        where: { branchId, productId: { in: missingIds } },
-        select: { productId: true, cost: true },
-      });
-      for (const inv of inventories) {
-        costByProduct.set(inv.productId, Number(inv.cost));
-      }
-    }
-    return details.map((d) => ({
-      ...d,
-      price: d.price ?? costByProduct.get(d.productId) ?? 0,
-    }));
   }
 
   private async generateCode(): Promise<string> {

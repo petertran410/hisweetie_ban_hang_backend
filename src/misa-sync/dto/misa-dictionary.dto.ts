@@ -48,6 +48,20 @@ export interface MisaInventoryItemDto {
 }
 
 /**
+ * Đơn vị tính từ Misa (data_type = 4)
+ * Dùng để tra tên ĐVT theo unit_id khi danh mục vật tư không trả unit_name.
+ */
+export interface MisaUnitDto {
+  unit_id: string;
+  unit_name: string;
+  inactive?: boolean;
+  description?: string;
+  branch_id?: string;
+  created_date?: string;
+  modified_date?: string;
+}
+
+/**
  * Stock từ Misa (data_type = 3)
  */
 export interface MisaStockDto {

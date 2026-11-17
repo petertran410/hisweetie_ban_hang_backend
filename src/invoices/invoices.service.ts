@@ -104,6 +104,8 @@ const POS_PREPAID_ORDER_MESSAGE =
   'Khách hàng không được phép phát sinh công nợ. Đơn hàng chưa được thanh toán đủ nên không thể tạo hóa đơn. Vui lòng thanh toán đủ trước khi tạo hóa đơn.';
 const POS_PREPAID_INVOICE_MESSAGE =
   'Khách hàng không được phép phát sinh công nợ. Hóa đơn chưa được thanh toán đủ nên không thể tạo hóa đơn. Vui lòng thanh toán đủ trước khi tạo hóa đơn.';
+const POS_PREPAID_ORDER_CASH_SWITCH_MESSAGE =
+  'Khách hàng không được phép phát sinh công nợ. Đơn đặt hàng không ghi chú thu tiền mặt nên chọn Tiền mặt ở màn tạo hóa đơn không được miễn kiểm tra. Vui lòng thanh toán đủ trên đơn trước khi tạo hóa đơn.';
 
 const INVOICE_PACKING_CREATOR_PARENT_SELECT = {
   createdAt: true,
@@ -4256,6 +4258,8 @@ export class InvoicesService {
     currentCustomerDebt?: number;
     mode: 'invoice' | 'order';
     paymentMethod?: 'cash' | 'transfer' | string;
+    /** Ghi đè thông báo mặc định theo `mode`. */
+    message?: string;
   }) {
     assertPrepaidPolicySatisfied({
       policy: input.policy,
@@ -4264,9 +4268,10 @@ export class InvoicesService {
       currentCustomerDebt: input.currentCustomerDebt,
       paymentMethod: input.paymentMethod,
       message:
-        input.mode === 'order'
+        input.message ??
+        (input.mode === 'order'
           ? POS_PREPAID_ORDER_MESSAGE
-          : POS_PREPAID_INVOICE_MESSAGE,
+          : POS_PREPAID_INVOICE_MESSAGE),
     });
   }
 
@@ -4348,13 +4353,13 @@ export class InvoicesService {
         .filter((payment) => payment.status !== 2)
         .reduce((sum, payment) => sum + Number(payment.amount), 0);
 
-      const paymentMethod =
-        dto.paymentNoteType ||
-        dto.paymentType ||
-        (order.paymentNotes?.[0]?.paymentType as
-          | 'cash'
-          | 'transfer'
-          | undefined);
+      // Miễn kiểm tra "thu tiền mặt khi giao" chỉ theo ghi chú thanh toán
+      // của ĐƠN (giống assertCanConfirmOrder). Đổi CK → TM ở màn tạo hóa
+      // đơn không được dùng để vượt qua kiểm tra.
+      const orderPaymentMethod = order.paymentNotes?.[0]?.paymentType;
+      const switchedToCash =
+        (dto.paymentNoteType || dto.paymentType) === 'cash' &&
+        orderPaymentMethod !== 'cash';
 
       this.assertCustomerInvoiceCanBeCreated({
         policy: order.customer?.debtPolicy,
@@ -4362,7 +4367,10 @@ export class InvoicesService {
         grandTotal: Number(order.grandTotal),
         currentCustomerDebt: Number(order.customer?.totalDebt || 0),
         mode: 'order',
-        paymentMethod,
+        paymentMethod: orderPaymentMethod,
+        message: switchedToCash
+          ? POS_PREPAID_ORDER_CASH_SWITCH_MESSAGE
+          : undefined,
       });
 
       const invoicedQuantities: Record<number, number> = {};

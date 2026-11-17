@@ -11,6 +11,7 @@ import {
   MisaStockDto,
   MisaAccountObjectDto,
   MisaOrganizationUnitDto,
+  MisaUnitDto,
 } from './dto';
 
 @Injectable()
@@ -107,8 +108,13 @@ export class MisaDictionaryService {
   async syncInventoryItems(): Promise<number> {
     this.logger.log('📦 Syncing inventory items...');
     let totalSynced = 0;
+    let missingUnitCount = 0;
+    let loggedItemKeys = false;
     let skip = 0;
     const take = 1000;
+
+    // Danh mục vật tư (data_type = 2) có thể không trả unit_name → tra theo unit_id.
+    const unitNameMap = await this.fetchUnitNameMap();
 
     while (true) {
       const items = await this.fetchDictionary<MisaInventoryItemDto>(
@@ -119,6 +125,14 @@ export class MisaDictionaryService {
 
       if (!items || items.length === 0) {
         break;
+      }
+
+      if (!loggedItemKeys) {
+        // Chỉ log tên trường (không log giá trị) để biết Misa đang trả những gì.
+        this.logger.log(
+          `ℹ️ Misa inventory item fields: ${Object.keys(items[0] ?? {}).join(',')}`,
+        );
+        loggedItemKeys = true;
       }
 
       for (const item of items) {
@@ -134,7 +148,12 @@ export class MisaDictionaryService {
             this.truncateString(item.inventory_item_code, 100) || '';
           const inventoryItemName =
             this.truncateString(item.inventory_item_name, 255) || '';
-          const unitName = this.truncateString(item.unit_name, 100);
+          const unitId = item.unit_id || null;
+          const unitName = this.truncateString(
+            item.unit_name?.trim() ||
+              (unitId ? unitNameMap.get(unitId.toLowerCase()) : undefined),
+            100,
+          );
           const inventoryAccount = this.truncateString(
             item.inventory_account,
             20,
@@ -152,8 +171,9 @@ export class MisaDictionaryService {
               inventoryItemCode,
               inventoryItemName,
               inventoryItemType: item.inventory_item_type || 0,
-              unitId: item.unit_id || null,
-              unitName,
+              // Chỉ ghi khi có giá trị: response thiếu trường không được xóa ĐVT đã lưu.
+              ...(unitId ? { unitId } : {}),
+              ...(unitName ? { unitName } : {}),
               defaultStockId: item.default_stock_id || null,
               branchId: item.branch_id || null,
               unitPrice: item.unit_price ? Number(item.unit_price) : null,
@@ -169,7 +189,7 @@ export class MisaDictionaryService {
               inventoryItemCode,
               inventoryItemName,
               inventoryItemType: item.inventory_item_type || 0,
-              unitId: item.unit_id || null,
+              unitId,
               unitName,
               defaultStockId: item.default_stock_id || null,
               branchId: item.branch_id || null,
@@ -183,6 +203,9 @@ export class MisaDictionaryService {
             },
           });
           totalSynced++;
+          if (!unitName) {
+            missingUnitCount++;
+          }
         } catch (error) {
           this.logger.warn(
             `⚠️ Failed to sync inventory item ${item.inventory_item_code}: ${error.message}`,
@@ -196,8 +219,53 @@ export class MisaDictionaryService {
       skip += take;
     }
 
+    if (missingUnitCount > 0) {
+      this.logger.warn(
+        `⚠️ ${missingUnitCount} inventory items without unit name (unit_id missing or not in Misa unit dictionary)`,
+      );
+    }
     this.logger.log(`✅ Synced ${totalSynced} inventory items`);
     return totalSynced;
+  }
+
+  /**
+   * Tải danh mục Đơn vị tính (data_type = 4) thành map unit_id → unit_name.
+   * Lỗi chỉ cảnh báo và trả map (có thể rỗng) để không làm hỏng lượt sync vật tư.
+   */
+  private async fetchUnitNameMap(): Promise<Map<string, string>> {
+    const unitNameMap = new Map<string, string>();
+    let skip = 0;
+    const take = 1000;
+
+    try {
+      while (true) {
+        const units = await this.fetchDictionary<MisaUnitDto>(4, skip, take);
+
+        if (!units || units.length === 0) {
+          break;
+        }
+
+        for (const unit of units) {
+          const unitName = unit.unit_name?.trim();
+          if (unit.unit_id && unitName) {
+            unitNameMap.set(unit.unit_id.toLowerCase(), unitName);
+          }
+        }
+
+        if (units.length < take) {
+          break;
+        }
+        skip += take;
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `⚠️ Failed to load Misa units (data_type=4): ${message}`,
+      );
+    }
+
+    this.logger.log(`📏 Loaded ${unitNameMap.size} Misa units`);
+    return unitNameMap;
   }
 
   /**
