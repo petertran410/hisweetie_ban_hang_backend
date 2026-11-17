@@ -1251,6 +1251,56 @@ export class CustomersService {
     return { id: customer.id, comments: customer.comments };
   }
 
+  /** Ngừng hoạt động / kích hoạt (PATCH /customers/:id/status). Không xóa dữ liệu. */
+  async updateStatus(id: number, isActive: boolean, userId?: number) {
+    const existing = await this.prisma.customer.findUnique({
+      where: { id },
+      select: { id: true, isActive: true },
+    });
+    if (!existing) {
+      throw new NotFoundException(`Customer with id ${id} not found`);
+    }
+
+    const customer = await this.prisma.customer.update({
+      where: { id },
+      data: { isActive },
+      include: { customerType: true, branch: true },
+    });
+
+    const changes = buildChanges(
+      'customers',
+      { isActive: existing.isActive },
+      { isActive },
+    );
+    if (userId && changes.length > 0) {
+      const user = await this.prisma.user.findUnique({
+        where: { id: userId },
+        select: { name: true, email: true, branchId: true },
+      });
+      await this.auditLogsService.create({
+        actionType: 'PATCH',
+        actionCode: 'CUSTOMER_UPDATE',
+        entityType: 'customers',
+        entityId: id.toString(),
+        entityCode: customer.code || '',
+        category: getCategoryFromActionCode('CUSTOMER_UPDATE'),
+        severity: getSeverityFromActionCode('CUSTOMER_UPDATE'),
+        snapshot: this.buildCustomerSnapshot(customer),
+        changes,
+        message: renderAuditMessage('CUSTOMER_UPDATE', {
+          customerName: customer.name,
+          customerCode: customer.code,
+        }),
+        messageTemplate: 'CUSTOMER_UPDATE',
+        userId,
+        userName: user?.name || user?.email || 'System',
+        branchId: user?.branchId || undefined,
+      });
+    }
+
+    return { id: customer.id, isActive: customer.isActive };
+  }
+
   async remove(id: number, userId?: number) {
     const customer = await this.prisma.customer.findUnique({
       where: { id },
