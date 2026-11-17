@@ -68,6 +68,71 @@ describe('DebtTrackingService policy normalization', () => {
   });
 });
 
+describe('DebtTrackingService policy — trạng thái "Chưa thiết lập"', () => {
+  const setup = () => {
+    const upsert = jest.fn().mockResolvedValue({ id: 10 });
+    const prisma = {
+      customer: { findUnique: jest.fn().mockResolvedValue({ id: 1 }) },
+      customerDebtPolicy: { upsert },
+    };
+    const service = new DebtTrackingService(prisma as any, {} as any);
+    return { service, upsert };
+  };
+
+  it('NONE + cờ false giữ khách ở "Chưa thiết lập" (không bắt trả đủ)', async () => {
+    const { service, upsert } = setup();
+
+    await service.upsertPolicy(
+      1,
+      {
+        debtRuleType: 'NONE',
+        hasCreditLimit: false,
+        hasTermDays: false,
+        requireFullPaymentForInvoice: false,
+      } as any,
+      7,
+    );
+
+    const args = upsert.mock.calls[0][0];
+    expect(args.create.requireFullPaymentForInvoice).toBe(false);
+    expect(args.update.requireFullPaymentForInvoice).toBe(false);
+  });
+
+  it('quy tắc cho nợ luôn tắt cờ dù FE gửi true', async () => {
+    const { service, upsert } = setup();
+
+    await service.upsertPolicy(
+      1,
+      {
+        debtRuleType: 'CREDIT_LIMIT',
+        hasCreditLimit: true,
+        hasTermDays: false,
+        creditLimit: 1000000,
+        requireFullPaymentForInvoice: true,
+      } as any,
+      7,
+    );
+
+    const args = upsert.mock.calls[0][0];
+    expect(args.create.requireFullPaymentForInvoice).toBe(false);
+    expect(args.update.requireFullPaymentForInvoice).toBe(false);
+  });
+
+  it('request cũ không gửi debtRuleType và cờ thì không đổi cờ đã lưu', async () => {
+    const { service, upsert } = setup();
+
+    await service.upsertPolicy(
+      1,
+      { hasCreditLimit: false, hasTermDays: false } as any,
+      7,
+    );
+
+    const args = upsert.mock.calls[0][0];
+    expect(args.update).not.toHaveProperty('requireFullPaymentForInvoice');
+    expect(args.create.requireFullPaymentForInvoice).toBe(false);
+  });
+});
+
 describe('DebtTrackingService Sale PIC notifications', () => {
   it('sends a summary to the Sale PIC Lark ID and reports missing IDs', async () => {
     const prisma = {

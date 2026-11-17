@@ -166,7 +166,9 @@ const INVOICE_LIST_SELECT = {
       name: true,
       contactNumber: true,
       phone: true,
-      debtPolicy: { select: { debtRuleType: true } },
+      debtPolicy: {
+        select: { debtRuleType: true, requireFullPaymentForInvoice: true },
+      },
       addresses: {
         select: { address: true },
         take: 1,

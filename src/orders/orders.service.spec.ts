@@ -59,7 +59,12 @@ describe('OrdersService findAll', () => {
         select: expect.objectContaining({
           customer: expect.objectContaining({
             select: expect.objectContaining({
-              debtPolicy: { select: { debtRuleType: true } },
+              debtPolicy: {
+                select: {
+                  debtRuleType: true,
+                  requireFullPaymentForInvoice: true,
+                },
+              },
             }),
           }),
         }),
