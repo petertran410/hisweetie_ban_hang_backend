@@ -1,5 +1,6 @@
 import { InvoicesService } from './invoices.service';
 import { INVOICE_STATUS } from './dto';
+import { ORDER_STATUS } from '../orders/dto/order-status.constants';
 
 describe('InvoicesService findAll', () => {
   it.each(['createdAt', 'remainingAmount'])(
@@ -505,6 +506,72 @@ describe('InvoicesService customer invoice debt guard', () => {
         paymentMethod: 'transfer',
       }),
     ).not.toThrow();
+  });
+
+  describe('createFromOrder', () => {
+    const createFromOrderService = (orderPaymentType: string) => {
+      const tx = {
+        $queryRaw: jest.fn().mockResolvedValue([]),
+        order: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 1,
+            status: ORDER_STATUS.CONFIRMED,
+            branchId: 1,
+            customerId: 7,
+            grandTotal: 100,
+            items: [],
+            payments: [],
+            invoices: [],
+            paymentNotes: [{ paymentType: orderPaymentType }],
+            customer: { id: 7, totalDebt: 0, debtPolicy: policy(true) },
+          }),
+        },
+        debtTicketCustomer: { findFirst: jest.fn().mockResolvedValue(null) },
+      };
+      const prisma = {
+        $transaction: jest.fn((fn: (client: any) => unknown) => fn(tx)),
+      };
+      return new InvoicesService(
+        prisma as any,
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+    };
+
+    it('chặn khi đơn ghi chú chuyển khoản dù màn tạo hóa đơn chọn tiền mặt', async () => {
+      const service = createFromOrderService('transfer');
+
+      await expect(
+        service.createFromOrder(
+          1,
+          { paymentNoteType: 'cash', paymentType: 'cash' } as any,
+          1,
+          true,
+        ),
+      ).rejects.toThrow(
+        'chọn Tiền mặt ở màn tạo hóa đơn không được miễn kiểm tra',
+      );
+    });
+
+    it('vẫn miễn kiểm tra khi chính đơn ghi chú thu tiền mặt', async () => {
+      const service = createFromOrderService('cash');
+
+      // Vượt qua kiểm tra công nợ, dừng ở bước sau vì đơn không có dòng hàng.
+      await expect(
+        service.createFromOrder(
+          1,
+          { paymentNoteType: 'cash', paymentType: 'cash' } as any,
+          1,
+          true,
+        ),
+      ).rejects.toThrow('Tất cả sản phẩm trong đơn hàng đã được xuất hóa đơn');
+    });
   });
 });
 

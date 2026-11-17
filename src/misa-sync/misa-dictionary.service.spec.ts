@@ -139,3 +139,99 @@ describe('MisaDictionaryService OpenAPI dictionary flow', () => {
     expect(upsert).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('MisaDictionaryService inventory item unit names', () => {
+  const config = {
+    get: jest.fn((key: string) =>
+      key === 'MISA_BASE_URL'
+        ? 'https://developer.misa.vn/apis'
+        : key === 'MISA_CLIENT_ID'
+          ? 'client-id'
+          : undefined,
+    ),
+  };
+
+  /**
+   * Mock get_dictionary theo data_type: 2 = vật tư, 4 = đơn vị tính.
+   * `units` = Error → data_type 4 trả Success=false.
+   */
+  const buildService = (items: unknown[], units: unknown[] | Error) => {
+    const post = jest.fn((_url: string, body: { data_type: number }) => {
+      if (body.data_type === 4) {
+        return of({
+          data:
+            units instanceof Error
+              ? { Success: false, ErrorMessage: units.message }
+              : { Success: true, Data: units },
+        });
+      }
+      return of({ data: { Success: true, Data: items } });
+    });
+    const upsert = jest.fn().mockResolvedValue({});
+    const service = new MisaDictionaryService(
+      config as any,
+      { post } as any,
+      { misaInventoryItem: { upsert } } as any,
+      { getAccessToken: jest.fn().mockResolvedValue('access-token') } as any,
+    );
+    return { service, post, upsert };
+  };
+
+  const baseItem = {
+    dictionary_type: 2,
+    inventory_item_id: 'item-1',
+    inventory_item_code: 'VT01',
+    inventory_item_name: 'Vật tư 1',
+    inventory_item_type: 0,
+  };
+
+  it('resolves unit name from the unit dictionary when unit_name is missing', async () => {
+    const { service, post, upsert } = buildService(
+      [{ ...baseItem, unit_id: 'UNIT-1' }],
+      [{ unit_id: 'unit-1', unit_name: ' Hộp ' }],
+    );
+
+    await expect(service.syncInventoryItems()).resolves.toBe(1);
+
+    expect(post.mock.calls.map((call) => call[1].data_type)).toEqual([4, 2]);
+    const args = upsert.mock.calls[0][0];
+    expect(args.update).toMatchObject({ unitId: 'UNIT-1', unitName: 'Hộp' });
+    expect(args.create).toMatchObject({ unitId: 'UNIT-1', unitName: 'Hộp' });
+  });
+
+  it('prefers unit_name returned on the inventory item', async () => {
+    const { service, upsert } = buildService(
+      [{ ...baseItem, unit_id: 'unit-1', unit_name: 'Cái' }],
+      [{ unit_id: 'unit-1', unit_name: 'Hộp' }],
+    );
+
+    await service.syncInventoryItems();
+
+    expect(upsert.mock.calls[0][0].update.unitName).toBe('Cái');
+  });
+
+  it('does not overwrite stored unit fields when no unit can be resolved', async () => {
+    const { service, upsert } = buildService([{ ...baseItem }], []);
+
+    await expect(service.syncInventoryItems()).resolves.toBe(1);
+
+    const args = upsert.mock.calls[0][0];
+    expect(args.update).not.toHaveProperty('unitName');
+    expect(args.update).not.toHaveProperty('unitId');
+    expect(args.create.unitName).toBeNull();
+    expect(args.create.unitId).toBeNull();
+  });
+
+  it('still syncs inventory items when the unit dictionary fails', async () => {
+    const { service, upsert } = buildService(
+      [{ ...baseItem, unit_id: 'unit-1' }],
+      new Error('Unit API down'),
+    );
+
+    await expect(service.syncInventoryItems()).resolves.toBe(1);
+
+    const args = upsert.mock.calls[0][0];
+    expect(args.update).toMatchObject({ unitId: 'unit-1' });
+    expect(args.update).not.toHaveProperty('unitName');
+  });
+});

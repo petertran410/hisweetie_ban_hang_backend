@@ -39,6 +39,7 @@ import {
   InventoryLogActor,
   buildInventoryLogBase,
 } from 'src/common/inventory-log.util';
+import { fillMissingPricesFromCost } from '../common/fill-missing-prices.util';
 
 @Injectable()
 export class PurchaseOrdersService {
@@ -100,8 +101,12 @@ export class PurchaseOrdersService {
     // auto-generate (đối xứng `order-suppliers.service.resolveOrderSupplierCode`).
     const code = await this.resolvePurchaseOrderCode(tx, dto.code);
 
+    // Dòng không gửi price (user thiếu quyền xem giá vốn) → lấy giá vốn hiện
+    // tại theo chi nhánh TRƯỚC khi tính totalPrice, để thành tiền dùng giá thật.
+    const items = await fillMissingPricesFromCost(tx, dto.items, dto.branchId);
+
     const itemsData = await Promise.all(
-      dto.items.map(async (item, index) => {
+      items.map(async (item, index) => {
         const product = await tx.product.findUnique({
           where: { id: item.productId },
         });
@@ -607,9 +612,11 @@ export class PurchaseOrdersService {
     }
 
     // Items: dùng dto.items nếu có, ngược lại fallback remainingItems.
+    // Dòng FE thêm mới mà không gửi price (user thiếu quyền xem giá vốn) →
+    // lấy giá vốn hiện tại theo chi nhánh phiếu nhập.
     const itemsToReceive = (
       dto.items && dto.items.length > 0
-        ? dto.items
+        ? await fillMissingPricesFromCost(tx, dto.items, branchId)
         : remainingItems.map((item: any) => ({
             productId: item.productId,
             productCode: item.productCode,
@@ -1679,8 +1686,16 @@ export class PurchaseOrdersService {
           where: { purchaseOrderId: id },
         });
 
+        // Đối xứng create(): dòng không gửi price → giá vốn hiện tại theo chi
+        // nhánh của phiếu (sau khi sửa).
+        const items = await fillMissingPricesFromCost(
+          tx,
+          dto.items,
+          dto.branchId ?? existing.branchId,
+        );
+
         const itemsData = await Promise.all(
-          dto.items.map(async (item, index) => {
+          items.map(async (item, index) => {
             const product = await tx.product.findUnique({
               where: { id: item.productId },
             });

@@ -427,6 +427,13 @@ export class MisaVoucherService {
       totalSaleAmount += amountBeforeTax;
       totalVatAmount += vatAmount;
 
+      const unitName = inventoryItem.unitName || product.misa_unit || '';
+      if (!unitName) {
+        this.logger.warn(
+          `⚠️ Missing unit name for product ${product.code} (misa_code ${product.misa_code}) on invoice ${invoice.code}`,
+        );
+      }
+
       details.push({
         inventory_item_id: inventoryItem.inventoryItemId,
         inventory_item_code: inventoryItem.inventoryItemCode,
@@ -435,9 +442,9 @@ export class MisaVoucherService {
         description: inventoryItem.inventoryItemName,
 
         unit_id: inventoryItem.unitId || undefined,
-        unit_name: inventoryItem.unitName || product.misa_unit,
+        unit_name: unitName,
         main_unit_id: inventoryItem.unitId || undefined,
-        main_unit_name: inventoryItem.unitName || product.misa_unit,
+        main_unit_name: unitName,
 
         quantity,
         main_quantity: quantity,

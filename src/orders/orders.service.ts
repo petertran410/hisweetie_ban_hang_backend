@@ -1221,9 +1221,10 @@ export class OrdersService {
 
     // Gửi card "ĐƠN HÀNG ĐÃ ĐƯỢC CHỐT" vào Lark group HN/SG mỗi khi đơn được
     // lưu ở trạng thái "Đã xác nhận" (status = 5). Chạy ngoài transaction,
-    // fire-and-forget để không ảnh hưởng response time.
+    // fire-and-forget để không ảnh hưởng response time. Người lưu lần này
+    // hiện ở dòng "Người xác nhận" của card.
     if (result?.status === ORDER_STATUS.CONFIRMED) {
-      this.larkOrderNotification.notifyOrderConfirmedAsync(id);
+      this.larkOrderNotification.notifyOrderConfirmedAsync(id, user?.id);
     }
     if (result) {
       this.orderPriceNotifier?.notifyAsync(id, {

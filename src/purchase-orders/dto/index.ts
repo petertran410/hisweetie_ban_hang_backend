@@ -19,8 +19,11 @@ export class PurchaseOrderItemDto {
   @IsNumber()
   quantity: number;
 
+  // Bỏ trống khi user thiếu quyền products:view_cost_price (API products đã
+  // bỏ cost) → service tự lấy giá vốn hiện tại theo chi nhánh phiếu nhập.
+  @IsOptional()
   @IsNumber()
-  price: number;
+  price?: number;
 
   @IsNumber()
   @IsOptional()
@@ -326,8 +329,10 @@ export class CreatePurchaseOrderFromOrderSupplierItemDto {
   @IsNumber()
   quantity: number;
 
+  // Bỏ trống khi user thiếu quyền xem giá vốn → service tự lấy giá vốn.
+  @IsOptional()
   @IsNumber()
-  price: number;
+  price?: number;
 
   @IsNumber()
   @IsOptional()
