@@ -41,6 +41,7 @@ describe('OrdersService findAll', () => {
         findMany: jest.fn().mockResolvedValue([order]),
         count: jest.fn().mockResolvedValue(1),
       },
+      orderItem: { findMany: jest.fn().mockResolvedValue([]) },
       $queryRaw: jest.fn().mockResolvedValue([]),
     };
     const service = new OrdersService(
@@ -76,12 +77,16 @@ describe('OrdersService findAll', () => {
     expect(result.data[0]).toMatchObject({ hasPriceBookWarning: false, warnings: null });
   });
 
-  it('gắn cảnh báo lệch giá bảng giá theo từng đơn', async () => {
+  it('gắn cảnh báo lệch giá bảng giá, phí ship, hàng lạnh theo từng đơn', async () => {
     const prisma = {
       order: {
-        findMany: jest.fn().mockResolvedValue([{ id: 1 }, { id: 2 }]),
+        findMany: jest.fn().mockResolvedValue([
+          { id: 1, shippingFee: new Prisma.Decimal(0) },
+          { id: 2, shippingFee: new Prisma.Decimal(30000) },
+        ]),
         count: jest.fn().mockResolvedValue(2),
       },
+      orderItem: { findMany: jest.fn().mockResolvedValue([{ orderId: 1 }]) },
       $queryRaw: jest.fn().mockResolvedValue([
         { id: 2, productCode: 'SP1', productName: 'Mứt Mận', price: new Prisma.Decimal(135000), listPrice: new Prisma.Decimal(140000) },
       ]),
@@ -90,9 +95,21 @@ describe('OrdersService findAll', () => {
 
     const result = await service.findAll({ page: 1, limit: 15 } as any);
 
-    expect(result.data[0]).toMatchObject({ hasPriceBookWarning: false, warnings: null });
+    expect(prisma.orderItem.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { orderId: { in: [1, 2] }, product: { cargoType: 'COLD' } },
+      }),
+    );
+    expect(result.data[0]).toMatchObject({
+      hasPriceBookWarning: false,
+      hasShippingFee: false,
+      hasColdItems: true,
+      warnings: null,
+    });
     expect(result.data[1]).toMatchObject({
       hasPriceBookWarning: true,
+      hasShippingFee: true,
+      hasColdItems: false,
       warnings: {
         price: [{ productCode: 'SP1', productName: 'Mứt Mận', price: 135000, listPrice: 140000 }],
         quantity: [],
@@ -467,9 +484,10 @@ describe('OrdersService update — chặn xác nhận đơn theo công nợ', ()
     await service.update(1, { orderStatus: 'confirmed' } as any, { id: 9 });
 
     expect(tx.debtTicketCustomer.findFirst).toHaveBeenCalled();
+    // (orderId, confirmedById): người xác nhận là user id 9
     expect(
       larkOrderNotification.notifyOrderConfirmedAsync,
-    ).toHaveBeenCalledWith(1);
+    ).toHaveBeenCalledWith(1, 9);
   });
 
   it('không kiểm tra khi chỉ sửa ghi chú hoặc đơn đã xác nhận sẵn', async () => {
