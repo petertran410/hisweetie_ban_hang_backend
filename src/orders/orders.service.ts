@@ -1441,11 +1441,24 @@ export class OrdersService {
         : Promise.resolve(undefined),
     ]);
 
-    // Cảnh báo lệch giá bảng giá (như danh sách hóa đơn); cùng cấu trúc warnings để dùng chung icon/hộp thoại
-    const priceRows = await findOrderPriceWarnings(
-      this.prisma,
-      data.map((o) => o.id),
-    );
+    // Icon nhóm "Cảnh báo đơn hàng" — khớp điều kiện của applyOrderAlertFilters.
+    // Lệch giá bảng giá (như danh sách hóa đơn): cùng cấu trúc warnings để dùng chung icon/hộp thoại.
+    const orderIds = data.map((o) => o.id);
+    const [priceRows, coldRows] = await Promise.all([
+      findOrderPriceWarnings(this.prisma, orderIds),
+      // Hàng lạnh: đơn có dòng sản phẩm cargoType = 'COLD' (chỉ xét đơn của trang).
+      orderIds.length > 0
+        ? this.prisma.orderItem.findMany({
+            where: {
+              orderId: { in: orderIds },
+              product: { cargoType: 'COLD' },
+            },
+            select: { orderId: true },
+            distinct: ['orderId'],
+          })
+        : Promise.resolve([] as { orderId: number }[]),
+    ]);
+    const coldSet = new Set(coldRows.map((row) => row.orderId));
     const priceByOrder = new Map<number, typeof priceRows>();
     for (const row of priceRows) {
       const id = Number(row.id);
@@ -1458,6 +1471,8 @@ export class OrdersService {
         return {
           ...order,
           hasPriceBookWarning: rows.length > 0,
+          hasShippingFee: Number(order.shippingFee ?? 0) > 0,
+          hasColdItems: coldSet.has(order.id),
           warnings: rows.length
             ? {
                 price: rows.map((r) => ({

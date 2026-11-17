@@ -212,7 +212,7 @@ const INVOICE_LIST_SELECT = {
 } as const;
 
 /** Lý do cảnh báo của một hóa đơn trên danh sách (tooltip icon ⚠). */
-interface InvoiceListWarnings {
+export interface InvoiceListWarnings {
   price: {
     productCode: string;
     productName: string;
@@ -381,8 +381,31 @@ export class InvoicesService {
    * Không xét đóng hàng hay loading. Hậu tố kế tiếp là số nhỏ nhất lớn hơn
    * hậu tố hiện tại, cùng gốc HD######. Phiếu đã hủy mềm không tính.
    * Không có bản .xx thì không khớp.
+   *
+   * `among`: chỉ xét các hóa đơn này (icon cảnh báo theo trang) — giới hạn theo
+   * mã gốc HD###### của chúng thay vì quét toàn bộ bảng. Bỏ trống = cả bảng
+   * (bộ lọc "Chỉ HĐ hủy còn giao hàng").
    */
-  private async findOrphanedPackingInvoiceIds(): Promise<number[]> {
+  private async findOrphanedPackingInvoiceIds(
+    among?: { id: number; code: string }[],
+  ): Promise<number[]> {
+    let parsedScope = Prisma.empty;
+    let cancelledScope = Prisma.empty;
+    if (among) {
+      const baseCodes = [
+        ...new Set(
+          among
+            .map((invoice) => /^(HD\d{6})/.exec(invoice.code)?.[1])
+            .filter((code): code is string => !!code),
+        ),
+      ];
+      if (baseCodes.length === 0) return [];
+      parsedScope = Prisma.sql`AND substring(code from '^(HD[0-9]{6})') IN (${Prisma.join(baseCodes)})`;
+      cancelledScope = Prisma.sql`AND c.id IN (${Prisma.join(
+        among.map((invoice) => invoice.id),
+      )})`;
+    }
+
     const rows = await this.prisma.$queryRaw<{ id: number }[]>`
       WITH parsed AS (
         SELECT
@@ -392,6 +415,7 @@ export class InvoicesService {
           COALESCE(substring(code from '\\.([0-9]+)$')::int, 0) AS suffix
         FROM invoices
         WHERE code ~ '^HD[0-9]{6}(\\.[0-9]+)?$'
+          ${parsedScope}
       ),
       successors AS (
         SELECT DISTINCT ON (c.id)
@@ -402,12 +426,14 @@ export class InvoicesService {
           ON s.base_code = c.base_code
          AND s.suffix > c.suffix
         WHERE c.status = 2
+          ${cancelledScope}
         ORDER BY c.id, s.suffix ASC, s.id ASC
       )
       SELECT c.id
       FROM parsed c
       JOIN successors suc ON suc.cancelled_id = c.id
       WHERE c.status = 2
+        ${cancelledScope}
         AND EXISTS (
           SELECT 1
           FROM packing_slip_invoices link
@@ -1135,10 +1161,14 @@ export class InvoicesService {
   }
 
   /**
-   * Cảnh báo trên danh sách hóa đơn (icon ⚠ + tooltip lý do):
+   * Icon nhóm "Cảnh báo hóa đơn" trên danh sách (Hóa đơn + Hóa đơn VAT), khớp
+   * đúng điều kiện của applyInvoiceAlertFilters:
    * - Lệch giá: bảng giá 2/3, dòng có (price - discount) < giá niêm yết đang active.
    * - Lệch số lượng: xem findInvoiceQuantityMismatches (đơn tách giao so với SL còn lại).
-   * Bỏ qua hóa đơn đã hủy.
+   *   Hai cảnh báo trên bỏ qua hóa đơn đã hủy.
+   * - Hủy còn giao hàng: findOrphanedPackingInvoiceIds (chỉ xét hóa đơn hủy của trang).
+   * - Có phí ship: shippingFee > 0.
+   * - Hàng lạnh: có dòng sản phẩm cargoType = 'COLD'.
    */
   private async attachPriceBookWarnings<T extends { id: number }>(
     invoices: T[],
@@ -1146,6 +1176,9 @@ export class InvoicesService {
     (T & {
       hasPriceBookWarning: boolean;
       hasQuantityWarning: boolean;
+      hasOrphanedPacking: boolean;
+      hasShippingFee: boolean;
+      hasColdItems: boolean;
       warnings: InvoiceListWarnings | null;
     })[]
   > {
@@ -1155,6 +1188,14 @@ export class InvoicesService {
       (invoice) =>
         ![INVOICE_STATUS.CANCELLED].includes((invoice as any).status),
     );
+    const cancelled = invoices
+      .filter(
+        (invoice) => (invoice as any).status === INVOICE_STATUS.CANCELLED,
+      )
+      .map((invoice) => ({
+        id: invoice.id,
+        code: String((invoice as any).code ?? ''),
+      }));
     const priceIds = active
       .filter((invoice) => [2, 3].includes(Number((invoice as any).priceBookId)))
       .map((invoice) => invoice.id);
@@ -1169,10 +1210,24 @@ export class InvoicesService {
       return w;
     };
 
-    const [priceRows, quantityMismatches] = await Promise.all([
-      findInvoicePriceWarnings(this.prisma, priceIds),
-      findInvoiceQuantityMismatches(this.prisma, activeIds),
-    ]);
+    const [priceRows, quantityMismatches, orphanIds, coldRows] =
+      await Promise.all([
+        findInvoicePriceWarnings(this.prisma, priceIds),
+        findInvoiceQuantityMismatches(this.prisma, activeIds),
+        cancelled.length > 0
+          ? this.findOrphanedPackingInvoiceIds(cancelled)
+          : Promise.resolve([] as number[]),
+        this.prisma.invoiceDetail.findMany({
+          where: {
+            invoiceId: { in: invoices.map((invoice) => invoice.id) },
+            product: { cargoType: 'COLD' },
+          },
+          select: { invoiceId: true },
+          distinct: ['invoiceId'],
+        }),
+      ]);
+    const orphanSet = new Set(orphanIds);
+    const coldSet = new Set(coldRows.map((row) => row.invoiceId));
 
     for (const row of priceRows) {
       entry(Number(row.id)).price.push({
@@ -1195,6 +1250,9 @@ export class InvoicesService {
         ...invoice,
         hasPriceBookWarning: (w?.price.length ?? 0) > 0,
         hasQuantityWarning: (w?.quantity.length ?? 0) > 0,
+        hasOrphanedPacking: orphanSet.has(invoice.id),
+        hasShippingFee: Number((invoice as any).shippingFee ?? 0) > 0,
+        hasColdItems: coldSet.has(invoice.id),
         warnings: w,
       };
     });
@@ -1305,7 +1363,10 @@ export class InvoicesService {
       };
     });
 
-    return { data: dataWithVat, total };
+    // Icon nhóm "Cảnh báo hóa đơn" — cùng nguồn với danh sách hóa đơn thường.
+    const dataWithAlerts = await this.attachPriceBookWarnings(dataWithVat);
+
+    return { data: dataWithAlerts, total };
   }
 
   /**
