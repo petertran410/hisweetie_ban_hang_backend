@@ -243,6 +243,13 @@ export class CustomersController {
     return this.customersService.getSalePic(+id);
   }
 
+  @Get(':id/debt-policy')
+  @RequirePermissions('customers:view')
+  @ApiOperation({ summary: 'Hình thức + quy tắc công nợ của khách (POS)' })
+  getDebtPolicySummary(@Param('id') id: string) {
+    return this.customersService.getDebtPolicySummary(+id);
+  }
+
   @Get(':id')
   @RequirePermissions('customers:view')
   @ApiOperation({ summary: 'Lấy chi tiết khách hàng theo ID' })

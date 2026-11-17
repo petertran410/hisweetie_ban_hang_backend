@@ -653,6 +653,16 @@ export class CustomersService {
             customerGroup: { select: { id: true, name: true } },
           },
         },
+        debtPolicy: {
+          select: {
+            debtForm: true,
+            debtRuleType: true,
+            requireFullPaymentForInvoice: true,
+            creditLimit: true,
+            termDays: true,
+            paymentScheduleDays: true,
+          },
+        },
         orders: {
           select: { id: true, grandTotal: true, debtAmount: true },
         },
@@ -2938,6 +2948,21 @@ export class CustomersService {
       select: { salePicId: true },
     });
     return { salePicId: policy?.salePicId ?? null };
+  }
+
+  async getDebtPolicySummary(customerId: number) {
+    const policy = await this.prisma.customerDebtPolicy.findUnique({
+      where: { customerId },
+      select: {
+        debtForm: true,
+        debtRuleType: true,
+        requireFullPaymentForInvoice: true,
+        creditLimit: true,
+        termDays: true,
+        paymentScheduleDays: true,
+      },
+    });
+    return { policy };
   }
 
   async getShippingFeeHistory(customerId: number) {
