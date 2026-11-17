@@ -24,9 +24,12 @@ class DestructionDetailDto {
   @Min(0)
   quantity: number;
 
+  // Bỏ trống khi user thiếu quyền products:view_cost_price (API products đã
+  // bỏ cost) → service tự lấy giá vốn hiện tại theo chi nhánh phiếu hủy.
+  @IsOptional()
   @IsNumber()
   @Min(0)
-  price: number;
+  price?: number;
 }
 
 export class CreateDestructionDto {

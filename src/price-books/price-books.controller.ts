@@ -25,6 +25,7 @@ import {
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { requestHasPermission } from '../auth/request-permissions';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 
 @ApiTags('Price Books')
@@ -63,6 +64,7 @@ export class PriceBooksController {
   async exportProductsWithPrices(
     @Query() query: ProductsWithPricesQueryDto,
     @Res() res: Response,
+    @Req() req: any,
   ) {
     const now = new Date();
     const pad = (n: number) => String(n).padStart(2, '0');
@@ -77,7 +79,12 @@ export class PriceBooksController {
       `attachment; filename=BangGia_${timestamp}.xlsx`,
     );
 
-    await this.priceBooksService.exportProductsWithMultiplePrices(query, res);
+    // Thiếu quyền xem giá vốn → file không có cột giá vốn.
+    await this.priceBooksService.exportProductsWithMultiplePrices(
+      query,
+      res,
+      requestHasPermission(req, 'products:view_cost_price'),
+    );
   }
 
   @Get('products-with-prices')
@@ -86,8 +93,11 @@ export class PriceBooksController {
   @Header('Cache-Control', 'no-cache, no-store, must-revalidate')
   @Header('Pragma', 'no-cache')
   @Header('Expires', '0')
-  getProductsWithPrices(@Query() query: ProductsWithPricesQueryDto) {
-    return this.priceBooksService.getProductsWithMultiplePrices(
+  async getProductsWithPrices(
+    @Query() query: ProductsWithPricesQueryDto,
+    @Req() req: any,
+  ) {
+    const result = await this.priceBooksService.getProductsWithMultiplePrices(
       query.priceBookIds,
       query.search,
       query.categoryIds,
@@ -101,6 +111,19 @@ export class PriceBooksController {
         stockStatus: query.stockStatus,
       },
     );
+    if (requestHasPermission(req, 'products:view_cost_price')) return result;
+    // Thiếu quyền xem giá vốn → bỏ cost khỏi inventories (giống stripProduct
+    // bên products.controller). Strip ở controller vì export dùng chung
+    // service và vẫn cần cost khi user có quyền.
+    return {
+      ...result,
+      data: result.data.map((product) => ({
+        ...product,
+        inventories: (
+          product.inventories as Array<Record<string, unknown>>
+        ).map((inv) => ({ ...inv, cost: undefined })),
+      })),
+    };
   }
 
   @Get(':id')

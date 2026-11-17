@@ -21,8 +21,10 @@ class UpdateDestructionDetailDto {
   @IsNumber()
   quantity: number;
 
+  // Bỏ trống khi user thiếu quyền xem giá vốn → service tự lấy giá vốn.
+  @IsOptional()
   @IsNumber()
-  price: number;
+  price?: number;
 }
 
 export class UpdateDestructionDto {

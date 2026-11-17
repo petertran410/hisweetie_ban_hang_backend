@@ -326,6 +326,8 @@ export class StockAuditsService {
   async exportStockAudits(
     query: StockAuditQueryDto,
     res: Response,
+    // false khi user thiếu products:view_cost_price → bỏ cột giá trị lệch.
+    includeCost = true,
   ): Promise<void> {
     const where = this.buildStockAuditWhere(query);
 
@@ -351,7 +353,7 @@ export class StockAuditsService {
       { header: 'Tổng giá trị lệch', key: 'totalDiffValue', width: 18 },
       { header: 'Ghi chú', key: 'note', width: 30 },
       { header: 'Trạng thái', key: 'status', width: 14 },
-    ];
+    ].filter((c) => includeCost || c.key !== 'totalDiffValue');
 
     const headerRow = sheet.getRow(1);
     headerRow.font = { bold: true, size: 11 };
@@ -437,6 +439,8 @@ export class StockAuditsService {
   async exportStockAuditsDetail(
     query: StockAuditQueryDto,
     res: Response,
+    // false khi user thiếu products:view_cost_price → bỏ cột giá vốn/giá trị lệch.
+    includeCost = true,
   ): Promise<void> {
     const where = this.buildStockAuditWhere(query);
 
@@ -464,7 +468,10 @@ export class StockAuditsService {
       { header: 'Giá vốn', key: 'costAtCheck', width: 14 },
       { header: 'Giá trị lệch', key: 'differenceValue', width: 16 },
       { header: 'Ghi chú', key: 'note', width: 30 },
-    ];
+    ].filter(
+      (c) =>
+        includeCost || (c.key !== 'costAtCheck' && c.key !== 'differenceValue'),
+    );
 
     const headerRow = sheet.getRow(1);
     headerRow.font = { bold: true, size: 11 };

@@ -8,8 +8,10 @@ import {
   Query,
   UseGuards,
   Res,
+  Req,
 } from '@nestjs/common';
 import { Response } from 'express';
+import { requestHasPermission } from '../auth/request-permissions';
 import { StockAuditsService } from './stock-audits.service';
 import {
   CreateStockAuditDto,
@@ -36,7 +38,11 @@ export class StockAuditsController {
 
   @Get('export')
   @RequirePermissions('stock_audits:export')
-  async export(@Query() query: StockAuditQueryDto, @Res() res: Response) {
+  async export(
+    @Query() query: StockAuditQueryDto,
+    @Res() res: Response,
+    @Req() req: any,
+  ) {
     const now = new Date();
     const pad = (n: number) => String(n).padStart(2, '0');
     const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
@@ -50,12 +56,21 @@ export class StockAuditsController {
       `attachment; filename=KiemKho_${ts}.xlsx`,
     );
 
-    await this.service.exportStockAudits(query, res);
+    // Thiếu quyền xem giá vốn → file không có cột giá trị lệch.
+    await this.service.exportStockAudits(
+      query,
+      res,
+      requestHasPermission(req, 'products:view_cost_price'),
+    );
   }
 
   @Get('export-detail')
   @RequirePermissions('stock_audits:export')
-  async exportDetail(@Query() query: StockAuditQueryDto, @Res() res: Response) {
+  async exportDetail(
+    @Query() query: StockAuditQueryDto,
+    @Res() res: Response,
+    @Req() req: any,
+  ) {
     const now = new Date();
     const pad = (n: number) => String(n).padStart(2, '0');
     const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
@@ -69,7 +84,11 @@ export class StockAuditsController {
       `attachment; filename=KiemKho_ChiTiet_${ts}.xlsx`,
     );
 
-    await this.service.exportStockAuditsDetail(query, res);
+    await this.service.exportStockAuditsDetail(
+      query,
+      res,
+      requestHasPermission(req, 'products:view_cost_price'),
+    );
   }
 
   @Get(':id')
