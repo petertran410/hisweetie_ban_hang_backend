@@ -199,3 +199,41 @@ describe('CustomersService.update → thông báo Lark đổi mã số thuế', 
     }
   });
 });
+
+describe('CustomersService.update → gán Sale PIC cho khách cũ', () => {
+  it('khách chưa có policy: tạo policy "Chưa thiết lập", không tự áp "Không công nợ"', async () => {
+    const before = { id: 7, code: 'KH7', name: 'A', isActive: true };
+    const upsert = jest.fn().mockResolvedValue({});
+    const tx = {
+      customer: { update: jest.fn().mockResolvedValue(before) },
+      user: { findFirst: jest.fn().mockResolvedValue({ id: 5 }) },
+      customerDebtPolicy: { upsert },
+    };
+    const prisma = {
+      customer: { findUnique: jest.fn().mockResolvedValue(before) },
+      customerGroupDetail: { findMany: jest.fn().mockResolvedValue([]) },
+      user: { findUnique: jest.fn().mockResolvedValue({ name: 'Bình' }) },
+      $transaction: jest.fn((cb: (t: typeof tx) => unknown) => cb(tx)),
+    };
+    const service = new CustomersService(
+      prisma as any,
+      { create: jest.fn() } as any,
+      { syncSingleAsync: jest.fn() } as any,
+      {} as any,
+      { notifyTaxCodeChangedAsync: jest.fn() } as any,
+    );
+
+    await service.update(7, { salePicId: 5 } as any, 3);
+
+    expect(upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          salePicId: 5,
+          debtForm: null,
+          requireFullPaymentForInvoice: false,
+        }),
+        update: { salePicId: 5, updatedBy: 3 },
+      }),
+    );
+  });
+});

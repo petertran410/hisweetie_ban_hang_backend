@@ -1014,15 +1014,18 @@ export class CustomersService {
             'Sale PIC không tồn tại hoặc đã ngừng hoạt động',
           );
         }
+        // Khách đã tồn tại mà chưa có policy là khách cũ (mọi đường tạo khách
+        // mới đều tạo policy). Chỉ lưu Sale PIC, để quy tắc ở "Chưa thiết
+        // lập" — không tự áp "Không công nợ".
         await tx.customerDebtPolicy.upsert({
           where: { customerId: id },
           create: {
             customerId: id,
             salePicId,
-            debtForm: 'PREPAID',
+            debtForm: null,
             hasCreditLimit: false,
             hasTermDays: false,
-            requireFullPaymentForInvoice: true,
+            requireFullPaymentForInvoice: false,
             isActive: true,
             createdBy: userId ?? null,
             updatedBy: userId ?? null,

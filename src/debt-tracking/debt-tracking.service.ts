@@ -867,14 +867,16 @@ export class DebtTrackingService {
       isActive: dto.isActive ?? true,
     };
 
-    // Khi FE gửi debtRuleType thì đây là lưu theo contract mới: NONE luôn
-    // yêu cầu thanh toán đủ, các quy tắc công nợ khác thì không. Nếu request
-    // cũ không gửi debtRuleType, giữ nguyên cờ legacy để không đổi hành vi
-    // khách hàng cũ ngoài ý muốn.
+    // Contract mới (có debtRuleType): quy tắc cho nợ → không bắt trả đủ.
+    // NONE + cờ false = "Chưa thiết lập" (khách cũ, chưa áp ràng buộc);
+    // NONE không kèm cờ → mặc định bắt trả đủ ("Không công nợ").
+    // Request cũ không gửi debtRuleType thì giữ nguyên cờ legacy.
     const normalizedRequireFullPayment =
-      dto.debtRuleType !== undefined
-        ? debtRuleType === 'NONE'
-        : dto.requireFullPaymentForInvoice;
+      dto.debtRuleType === undefined
+        ? dto.requireFullPaymentForInvoice
+        : debtRuleType !== 'NONE'
+          ? false
+          : (dto.requireFullPaymentForInvoice ?? true);
 
     const createData = {
       ...data,
