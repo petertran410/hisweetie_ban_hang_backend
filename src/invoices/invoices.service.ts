@@ -1312,61 +1312,51 @@ export class InvoicesService {
    * Tổng các cột VAT của TOÀN BỘ hóa đơn match filter (không phân trang).
    * Dùng cho hàng "tổng" dưới header bảng hóa đơn VAT.
    *
-   * VAT tính theo từng dòng sản phẩm (computeInvoiceVat — đúng nghiệp vụ kế
-   * toán, khớp với voucher đẩy Misa) rồi cộng dồn. Batch theo cursor để tránh
-   * vượt giới hạn bind variable của PostgreSQL khi where rộng.
+   * Cộng ngay trong Postgres thay vì kéo mọi dòng chi tiết về Node (cách cũ
+   * mất 12–21s khi filter rộng). Công thức từng dòng bê y hệt computeLineVat
+   * (misa-vat.util) để tổng khớp với findAllVat và voucher đẩy Misa:
+   *  - after_tax = Math.round((price - discount) * quantity)
+   *  - pre_tax   = Math.round(after_tax / (1 + vat/100))
+   *  - VAT       = after_tax - pre_tax
+   * `FLOOR(x + 0.5)` = Math.round của JS (ROUND của Postgres khác ở số âm .5).
+   * Danh sách id truyền 1 tham số mảng nên không vướng giới hạn bind variable.
    */
   async getVatTotals(query: InvoiceQueryDto, currentUser?: any) {
     const where = await this.buildInvoiceListWhere(query, currentUser);
 
-    const BATCH_SIZE = 5000;
-    let count = 0;
-    let totalPreTax = 0;
-    let totalVat = 0;
-    let totalAfterTax = 0;
-    let cursor: { id: number } | undefined;
-
-    while (true) {
-      const batch = await this.prisma.invoice.findMany({
-        where,
-        select: {
-          id: true,
-          details: {
-            select: {
-              quantity: true,
-              price: true,
-              discount: true,
-              product: { select: { vat: true } },
-            },
-          },
-        },
-        orderBy: { id: 'asc' },
-        take: BATCH_SIZE,
-        ...(cursor ? { cursor, skip: 1 } : {}),
-      });
-
-      if (batch.length === 0) break;
-
-      for (const inv of batch) {
-        count += 1;
-        const vat = computeInvoiceVat(
-          (inv.details || []).map((d) => ({
-            quantity: d.quantity,
-            price: d.price,
-            discount: d.discount,
-            vatRate: Number((d.product as any)?.vat ?? 8),
-          })),
-        );
-        totalPreTax += vat.totalPreTax;
-        totalVat += vat.totalVat;
-        totalAfterTax += vat.totalAfterTax;
-      }
-
-      if (batch.length < BATCH_SIZE) break;
-      cursor = { id: batch[batch.length - 1].id };
+    const invoices = await this.prisma.invoice.findMany({
+      where,
+      select: { id: true },
+    });
+    const ids = invoices.map((inv) => inv.id);
+    if (ids.length === 0) {
+      return { count: 0, totalPreTax: 0, totalVat: 0, totalAfterTax: 0 };
     }
 
-    return { count, totalPreTax, totalVat, totalAfterTax };
+    const [sums] = await this.prisma.$queryRaw<
+      { totalAfterTax: Prisma.Decimal; totalPreTax: Prisma.Decimal }[]
+    >(Prisma.sql`
+      WITH lines AS (
+        SELECT FLOOR((d.price - d.discount) * d.quantity + 0.5) AS after_tax,
+               COALESCE(p.vat, 8) AS rate
+        FROM unnest(${ids}::int[]) AS f(id)
+        JOIN invoice_details d ON d."invoiceId" = f.id
+        LEFT JOIN products p ON p.id = d."productId"
+      )
+      SELECT COALESCE(SUM(after_tax), 0) AS "totalAfterTax",
+             COALESCE(SUM(FLOOR(after_tax / (1 + rate / 100) + 0.5)), 0) AS "totalPreTax"
+      FROM lines
+    `);
+
+    const totalAfterTax = Number(sums?.totalAfterTax ?? 0);
+    const totalPreTax = Number(sums?.totalPreTax ?? 0);
+
+    return {
+      count: ids.length,
+      totalPreTax,
+      totalVat: totalAfterTax - totalPreTax,
+      totalAfterTax,
+    };
   }
 
   async findPickupDetails(ids: number[]) {

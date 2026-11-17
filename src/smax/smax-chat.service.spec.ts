@@ -59,6 +59,13 @@ const makeService = (env: Record<string, string> = {}) => {
         ),
       ),
     },
+    order: {
+      findMany: jest.fn(({ where }) =>
+        Promise.resolve(
+          (where.id.in as number[]).filter((id) => id === 7 || id === 8).map((id) => ({ id, code: `DH00000${id}` })),
+        ),
+      ),
+    },
     leadConversation: { findMany: jest.fn().mockResolvedValue([]) },
     branch: {
       findUnique: jest.fn(({ where }) =>
@@ -524,6 +531,30 @@ describe('SmaxChatService', () => {
       expect.objectContaining({
         entityCode: 'HD000007',
         message: expect.stringContaining('gộp chung chuyến với HD000008'),
+      }),
+    );
+  });
+
+  it('đặt xe giao hàng từ đơn đặt hàng: tra bảng order, ghi audit orders; không gộp với hóa đơn', async () => {
+    const { service, api, audit } = makeService();
+    await expect(
+      service.bookDelivery(actor, { invoiceId: 7, orderId: 8, text: 'Đặt xe', confirmed: true }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await expect(
+      service.bookDelivery(actor, { orderId: 999, text: 'Đặt xe', confirmed: true }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(api.sendZaloweb).not.toHaveBeenCalled();
+
+    await service.bookDelivery(actor, { orderId: 7, text: 'Đặt xe', confirmed: true });
+    expect(api.sendZaloweb).toHaveBeenCalledTimes(1);
+    expect(audit.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actionCode: 'SMAX_DELIVERY_BOOKING',
+        entityType: 'orders',
+        entityId: '7',
+        entityCode: 'DH000007',
+        message: expect.stringContaining('đơn đặt hàng DH000007'),
+        metadata: expect.objectContaining({ orderCodes: ['DH000007'] }),
       }),
     );
   });
