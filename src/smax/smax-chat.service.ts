@@ -1196,23 +1196,51 @@ export class SmaxChatService {
   }
 
   /**
-   * Đặt xe giao hàng cho 1 hoặc nhiều hóa đơn (1 tin, nhiều người nhận): gửi tin vào nhóm
-   * đặt xe qua kênh cố định — không cần kênh liên kết với người bấm (quyền invoices:update),
-   * ghi nhật ký theo từng hóa đơn.
+   * Đặt xe giao hàng cho 1 hoặc nhiều hóa đơn / đơn đặt hàng (1 tin, nhiều người nhận): gửi tin
+   * vào nhóm đặt xe qua kênh cố định — không cần kênh liên kết với người bấm (quyền invoices:update
+   * cho hóa đơn, orders:update cho đơn đặt hàng — controller kiểm tra), ghi nhật ký theo từng chứng từ.
    */
   async bookDelivery(
     actor: ChatActor,
-    dto: { invoiceId?: number; invoiceIds?: number[]; text: string; confirmed?: boolean },
+    dto: {
+      invoiceId?: number;
+      invoiceIds?: number[];
+      orderId?: number;
+      orderIds?: number[];
+      text: string;
+      confirmed?: boolean;
+    },
   ) {
     const text = dto.text.trim();
     if (!text) throw new BadRequestException('Nội dung tin nhắn trống');
-    const ids = [...new Set(dto.invoiceIds?.length ? dto.invoiceIds : dto.invoiceId ? [dto.invoiceId] : [])];
-    if (!ids.length) throw new BadRequestException('Chưa chọn hóa đơn');
-    const invoices = await this.prisma.invoice.findMany({
-      where: { id: { in: ids } },
-      select: { id: true, code: true },
-    });
-    if (invoices.length !== ids.length) throw new NotFoundException('Không tìm thấy hóa đơn');
+    const pickIds = (many?: number[], one?: number) => [
+      ...new Set(many?.length ? many : one ? [one] : []),
+    ];
+    const invoiceIds = pickIds(dto.invoiceIds, dto.invoiceId);
+    const orderIds = pickIds(dto.orderIds, dto.orderId);
+    if (invoiceIds.length && orderIds.length) {
+      throw new BadRequestException(
+        'Không gộp hóa đơn và đơn đặt hàng trong cùng 1 tin đặt xe',
+      );
+    }
+    const isOrder = orderIds.length > 0;
+    const ids = isOrder ? orderIds : invoiceIds;
+    if (!ids.length) {
+      throw new BadRequestException('Chưa chọn hóa đơn hoặc đơn đặt hàng');
+    }
+    const docs = isOrder
+      ? await this.prisma.order.findMany({
+          where: { id: { in: ids } },
+          select: { id: true, code: true },
+        })
+      : await this.prisma.invoice.findMany({
+          where: { id: { in: ids } },
+          select: { id: true, code: true },
+        });
+    const docLabel = isOrder ? 'đơn đặt hàng' : 'hóa đơn';
+    if (docs.length !== ids.length) {
+      throw new NotFoundException(`Không tìm thấy ${docLabel}`);
+    }
     const channel = await this.deliveryBookingChannel();
     if (channel.connectionError) {
       throw new ConflictException(
@@ -1226,21 +1254,26 @@ export class SmaxChatService {
 
     const { tid } = this.deliveryBooking;
     await this.smaxApi.sendZaloweb(channel.pid, { grid: tid.slice(ZALOWEB_PREFIX.length) }, { message: text });
-    const codes = invoices.map((i) => i.code);
-    for (const invoice of invoices) {
-      const others = codes.filter((c) => c !== invoice.code);
+    const codes = docs.map((d) => d.code);
+    for (const doc of docs) {
+      const others = codes.filter((c) => c !== doc.code);
       await this.auditLogs.create({
         actionType: 'POST',
         actionCode: 'SMAX_DELIVERY_BOOKING',
-        entityType: 'invoices',
-        entityId: String(invoice.id),
-        entityCode: invoice.code,
-        message: `Đặt xe giao hàng hóa đơn ${invoice.code}${
+        entityType: isOrder ? 'orders' : 'invoices',
+        entityId: String(doc.id),
+        entityCode: doc.code,
+        message: `Đặt xe giao hàng ${docLabel} ${doc.code}${
           others.length ? ` (gộp chung chuyến với ${others.join(', ')})` : ''
         }: gửi tin Zalo qua kênh "${channel.name}" vào nhóm đặt xe`,
         userId: actor.id,
         userName: actor.name,
-        metadata: { pagePid: channel.pid, tid, text, invoiceCodes: codes },
+        metadata: {
+          pagePid: channel.pid,
+          tid,
+          text,
+          ...(isOrder ? { orderCodes: codes } : { invoiceCodes: codes }),
+        },
       });
     }
     return { ok: true };

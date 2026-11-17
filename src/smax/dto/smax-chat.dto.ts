@@ -411,6 +411,19 @@ export class DeliveryBookingDto {
   @IsInt({ each: true })
   invoiceIds?: number[];
 
+  // Đặt xe từ đơn đặt hàng (không gộp chung với hóa đơn trong 1 tin)
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  orderId?: number;
+
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  @Type(() => Number)
+  @IsInt({ each: true })
+  orderIds?: number[];
+
   @IsString()
   @IsNotEmpty()
   @MaxLength(2000)

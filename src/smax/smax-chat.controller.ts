@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   Param,
   ParseIntPipe,
@@ -18,7 +19,10 @@ import { FilesInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import {
+  RequireAnyPermission,
+  RequirePermissions,
+} from '../auth/decorators/permissions.decorator';
 import { requestHasPermission } from '../auth/request-permissions';
 import {
   ChatActor,
@@ -132,22 +136,32 @@ export class SmaxChatController {
     return this.service.messageAction(this.actor(req), dto);
   }
 
-  // Đặt xe giao hàng: gửi tin vào nhóm Zalo đặt xe qua kênh cố định
+  // Đặt xe giao hàng: gửi tin vào nhóm Zalo đặt xe qua kênh cố định.
+  // Mở từ Hóa đơn (invoices:update) hoặc Đặt hàng (orders:update).
   @Get('delivery-booking')
-  @RequirePermissions('invoices:update')
+  @RequireAnyPermission('invoices:update', 'orders:update')
   deliveryBookingTarget() {
     return this.service.deliveryBookingTarget();
   }
 
   @Get('delivery-booking/senders')
-  @RequirePermissions('invoices:update')
+  @RequireAnyPermission('invoices:update', 'orders:update')
   deliveryBookingSenders(@Query('branchId', ParseIntPipe) branchId: number) {
     return this.service.deliveryBookingSenders(branchId);
   }
 
+  // Guard cho qua khi có 1 trong 2 quyền; quyền thật theo loại chứng từ:
+  // đơn đặt hàng → orders:update, hóa đơn → invoices:update
   @Post('delivery-booking')
-  @RequirePermissions('invoices:update')
+  @RequireAnyPermission('invoices:update', 'orders:update')
   bookDelivery(@Body() dto: DeliveryBookingDto, @Req() req: any) {
+    const isOrder = !!(dto.orderIds?.length || dto.orderId);
+    const needed = isOrder ? 'orders:update' : 'invoices:update';
+    if (!requestHasPermission(req, needed)) {
+      throw new ForbiddenException(
+        `Bạn không có quyền thực hiện thao tác này. Cần quyền: ${needed}`,
+      );
+    }
     return this.service.bookDelivery(this.actor(req), dto);
   }
 
