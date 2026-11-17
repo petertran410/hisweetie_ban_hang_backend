@@ -5,7 +5,11 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { LARK_CLIENT } from '../lark-client.provider';
 import { ORDER_STATUS } from '../../orders/dto/order-status.constants';
 
-type LarkMentionUser = { name: string | null; larkUserId: string | null };
+type LarkMentionUser = {
+  id: number;
+  name: string | null;
+  larkUserId: string | null;
+};
 
 /**
  * Gửi card "ĐƠN HÀNG ĐÃ ĐƯỢC CHỐT" vào Lark group khi order chuyển sang
@@ -18,8 +22,9 @@ type LarkMentionUser = { name: string | null; larkUserId: string | null };
  * Branch khác: skip silently.
  *
  * Dòng "Nhân viên" (người bán) và "Người xác nhận" (người lưu đơn ở trạng
- * thái Đã xác nhận) tag người đó trên Lark qua `users.lark_user_id` (open_id);
- * user chưa liên kết Lark thì ghi tên dạng text.
+ * thái Đã xác nhận) tag người đó trên Lark qua `users.lark_user_id` (open_id)
+ * — chỉ khi đó là 2 người khác nhau. Cùng 1 người, hoặc user chưa liên kết
+ * Lark, thì ghi tên dạng text.
  */
 @Injectable()
 export class LarkOrderNotificationService {
@@ -61,7 +66,7 @@ export class LarkOrderNotificationService {
         where: { id: orderId },
         include: {
           branch: { select: { id: true, name: true } },
-          soldBy: { select: { name: true, larkUserId: true } },
+          soldBy: { select: { id: true, name: true, larkUserId: true } },
           customer: {
             include: {
               addresses: {
@@ -79,7 +84,7 @@ export class LarkOrderNotificationService {
       confirmedById
         ? this.prisma.user.findUnique({
             where: { id: confirmedById },
-            select: { name: true, larkUserId: true },
+            select: { id: true, name: true, larkUserId: true },
           })
         : Promise.resolve(null),
     ]);
@@ -158,6 +163,9 @@ export class LarkOrderNotificationService {
     const note = (order.description || '').trim();
     const orderUrl =
       this.config.get<string>('FRONTEND_URL') || 'http://localhost:3050';
+    // Người bán tự xác nhận đơn của mình → không cần tag ai, ghi tên cả 2 dòng.
+    const seller = order.soldBy as LarkMentionUser | null;
+    const tag = !(confirmer && seller && seller.id === confirmer.id);
 
     // Header block: thông tin đơn hàng
     const headerLines: string[] = [
@@ -166,11 +174,11 @@ export class LarkOrderNotificationService {
       `**Ngày:** ${dateStr}`,
       `**Khách hàng:** ${customerLine}`,
       `**Địa chỉ:** ${addressLine}`,
-      `**Nhân viên:** ${this.formatUserMention(order.soldBy)}`,
+      `**Nhân viên:** ${this.formatUserMention(seller, tag)}`,
     ];
     if (confirmer) {
       headerLines.push(
-        `**Người xác nhận:** ${this.formatUserMention(confirmer)}`,
+        `**Người xác nhận:** ${this.formatUserMention(confirmer, tag)}`,
       );
     }
     if (note) {
@@ -264,10 +272,16 @@ export class LarkOrderNotificationService {
     };
   }
 
-  /** Tag user trên Lark (larkUserId là open_id); chưa liên kết Lark thì ghi tên. */
-  private formatUserMention(user?: LarkMentionUser | null): string {
+  /**
+   * Tag user trên Lark (larkUserId là open_id) khi `tag` = true; không tag
+   * hoặc chưa liên kết Lark thì ghi tên.
+   */
+  private formatUserMention(
+    user: LarkMentionUser | null | undefined,
+    tag: boolean,
+  ): string {
     if (!user) return '';
-    return user.larkUserId
+    return tag && user.larkUserId
       ? `<at id=${user.larkUserId}></at>`
       : (user.name ?? '');
   }
