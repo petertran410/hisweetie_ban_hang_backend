@@ -484,11 +484,11 @@ export const LARK_FORM_KINDS: LarkFormKind[] = [
 ];
 
 /**
- * Kho HN (6), Kho SG (1) và Văn phòng HN (4): đơn tiền mặt của các quỹ này
- * thành phiếu POS. Văn phòng HN không có Approval tuần, mọi khoản chi / thu
- * vẫn làm đơn trên Lark; POS nhận về và ghi quỹ. VPSG (7) làm sau.
+ * Kho HN (6), Kho SG (1), Văn phòng HN (4) và Văn phòng SG (7): đơn tiền mặt
+ * của các quỹ này thành phiếu POS. Văn phòng không có Approval tuần, mọi khoản
+ * chi / thu vẫn làm đơn trên Lark; POS nhận về và ghi quỹ.
  */
-export const LARK_ENTRY_BRANCHES = [6, 1, 4];
+export const LARK_ENTRY_BRANCHES = [6, 1, 4, 7];
 
 /**
  * Ngày dùng hệ thống tài chính nội bộ (14/10/2026): tới hết 13/10 kho ghi tiền
@@ -503,9 +503,24 @@ export const LARK_LEDGER_CUTOFF = new Date('2026-10-14T00:00:00+07:00');
  */
 export const VPHN_LEDGER_CUTOFF = new Date('2026-11-01T00:00:00+07:00');
 
+/**
+ * Văn phòng SG lên POS: sổ quỹ Lark là số đúng tới hết ngày trước mốc (chép
+ * vào Quỹ nội bộ bằng `yarn import:office-ledger --branch=7`), POS tự ghi quỹ
+ * từ mốc. Đơn duyệt trước mốc chỉ có phiếu, không ghi quỹ. VPSG ghi sổ Lark
+ * tới hết 03/11/2026 rồi ngừng, nên POS tự ghi quỹ từ 04/11/2026.
+ */
+export const VPSG_FUND_START = new Date('2026-11-04T00:00:00+07:00');
+
+const BRANCH_LEDGER_CUTOFFS: Record<number, Date> = {
+  4: VPHN_LEDGER_CUTOFF,
+  7: VPSG_FUND_START,
+};
+
 /** Mốc mà từ đó đơn Lark duyệt mới trừ / cộng quỹ trên POS, theo chi nhánh. */
 export function larkLedgerCutoff(branchId: number | null | undefined) {
-  return branchId === 4 ? VPHN_LEDGER_CUTOFF : LARK_LEDGER_CUTOFF;
+  return (
+    (branchId != null && BRANCH_LEDGER_CUTOFFS[branchId]) || LARK_LEDGER_CUTOFF
+  );
 }
 
 /**
@@ -574,7 +589,7 @@ function dateKeyOf(value: string | null) {
 
 /**
  * Đọc một đơn Lark của 4 form: số tiền, nguồn tiền, ngày và có thành phiếu
- * Phiếu chi kho / Tài chính nội bộ hay không (chỉ tiền mặt Kho HN / Kho SG).
+ * Phiếu chi kho / Tài chính nội bộ hay không (tiền mặt của LARK_ENTRY_BRANCHES).
  * `fallbackDate` là ngày duyệt (hoặc ngày tạo) của đơn.
  */
 export function summarizeLarkInstance(

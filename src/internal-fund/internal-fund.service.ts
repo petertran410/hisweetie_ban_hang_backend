@@ -810,6 +810,10 @@ export class InternalFundService {
       );
     if (row.sourceType === FUND_SOURCE_TYPE.LEDGER_HISTORY)
       throw new BadRequestException('Bút toán lịch sử chỉ đọc, không hủy được');
+    if (row.sourceType === FUND_SOURCE_TYPE.SEPAY_VPSG)
+      throw new BadRequestException(
+        'Thu từ tài khoản VPSG: hãy hủy ghi quỹ tại Biến động số dư',
+      );
     await this.assertPermission(userId, row.branchId, 'cancel');
     const adjust = await this.has(userId, row.branchId, 'adjust');
     if (!dto.reason.trim()) throw new BadRequestException('Cần lý do hủy');

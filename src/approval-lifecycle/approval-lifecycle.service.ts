@@ -21,6 +21,7 @@ import {
   EXPENSE_FIELD_IDS,
   EXPENSE_VP_OPTIONS,
   larkFundCutoff,
+  larkLedgerCutoff,
   PAYMENT_VOUCHER,
   readFundReceipt,
   readPaymentVoucherCash,
@@ -815,6 +816,23 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
   }
 
   /** Đơn PHIẾU CHI / PHIẾU THU (thu vào một quỹ) đã có dòng trong sổ quỹ Lark. */
+  /** Bên nào của đơn chuyển tiền duyệt trước mốc lên POS của quỹ đó. */
+  private async transferLegsBeforeCutoff(
+    tx: Prisma.TransactionClient,
+    transferId: number | null,
+    completedAt: Date,
+  ): Promise<number[] | null> {
+    if (!transferId) return null;
+    const transfer = await tx.internalFundTransfer.findUnique({
+      where: { id: transferId },
+      select: { sourceBranchId: true, destinationBranchId: true },
+    });
+    if (!transfer) return null;
+    return [transfer.sourceBranchId, transfer.destinationBranchId].filter(
+      (branchId) => completedAt < larkLedgerCutoff(branchId),
+    );
+  }
+
   private async ledgerHasLarkOrder(
     tx: Prisma.TransactionClient,
     requestId: number,
@@ -1360,6 +1378,19 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
         ...(detail ? { detailSnapshot: detail } : {}),
       };
 
+      // Chuyển tiền giữa 2 quỹ: mỗi bên xét mốc lên POS của chính quỹ đó.
+      const transferSkip =
+        isLarkCreated(current.clientUuid) &&
+        status === 'APPROVED' &&
+        data.completedAt &&
+        current.sourceType === 'INTERNAL_FUND_TRANSFER'
+          ? await this.transferLegsBeforeCutoff(
+              tx,
+              current.sourceId,
+              data.completedAt,
+            )
+          : null;
+
       // Đơn tạo trên Lark mà sổ quỹ Lark đã ghi tiền (duyệt trước ngày dùng POS
       // của chi nhánh, hoặc sổ đã có dòng trùng): chỉ cập nhật trạng thái,
       // không ghi quỹ lần 2.
@@ -1367,9 +1398,11 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
         isLarkCreated(current.clientUuid) &&
         status === 'APPROVED' &&
         data.completedAt &&
-        (data.completedAt.getTime() <
-          larkFundCutoff(current.branchId, current.sourceType).getTime() ||
-          (await this.ledgerHasLarkOrder(tx, requestId, data.completedAt)))
+        (transferSkip
+          ? transferSkip.length === 2
+          : data.completedAt.getTime() <
+              larkFundCutoff(current.branchId, current.sourceType).getTime() ||
+            (await this.ledgerHasLarkOrder(tx, requestId, data.completedAt)))
       ) {
         await tx.approvalRequest.update({ where: { id: requestId }, data });
         return;
@@ -1384,7 +1417,9 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
           where: { id: requestId },
           data,
         });
-        await this.fundLedger.applyApproval(tx, updated);
+        await this.fundLedger.applyApproval(tx, updated, {
+          skipBranchIds: transferSkip ?? [],
+        });
         return;
       }
 

@@ -68,6 +68,8 @@ describe('InternalFinanceService', () => {
       postSystemTransaction: jest.fn().mockResolvedValue({ id: 1 }),
       cancelBySource: jest.fn().mockResolvedValue(null),
       detachFromBatch: jest.fn(),
+      issueReviewedExpense: jest.fn(),
+      revertReviewedExpense: jest.fn(),
     };
     return {
       fundLedger,
@@ -412,6 +414,133 @@ describe('InternalFinanceService', () => {
       ),
     ).rejects.toThrow('Lark Approval');
     expect(update).not.toHaveBeenCalled();
+  });
+
+  describe('VPSG manual expense: accountant approval is the payout', () => {
+    const vpsgEntry = (): any => ({
+      id: 90,
+      branchId: 7,
+      direction: 'EXPENSE',
+      sourceType: 'MANUAL_EXPENSE',
+      status: 'PENDING_ACCOUNTANT',
+      cashIssued: false,
+      cashFlowId: null,
+      weeklyBatchId: null,
+      accountantReviewedAt: null,
+      accountantReviewedBy: null,
+    });
+    const setup = (entry: any) => {
+      const review = jest.fn();
+      const made = makeService({
+        user: {
+          findUnique: jest.fn().mockResolvedValue({
+            branchId: null,
+            userBranches: [{ branchId: 7 }],
+            userRoles: [],
+          }),
+        },
+        internalFinanceEntry: {
+          findUnique: jest.fn(async () => entry),
+          update: jest.fn(async ({ data }: any) => Object.assign(entry, data)),
+        },
+        internalFinanceReview: { create: review },
+      });
+      made.authService.getPermissionsForBranch.mockResolvedValue([
+        'warehouse_expense:check_accountant',
+      ]);
+      // Bước ghi quỹ (đã có test riêng ở sổ quỹ) đặt Đã chi cho phiếu.
+      made.fundLedger.issueReviewedExpense.mockImplementation(async () => {
+        entry.cashIssued = true;
+      });
+      return { ...made, review };
+    };
+    const user = { id: 8, roles: [] };
+
+    it('approves and pays out on the accountant tick, and reverts on untick', async () => {
+      const entry = vpsgEntry();
+      const { service, fundLedger, review } = setup(entry);
+      await service.checkWarehouseExpense(90, user, {
+        role: 'accountant',
+        checked: true,
+      });
+      expect(fundLedger.issueReviewedExpense).toHaveBeenCalledWith(
+        expect.anything(),
+        entry,
+        8,
+        false,
+      );
+      expect(entry).toMatchObject({
+        accountantReviewedBy: 8,
+        status: 'APPROVED',
+        cashIssued: true,
+      });
+      expect(review).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          role: 'ACCOUNTANT',
+          decision: 'APPROVE',
+        }),
+      });
+
+      // Tick lại không ghi quỹ lần nữa.
+      await service.checkWarehouseExpense(90, user, {
+        role: 'accountant',
+        checked: true,
+      });
+      expect(fundLedger.issueReviewedExpense).toHaveBeenCalledTimes(1);
+
+      await service.checkWarehouseExpense(90, user, {
+        role: 'accountant',
+        checked: false,
+      });
+      expect(fundLedger.revertReviewedExpense).toHaveBeenCalledTimes(1);
+      expect(entry).toMatchObject({
+        accountantReviewedBy: null,
+        accountantReviewedAt: null,
+        status: 'PENDING_ACCOUNTANT',
+        cashIssued: false,
+        cashIssuedAt: null,
+      });
+    });
+
+    it('refuses the manager tick, Lark orders and cancelled entries', async () => {
+      const entry = vpsgEntry();
+      const { service, fundLedger } = setup(entry);
+      await expect(
+        service.checkWarehouseExpense(90, user, {
+          role: 'manager',
+          checked: true,
+        }),
+      ).rejects.toThrow('chỉ cần Kế toán duyệt');
+      entry.sourceType = 'LARK_APPROVAL';
+      await expect(
+        service.checkWarehouseExpense(90, user, {
+          role: 'accountant',
+          checked: true,
+        }),
+      ).rejects.toThrow('Lark Approval');
+      entry.sourceType = 'MANUAL_EXPENSE';
+      entry.status = 'CANCELLED';
+      await expect(
+        service.checkWarehouseExpense(90, user, {
+          role: 'accountant',
+          checked: true,
+        }),
+      ).rejects.toThrow('đã hủy');
+      expect(fundLedger.issueReviewedExpense).not.toHaveBeenCalled();
+    });
+
+    it('needs the accountant permission at VPSG', async () => {
+      const entry = vpsgEntry();
+      const { service, authService, fundLedger } = setup(entry);
+      authService.getPermissionsForBranch.mockResolvedValue([]);
+      await expect(
+        service.checkWarehouseExpense(90, user, {
+          role: 'accountant',
+          checked: true,
+        }),
+      ).rejects.toThrow('Không có quyền');
+      expect(fundLedger.issueReviewedExpense).not.toHaveBeenCalled();
+    });
   });
 
   it('ticks manager and accountant checks independently and derives the status', async () => {

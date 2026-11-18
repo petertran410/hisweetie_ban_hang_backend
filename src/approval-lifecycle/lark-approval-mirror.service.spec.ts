@@ -43,7 +43,7 @@ describe('summarizeLarkInstance', () => {
       skipReason: 'Không chi bằng tiền mặt quỹ nội bộ',
       amount: 500000,
     });
-    // Văn phòng HN đã lên POS; Văn phòng HCM chưa.
+    // Cả hai văn phòng đều thành phiếu POS.
     expect(
       summarizeLarkInstance(
         'PHIEU_CHI',
@@ -57,11 +57,7 @@ describe('summarizeLarkInstance', () => {
         voucher('Tiền Mặt', 'Tiền Mặt Văn Phòng HCM'),
         approvedAt,
       ),
-    ).toMatchObject({
-      inScope: false,
-      branchId: 7,
-      skipReason: 'Chi từ quỹ văn phòng',
-    });
+    ).toMatchObject({ inScope: true, branchId: 7, skipReason: null });
   });
 
   it('reads a cash receipt into Kho SG as an in-scope receipt', () => {
@@ -174,7 +170,7 @@ describe('summarizeLarkInstance – TẠM ỨNG LƯƠNG', () => {
     });
   });
 
-  it('only shows company transfers and VP HCM cash', () => {
+  it('only shows company transfers; VP HCM cash comes from the VPSG fund', () => {
     expect(
       summarizeLarkInstance(
         'TAM_UNG_LUONG',
@@ -194,11 +190,7 @@ describe('summarizeLarkInstance – TẠM ỨNG LƯƠNG', () => {
         advance('Tiền Mặt', 'Tiền Mặt Văn Phòng HCM'),
         approvedAt,
       ),
-    ).toMatchObject({
-      inScope: false,
-      branchId: 7,
-      skipReason: 'Chi từ quỹ văn phòng',
-    });
+    ).toMatchObject({ inScope: true, branchId: 7, skipReason: null });
   });
 });
 

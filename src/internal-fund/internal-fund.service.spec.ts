@@ -175,10 +175,9 @@ describe('Internal fund ledger', () => {
         transactionType: 'EXPENSE',
         branchId: 6,
       });
-      // Ghi quỹ vào ngày tick Đã chi, không phải ngày của phiếu (05/10).
-      expect(f.transactions[0].occurredAt.getTime()).toBeGreaterThan(
-        fundDayStart('2026-10-06').getTime(),
-      );
+      // Phiếu trong Approval tuần đã duyệt ghi quỹ theo ngày chi; phiếu 05/10
+      // trước mốc quỹ kho lên POS (14/10) nên ghi vào đầu ngày mốc.
+      expect(f.transactions[0].occurredAt).toEqual(fundDayStart('2026-10-14'));
       expect(f.entry.cashIssued).toBe(true);
       expect(f.prisma.cashFlow.create).not.toHaveBeenCalled();
       expect(f.prisma.$executeRaw).toHaveBeenCalled();
@@ -243,6 +242,61 @@ describe('Internal fund ledger', () => {
     expect(f.entry.cashIssued).toBe(true);
   });
 
+  it('pays out a VPSG manual expense only through the accountant review', async () => {
+    const f = fixture();
+    Object.assign(f.entry, {
+      branchId: 7,
+      status: 'PENDING_ACCOUNTANT',
+      sourceType: 'MANUAL_EXPENSE',
+      code: 'TCNB-CHI-VPSG-1',
+      weeklyBatch: null,
+    });
+    // Không đi đường Đã chi thường, kể cả có lý do.
+    await expect(
+      f.service.postExpenseEntry(12, 7, true, 'Chi gấp'),
+    ).rejects.toThrow('Kế toán duyệt');
+    expect(f.transactions).toHaveLength(0);
+
+    await f.ledger.issueReviewedExpense(f.prisma, f.entry, 8);
+    await f.ledger.issueReviewedExpense(f.prisma, f.entry, 8);
+    expect(f.transactions).toHaveLength(1);
+    expect(f.transactions[0]).toMatchObject({
+      sourceKey: 'EXPENSE:12',
+      branchId: 7,
+      transactionType: 'EXPENSE',
+      description: 'TCNB-CHI-VPSG-1',
+    });
+    expect(f.entry).toMatchObject({ cashIssued: true, cashIssuedBy: 8 });
+
+    await f.ledger.revertReviewedExpense(f.prisma, f.entry, 8);
+    expect(f.transactions[0]).toMatchObject({
+      status: 'CANCELLED',
+      sourceKey: 'EXPENSE:12:CANCELLED:1',
+    });
+    // Duyệt lại sau khi bỏ duyệt: ghi một dòng quỹ mới.
+    await f.ledger.issueReviewedExpense(f.prisma, f.entry, 8);
+    expect(f.transactions).toHaveLength(2);
+    expect(f.transactions[1].status).toBe('POSTED');
+  });
+
+  it('blocks the VPSG review on a closed day without adjust', async () => {
+    const f = fixture();
+    Object.assign(f.entry, {
+      branchId: 7,
+      sourceType: 'MANUAL_EXPENSE',
+      weeklyBatch: null,
+    });
+    f.prisma.internalFundDailyClosing.findFirst.mockResolvedValue({
+      id: 8,
+      closedAt: new Date(),
+    });
+    await expect(
+      f.ledger.issueReviewedExpense(f.prisma, f.entry, 8),
+    ).rejects.toThrow('chốt sổ');
+    await f.ledger.issueReviewedExpense(f.prisma, f.entry, 8, true);
+    expect(f.transactions).toHaveLength(1);
+  });
+
   it('pulls an entry out of a not-yet-sent batch on manual issue and refuses a batch in approval', async () => {
     const f = fixture();
     f.entry.status = 'READY_FOR_WEEKLY_APPROVAL';
@@ -267,6 +321,39 @@ describe('Internal fund ledger', () => {
       data: { totalAmount: new Prisma.Decimal(50000) },
     });
     expect(f.transactions).toHaveLength(1);
+  });
+
+  it('posts an approved batch on each voucher date, not the approval date', async () => {
+    const f = fixture();
+    const late = { ...f.entry, id: 13, occurredAt: fundDayStart('2026-11-10') };
+    f.prisma.internalFinanceEntry.findMany = jest.fn(async () => [late]);
+    f.prisma.approvalRequest.findUnique.mockResolvedValue({
+      completedAt: new Date('2026-11-16T03:00:00Z'),
+    });
+    await f.ledger.issueApprovedBatch(f.prisma, 3, 55, 9);
+    expect(f.transactions[0]).toMatchObject({
+      entryId: 13,
+      occurredAt: fundDayStart('2026-11-10'),
+    });
+    expect(f.prisma.internalFundDailyClosing.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          branchId: 6,
+          closingDate: { gte: new Date('2026-11-10T00:00:00Z') },
+        }),
+      }),
+    );
+  });
+
+  it('posts a manual expense outside weekly approval at tick time', async () => {
+    const f = fixture();
+    f.entry.weeklyBatch = null;
+    f.entry.branchId = 4;
+    f.entry.occurredAt = fundDayStart('2026-11-10');
+    await f.service.postExpenseEntry(12, 7, true, 'Chi gấp');
+    expect(f.transactions[0].occurredAt.getTime()).toBeGreaterThan(
+      fundDayStart('2026-11-11').getTime(),
+    );
   });
 
   it('auto-issues every entry of an approved batch once and reverts them', async () => {
@@ -524,6 +611,26 @@ describe('Internal fund ledger', () => {
     ).toBe(true);
     expect(f.transfer.status).toBe('POSTED');
     expect(f.prisma.cashFlow.create).not.toHaveBeenCalled();
+  });
+
+  it('writes only the leg of a fund already on POS when the other is skipped', async () => {
+    const f = fixture();
+    const request = {
+      id: 10,
+      status: 'APPROVED',
+      sourceType: 'INTERNAL_FUND_TRANSFER',
+      sourceId: 4,
+    };
+    await f.ledger.applyApproval(f.prisma, request, { skipBranchIds: [1] });
+    expect(f.transactions).toHaveLength(1);
+    expect(f.transactions[0]).toMatchObject({
+      transactionType: 'TRANSFER_OUT',
+      branchId: 6,
+    });
+    expect(f.transfer.status).toBe('POSTED');
+    expect(f.prisma.internalFundDailyClosing.updateMany).toHaveBeenCalledTimes(
+      1,
+    );
   });
 
   it('rejected transfer does not create money', async () => {

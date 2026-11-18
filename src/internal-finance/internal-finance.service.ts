@@ -37,6 +37,7 @@ import {
   LARK_APPROVAL_LOCK_REASON,
   LARK_APPROVAL_SOURCE_TYPE,
   OFFICE_BRANCH_IDS,
+  VPSG_BRANCH_ID,
   WAREHOUSE_CASH_BRANCH_IDS,
   WAREHOUSE_EXPENSE_ITEM,
 } from './internal-finance.constants';
@@ -3600,6 +3601,8 @@ export class InternalFinanceService {
       select: { branchId: true },
     });
     if (!hint) throw new NotFoundException('Không tìm thấy khoản chi');
+    if (hint.branchId === VPSG_BRANCH_ID)
+      return this.reviewVpsgExpense(entryId, user, dto);
     if (!this.isWarehouseBranch(hint.branchId)) {
       throw new BadRequestException(
         'Tick kiểm tra chỉ áp dụng cho phiếu chi kho',
@@ -3690,6 +3693,90 @@ export class InternalFinanceService {
               ? INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL
               : INTERNAL_FINANCE_STATUS.MANAGER_APPROVED
             : INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
+        },
+        include: this.warehouseExpenseInclude(),
+      });
+    });
+  }
+
+  /**
+   * Phiếu chi tay VPSG chỉ cần Kế toán duyệt: tick là Đã chi và trừ quỹ VPSG,
+   * bỏ tick là hoàn lại quỹ và quay về chờ duyệt.
+   */
+  private async reviewVpsgExpense(
+    entryId: number,
+    user: any,
+    dto: CheckWarehouseExpenseDto,
+  ) {
+    if (dto.role === 'manager')
+      throw new BadRequestException('Phiếu chi VPSG chỉ cần Kế toán duyệt');
+    await this.assertWarehouseExpensePermission(
+      user,
+      VPSG_BRANCH_ID,
+      'check_accountant',
+    );
+    const adjust = await this.access.can(
+      user,
+      VPSG_BRANCH_ID,
+      'internal_fund:adjust',
+    );
+    return this.prisma.$transaction(async (tx) => {
+      await this.internalFund.lockBranch(tx, [VPSG_BRANCH_ID]);
+      const entry = await tx.internalFinanceEntry.findUnique({
+        where: { id: entryId },
+      });
+      if (!entry || entry.direction !== INTERNAL_FINANCE_DIRECTION.EXPENSE)
+        throw new NotFoundException('Không tìm thấy khoản chi');
+      if (entry.sourceType === LARK_APPROVAL_SOURCE_TYPE)
+        throw new BadRequestException(LARK_APPROVAL_LOCK_REASON);
+      if (entry.sourceType !== 'MANUAL_EXPENSE')
+        throw new BadRequestException('Chỉ phiếu chi tay cần Kế toán duyệt');
+      if (
+        [
+          INTERNAL_FINANCE_STATUS.CANCELLED,
+          INTERNAL_FINANCE_STATUS.REJECTED,
+        ].includes(entry.status as any)
+      )
+        throw new BadRequestException('Khoản chi đã hủy');
+      const approved = Boolean(entry.accountantReviewedAt && entry.cashIssued);
+      if (dto.checked === approved)
+        return tx.internalFinanceEntry.findUnique({
+          where: { id: entryId },
+          include: this.warehouseExpenseInclude(),
+        });
+      if (dto.checked) {
+        await this.fundLedger.issueReviewedExpense(tx, entry, user.id, adjust);
+      } else {
+        await this.fundLedger.revertReviewedExpense(tx, entry, user.id, adjust);
+      }
+      await tx.internalFinanceReview.create({
+        data: {
+          entryId,
+          role: INTERNAL_FINANCE_REVIEW_ROLE.ACCOUNTANT,
+          decision: dto.checked
+            ? INTERNAL_FINANCE_REVIEW_DECISION.APPROVE
+            : 'UNCHECK',
+          reviewerId: user.id,
+        },
+      });
+      const now = new Date();
+      return tx.internalFinanceEntry.update({
+        where: { id: entryId },
+        data: {
+          posManagedAt: now,
+          accountantReviewedBy: dto.checked ? user.id : null,
+          accountantReviewedAt: dto.checked ? now : null,
+          status: dto.checked
+            ? INTERNAL_FINANCE_STATUS.APPROVED
+            : INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
+          ...(dto.checked
+            ? {}
+            : {
+                cashIssued: false,
+                cashIssuedAt: null,
+                cashIssuedBy: null,
+                cashIssuedReason: null,
+              }),
         },
         include: this.warehouseExpenseInclude(),
       });

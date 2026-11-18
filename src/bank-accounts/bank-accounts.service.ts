@@ -52,6 +52,7 @@ export class BankAccountsService {
           bankName: bankAccount.bankName,
           accountHolder: bankAccount.accountHolder,
           scope: bankAccount.scope,
+          vpsgCashFund: bankAccount.vpsgCashFund,
         },
         message: renderAuditMessage('BANK_ACCOUNT_CREATE', {
           accountName: bankAccount.accountHolder,
@@ -91,6 +92,7 @@ export class BankAccountsService {
           bankName: bankAccount.bankName,
           accountHolder: bankAccount.accountHolder,
           scope: bankAccount.scope,
+          vpsgCashFund: bankAccount.vpsgCashFund,
         },
         message: renderAuditMessage('BANK_ACCOUNT_UPDATE', {
           accountName: bankAccount.accountHolder,

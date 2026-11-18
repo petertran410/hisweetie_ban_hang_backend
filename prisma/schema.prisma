@@ -1694,6 +1694,8 @@ model BankAccount {
   updatedAt             DateTime               @updatedAt
   kiotVietId            Int?                   @unique @map("kiot_viet_id")
   lastSyncedAt          DateTime?              @map("last_synced_at")
+  /// Tiền vào tài khoản này là tiền mặt của quỹ nội bộ Văn phòng SG, không phải tiền khách.
+  vpsgCashFund          Boolean                @default(false) @map("vpsg_cash_fund")
   cashFlows             CashFlow[]
   invoicePayments       InvoicePayment[]
   orderPayments         OrderPayment[]

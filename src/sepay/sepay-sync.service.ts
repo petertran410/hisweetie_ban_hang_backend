@@ -8,6 +8,13 @@ import { AuthService } from '../auth/auth.service';
 import { SepayTransactionQueryDto } from './dto/sepay-transaction-query.dto';
 import { SepayMatchService } from './sepay-match.service';
 import { isSepaySpecialAccount } from './utils/sepay-special-account';
+import { FinanceAccessService } from '../auth/finance-access.service';
+import { VPSG_BRANCH_ID } from '../internal-finance/internal-finance.constants';
+import {
+  excludeVpsgSql,
+  nonVpsgAccountClause,
+  vpsgAccountNumbers,
+} from '../vpsg-cash/vpsg-cash.accounts';
 
 /**
  * Một giao dịch trả về từ Sepay List API.
@@ -58,6 +65,7 @@ export class SepaySyncService {
     private readonly prisma: PrismaService,
     private readonly matchService: SepayMatchService,
     private readonly authService: AuthService,
+    private readonly financeAccess: FinanceAccessService,
   ) {
     this.baseUrl = this.configService.get<string>(
       'SEPAY_API_URL',
@@ -374,6 +382,8 @@ export class SepaySyncService {
     const accClause = acc
       ? Prisma.sql`AND (st.sub_account = ${acc} OR (st.account_number = ${acc} AND st.sub_account IS NULL))`
       : Prisma.empty;
+    // Tiền vào tài khoản quỹ VPSG không phải tiền khách: không tính chờ xử lý.
+    const vpsgNumbers = await vpsgAccountNumbers(this.prisma);
 
     const rows = await this.prisma.$queryRaw<
       {
@@ -415,6 +425,7 @@ export class SepaySyncService {
             WHERE op.sepay_transaction_id = s2.sepay_id AND op.status <> 2
           )
           ${acc ? Prisma.sql`AND (s2.sub_account = ${acc} OR (s2.account_number = ${acc} AND s2.sub_account IS NULL))` : Prisma.empty}
+          ${excludeVpsgSql(vpsgNumbers, 's2')}
         ORDER BY s2.id DESC
         LIMIT 1
       ) latest ON TRUE
@@ -432,6 +443,7 @@ export class SepaySyncService {
           WHERE op.sepay_transaction_id = st.sepay_id AND op.status <> 2
         )
         ${accClause}
+        ${excludeVpsgSql(vpsgNumbers, 'st')}
       GROUP BY latest.id, latest.amount_in, latest.account_number, latest.bank_brand_name,
                latest.reference_number, latest.transaction_content, latest.transaction_date
     `;
@@ -492,6 +504,22 @@ export class SepaySyncService {
     }
     if (restrict && restrict !== 'BYPASS') {
       andClauses.push(this.buildAccountMatchClause(restrict));
+    }
+
+    // Tài khoản quỹ tiền mặt VPSG: chỉ người có quyền quỹ VPSG thấy.
+    const vpsgNumbers = await vpsgAccountNumbers(this.prisma);
+    if (
+      vpsgNumbers.length &&
+      !(
+        currentUser &&
+        (await this.financeAccess.can(
+          currentUser,
+          VPSG_BRANCH_ID,
+          'vpsg_cash:view',
+        ))
+      )
+    ) {
+      andClauses.push(nonVpsgAccountClause(vpsgNumbers));
     }
 
     if (andClauses.length > 0) {

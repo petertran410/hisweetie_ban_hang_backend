@@ -1,8 +1,14 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { randomUUID } from 'crypto';
-import { RECEIPT_FIELD_IDS } from '../approval-lifecycle/approval-lifecycle.constants';
-import { OFFICE_BRANCH_IDS } from '../internal-finance/internal-finance.constants';
+import {
+  RECEIPT_FIELD_IDS,
+  larkLedgerCutoff,
+} from '../approval-lifecycle/approval-lifecycle.constants';
+import {
+  OFFICE_BRANCH_IDS,
+  VPSG_BRANCH_ID,
+} from '../internal-finance/internal-finance.constants';
 
 export function fundDateKey(value: Date | string): string {
   if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value))
@@ -30,6 +36,19 @@ export function isLarkLedgerRecorded(entry: { sourceSnapshot?: unknown }) {
   );
 }
 
+/**
+ * Ngày ghi quỹ của phiếu chi trong Approval tuần: ngày chi của phiếu, không phải
+ * ngày Approval duyệt xong. Phiếu trước mốc quỹ lên POS (sổ quỹ Lark là số đúng
+ * tới hết ngày trước mốc) ghi vào đầu ngày mốc để không đổi số các ngày cũ.
+ */
+export function approvedExpenseDate(entry: {
+  branchId: number;
+  occurredAt: Date;
+}): Date {
+  const cutoff = larkLedgerCutoff(entry.branchId);
+  return entry.occurredAt < cutoff ? cutoff : entry.occurredAt;
+}
+
 export function fundClosingDate(value: string | Date): Date {
   return new Date(`${fundDateKey(value)}T00:00:00Z`);
 }
@@ -46,6 +65,10 @@ interface FundApprovalData {
 
 export const FUND_SOURCE_TYPE = {
   WAREHOUSE_CASH_RECEIPT: 'WAREHOUSE_CASH_RECEIPT',
+  /** Tiền vào tài khoản VPSG ghi vào quỹ nội bộ VPSG (trang Biến động số dư). */
+  SEPAY_VPSG: 'SEPAY_VPSG',
+  /** Cân bằng quỹ theo tiền đếm thực tế (vd. quỹ VPSG khi lên POS). */
+  BALANCE_ADJUSTMENT: 'BALANCE_ADJUSTMENT',
   LARK_PAYMENT_VOUCHER: 'LARK_PAYMENT_VOUCHER',
   LARK_SALARY_ADVANCE: 'LARK_SALARY_ADVANCE',
   // Bút toán lịch sử đồng bộ từ sổ quỹ cũ: chỉ đọc trên POS.
@@ -154,19 +177,28 @@ export class InternalFundLedgerService {
       current.weeklyBatch?.status === 'APPROVED' &&
       Boolean(current.weeklyBatch.approvalRequestId) &&
       current.weeklyBatch.approvalRequest?.status === 'APPROVED';
-    // Tiền ra khỏi quỹ vào lúc tick Đã chi, không phải ngày của phiếu chi.
-    const issuedAt = new Date();
+    // Phiếu trong Approval tuần đã duyệt: ghi quỹ vào ngày chi của phiếu.
     if (approved) {
-      await this.assertOpen(tx, current.branchId, issuedAt, adjust);
+      const occurredAt = approvedExpenseDate(current);
+      await this.assertOpen(tx, current.branchId, occurredAt, adjust);
       return this.postExpenseRow(tx, current, userId, {
         approvalRequestId: current.weeklyBatch!.approvalRequestId!,
-        issuedAt,
+        occurredAt,
         invalidate: adjust,
       });
     }
 
+    // VPSG: phiếu tay thành Đã chi khi Kế toán duyệt (tick Kế toán).
+    if (
+      current.branchId === VPSG_BRANCH_ID &&
+      current.sourceType === 'MANUAL_EXPENSE'
+    )
+      throw new BadRequestException(
+        'Phiếu chi VPSG đã chi khi Kế toán duyệt; hãy tick Kế toán duyệt',
+      );
+
     // Chi ngoài Approval tuần: bắt buộc có lý do, phiếu rời khỏi batch chưa gửi.
-    // Văn phòng không có Approval tuần: phiếu tay chi thẳng từ quỹ, lý do tùy ý.
+    // Văn phòng HN không có Approval tuần: phiếu tay chi thẳng từ quỹ.
     const reason = manualReason?.trim() || undefined;
     const office =
       (OFFICE_BRANCH_IDS as readonly number[]).includes(current.branchId) &&
@@ -185,12 +217,58 @@ export class InternalFundLedgerService {
         );
       await this.detachFromBatch(tx, current);
     }
+    // Chi ngoài Approval tuần: tiền ra khỏi quỹ lúc tick Đã chi.
+    const issuedAt = new Date();
     await this.assertOpen(tx, current.branchId, issuedAt, adjust);
     return this.postExpenseRow(tx, current, userId, {
       reason,
-      issuedAt,
+      occurredAt: issuedAt,
       invalidate: adjust,
     });
+  }
+
+  /**
+   * Phiếu chi tay VPSG: Kế toán duyệt là Đã chi, trừ quỹ ngay lúc duyệt.
+   * Gọi trong transaction của bước duyệt; chạy lại không ghi quỹ lần 2.
+   */
+  async issueReviewedExpense(
+    tx: Prisma.TransactionClient,
+    entry: { id: number; branchId: number },
+    userId: number,
+    adjust = false,
+  ) {
+    await this.lock(tx, [entry.branchId]);
+    const current = await tx.internalFinanceEntry.findUnique({
+      where: { id: entry.id },
+    });
+    if (!current || current.direction !== 'EXPENSE')
+      throw new BadRequestException('Không tìm thấy khoản chi');
+    const existing = await tx.internalFundTransaction.findUnique({
+      where: { sourceKey: `EXPENSE:${current.id}` },
+    });
+    if (existing) return existing;
+    const issuedAt = new Date();
+    await this.assertOpen(tx, current.branchId, issuedAt, adjust);
+    return this.postExpenseRow(tx, current, userId, {
+      occurredAt: issuedAt,
+      invalidate: adjust,
+    });
+  }
+
+  /** Bỏ duyệt phiếu chi tay VPSG: hủy dòng quỹ đã trừ lúc duyệt. */
+  async revertReviewedExpense(
+    tx: Prisma.TransactionClient,
+    entry: { id: number; branchId: number },
+    userId: number,
+    adjust = false,
+  ) {
+    await this.lock(tx, [entry.branchId]);
+    const row = await tx.internalFundTransaction.findUnique({
+      where: { sourceKey: `EXPENSE:${entry.id}` },
+    });
+    if (!row || row.status !== 'POSTED') return null;
+    await this.assertOpen(tx, row.branchId, row.occurredAt, adjust);
+    return this.releaseCancelled(tx, row, userId, 'Kế toán bỏ duyệt phiếu chi');
   }
 
   // Rút phiếu khỏi batch tuần chưa gửi Approval và tính lại tổng tiền.
@@ -234,8 +312,11 @@ export class InternalFundLedgerService {
     options: {
       approvalRequestId?: number;
       reason?: string;
-      /** Ngày tiền ra khỏi quỹ: ngày duyệt Approval hoặc ngày tick Đã chi. */
-      issuedAt: Date;
+      /**
+       * Ngày ghi quỹ: ngày chi của phiếu (Approval tuần) hoặc lúc tick Đã chi
+       * (chi ngoài Approval tuần).
+       */
+      occurredAt: Date;
       invalidate?: boolean;
     },
   ) {
@@ -246,7 +327,7 @@ export class InternalFundLedgerService {
         where: { id: current.id },
         data: {
           cashIssued: true,
-          cashIssuedAt: options.issuedAt,
+          cashIssuedAt: new Date(),
           cashIssuedBy: userId,
           cashIssuedReason: options.reason ?? LARK_LEDGER_RECORDED_REASON,
           posManagedAt: new Date(),
@@ -263,7 +344,7 @@ export class InternalFundLedgerService {
         entryId: current.id,
         transactionType: 'EXPENSE',
         amount: current.amount,
-        occurredAt: options.issuedAt,
+        occurredAt: options.occurredAt,
         description: options.reason
           ? `${description} (Lý do: ${options.reason})`
           : description,
@@ -285,7 +366,7 @@ export class InternalFundLedgerService {
       },
     });
     if (options.invalidate)
-      await this.invalidateClosings(tx, current.branchId, options.issuedAt);
+      await this.invalidateClosings(tx, current.branchId, options.occurredAt);
     return row;
   }
 
@@ -306,16 +387,12 @@ export class InternalFundLedgerService {
       },
       orderBy: { id: 'asc' },
     });
-    // Ghi quỹ vào ngày Approval duyệt — ngày tiền thật sự chi ra.
-    const request = await tx.approvalRequest.findUnique({
-      where: { id: approvalRequestId },
-      select: { completedAt: true },
-    });
-    const issuedAt = request?.completedAt ?? new Date();
+    // Ghi quỹ vào ngày chi của từng phiếu, không phải ngày Approval duyệt xong;
+    // chốt sổ từ ngày đó trở đi được đánh dấu cần đối soát lại.
     for (const entry of entries)
       await this.postExpenseRow(tx, entry, userId, {
         approvalRequestId,
-        issuedAt,
+        occurredAt: approvedExpenseDate(entry),
         invalidate: true,
       });
     return entries.length;
@@ -358,7 +435,15 @@ export class InternalFundLedgerService {
     return rows.length;
   }
 
-  async applyApproval(tx: Prisma.TransactionClient, request: FundApprovalData) {
+  /**
+   * `skipBranchIds`: chuyển tiền giữa 2 quỹ mà một bên duyệt trước ngày quỹ đó
+   * lên POS (sổ quỹ Lark đã ghi bên đó): chỉ ghi bên còn lại.
+   */
+  async applyApproval(
+    tx: Prisma.TransactionClient,
+    request: FundApprovalData,
+    options: { skipBranchIds?: number[] } = {},
+  ) {
     if (
       !['INTERNAL_FUND_RECEIPT', 'INTERNAL_FUND_TRANSFER'].includes(
         request.sourceType || '',
@@ -407,10 +492,14 @@ export class InternalFundLedgerService {
         where: { id: current.id },
         data: { approvalRequestId: request.id },
       });
-      for (const [branchId, type] of [
-        [current.sourceBranchId, 'TRANSFER_OUT'],
-        [current.destinationBranchId, 'TRANSFER_IN'],
-      ] as const) {
+      const skip = options.skipBranchIds || [];
+      const legs = (
+        [
+          [current.sourceBranchId, 'TRANSFER_OUT'],
+          [current.destinationBranchId, 'TRANSFER_IN'],
+        ] as const
+      ).filter(([branchId]) => !skip.includes(branchId));
+      for (const [branchId, type] of legs) {
         await tx.internalFundTransaction.create({
           data: {
             code: this.code(type),
@@ -433,10 +522,7 @@ export class InternalFundLedgerService {
         where: { id: current.id },
         data: { status: 'POSTED' },
       });
-      for (const branchId of [
-        current.sourceBranchId,
-        current.destinationBranchId,
-      ])
+      for (const [branchId] of legs)
         await this.invalidateClosings(tx, branchId, current.occurredAt);
       return;
     }
