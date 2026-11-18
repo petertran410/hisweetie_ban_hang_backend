@@ -67,7 +67,7 @@ export const FUND_SOURCE_TYPE = {
   WAREHOUSE_CASH_RECEIPT: 'WAREHOUSE_CASH_RECEIPT',
   /** Tiền vào tài khoản VPSG ghi vào quỹ nội bộ VPSG (trang Biến động số dư). */
   SEPAY_VPSG: 'SEPAY_VPSG',
-  /** Cân bằng quỹ theo tiền đếm thực tế (vd. quỹ VPSG khi lên POS). */
+  /** Cân bằng quỹ theo tiền mặt đếm thực tế (quỹ VPSG). */
   BALANCE_ADJUSTMENT: 'BALANCE_ADJUSTMENT',
   LARK_PAYMENT_VOUCHER: 'LARK_PAYMENT_VOUCHER',
   LARK_SALARY_ADVANCE: 'LARK_SALARY_ADVANCE',

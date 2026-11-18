@@ -3,8 +3,10 @@ import {
   VPHN_LEDGER_CUTOFF,
   VPSG_FUND_START,
 } from '../approval-lifecycle/approval-lifecycle.constants';
+import { InternalFundLedgerService } from '../internal-fund/internal-fund-ledger.service';
 import {
   applyLedgerImport,
+  applyLedgerPlan,
   planLedgerImport,
   untilOf,
   voidReason,
@@ -113,11 +115,11 @@ const posRows = [
   }),
 ];
 
-// VPSG: ngày tính lùi từ mốc để test không phụ thuộc ngày mốc chốt sau.
-const SG = 'Văn Phòng Sài Gòn';
+// Chạy lại: ngày tính lùi từ mốc VPHN.
+const HN = 'Văn Phòng Hà Nội';
 const beforeStart = (days: number) =>
-  new Date(VPSG_FUND_START.getTime() - days * DAY + 9 * 3600000);
-const sgRecords = [
+  new Date(VPHN_LEDGER_CUTOFF.getTime() - days * DAY + 9 * 3600000);
+const rerunRecords = [
   // Đã nhập 150.000, Lark sửa thành 200.000.
   lark(
     'rec-h',
@@ -126,7 +128,7 @@ const sgRecords = [
       'Ngày Giao Dịch': beforeStart(30).getTime(),
       'Nội Dung': 'Mua nước',
     },
-    SG,
+    HN,
   ),
   // Chỉ sửa nội dung.
   lark(
@@ -136,7 +138,7 @@ const sgRecords = [
       'Ngày Giao Dịch': beforeStart(29).getTime(),
       'Nội Dung': 'Rút tiền TK về quỹ',
     },
-    SG,
+    HN,
   ),
   // Đã nhập, nay Hủy trên Lark.
   lark(
@@ -146,27 +148,31 @@ const sgRecords = [
       'Trạng Thái': 'Hủy',
       'Ngày Giao Dịch': beforeStart(28).getTime(),
     },
-    SG,
+    HN,
   ),
   // Đã nhập, nay dời ngày qua mốc.
   lark(
     'rec-l',
-    { Chi: 400000, 'Ngày Giao Dịch': VPSG_FUND_START.getTime() + DAY },
-    SG,
+    { Chi: 400000, 'Ngày Giao Dịch': VPHN_LEDGER_CUTOFF.getTime() + DAY },
+    HN,
   ),
   // Dòng POS đang hủy (khóa còn nguyên), Lark tính lại.
   lark(
     'rec-m',
     { Chi: 70000, 'Ngày Giao Dịch': beforeStart(26).getTime() },
-    SG,
+    HN,
   ),
   // Văn phòng khác: không đụng.
-  lark('rec-n', { Chi: 90000, 'Ngày Giao Dịch': beforeStart(25).getTime() }),
+  lark(
+    'rec-n',
+    { Chi: 90000, 'Ngày Giao Dịch': beforeStart(25).getTime() },
+    'Văn Phòng Sài Gòn',
+  ),
 ];
-const sgPosRows = [
+const rerunPosRows = [
   posRow({
     id: 20,
-    branchId: 7,
+    branchId: 4,
     code: 'SQ-1h',
     transactionType: 'EXPENSE',
     amount: 150000,
@@ -177,7 +183,7 @@ const sgPosRows = [
   }),
   posRow({
     id: 21,
-    branchId: 7,
+    branchId: 4,
     code: 'SQ-1i',
     transactionType: 'RECEIPT',
     amount: 5000000,
@@ -188,7 +194,7 @@ const sgPosRows = [
   }),
   posRow({
     id: 22,
-    branchId: 7,
+    branchId: 4,
     code: 'SQ-1j',
     transactionType: 'EXPENSE',
     amount: 300000,
@@ -199,7 +205,7 @@ const sgPosRows = [
   // Dòng đã bị xóa khỏi sổ Lark.
   posRow({
     id: 23,
-    branchId: 7,
+    branchId: 4,
     code: 'SQ-1k',
     transactionType: 'EXPENSE',
     amount: 1000,
@@ -209,7 +215,7 @@ const sgPosRows = [
   }),
   posRow({
     id: 24,
-    branchId: 7,
+    branchId: 4,
     code: 'SQ-1l',
     transactionType: 'EXPENSE',
     amount: 400000,
@@ -219,7 +225,7 @@ const sgPosRows = [
   }),
   posRow({
     id: 25,
-    branchId: 7,
+    branchId: 4,
     code: 'SQ-1m',
     status: 'CANCELLED',
     transactionType: 'EXPENSE',
@@ -230,17 +236,17 @@ const sgPosRows = [
   }),
   posRow({
     id: 26,
-    branchId: 7,
+    branchId: 4,
     code: 'QF-CANBANG-1',
     transactionType: 'RECEIPT',
     amount: 12345,
-    occurredAt: new Date(VPSG_FUND_START.getTime() - 1000),
+    occurredAt: new Date(VPHN_LEDGER_CUTOFF.getTime() - 1000),
     sourceKey: 'VPSG_BALANCE',
     sourceType: 'BALANCE_ADJUSTMENT',
   }),
   posRow({
     id: 27,
-    branchId: 7,
+    branchId: 4,
     code: 'QF-CHI-9',
     transactionType: 'EXPENSE',
     amount: 200000,
@@ -277,7 +283,6 @@ function fakeDb(rows: any[] = posRows) {
 describe('untilOf / voidReason', () => {
   it('defaults to the office cutoff and reads --to as end of a Vietnam day', () => {
     expect(untilOf(4)).toEqual(VPHN_LEDGER_CUTOFF);
-    expect(untilOf(7)).toEqual(VPSG_FUND_START);
     expect(untilOf(4, '2026-10-31')).toEqual(new Date('2026-10-31T17:00:00Z'));
     expect(() => untilOf(4, '31/10/2026')).toThrow('YYYY-MM-DD');
   });
@@ -333,16 +338,159 @@ describe('planLedgerImport (VPHN)', () => {
     expect(Number(plan.larkBalance)).toBe(-50000);
   });
 
-  it('only accepts the two offices', async () => {
+  it('only imports the offices; VPSG needs the merge mode', async () => {
     await expect(planLedgerImport(fakeDb() as any, records, 6)).rejects.toThrow(
       'văn phòng',
+    );
+    await expect(planLedgerImport(fakeDb() as any, records, 7)).rejects.toThrow(
+      'chế độ kết hợp',
     );
   });
 });
 
-describe('planLedgerImport (VPSG, re-run follows Lark)', () => {
+describe('planLedgerImport (VPSG merge)', () => {
+  const DROP = 'Bỏ sổ quỹ Lark Base: quỹ VPSG ghi theo đơn duyệt';
+  const SG = 'Văn Phòng Sài Gòn';
+  const before = (days: number, hours = 9) =>
+    new Date(VPSG_FUND_START.getTime() - days * DAY + hours * 3600000);
+  const sgRecords = [
+    lark('rec-s1', { Chi: 100000, 'Ngày Giao Dịch': before(10).getTime() }, SG),
+    lark('rec-s2', { Thu: 500000, 'Ngày Giao Dịch': before(8).getTime() }, SG),
+    lark('rec-s3', { Chi: 70000, 'Ngày Giao Dịch': before(6).getTime() }, SG),
+  ];
+  const sgRows = [
+    // Hai dòng sổ bị lần "bỏ sổ Lark" hủy: bật lại.
+    posRow({
+      id: 40,
+      branchId: 7,
+      code: 'SQ-1s1',
+      status: 'CANCELLED',
+      cancelReason: DROP,
+      transactionType: 'EXPENSE',
+      amount: 100000,
+      occurredAt: before(10),
+      sourceKey: 'LARK_LEDGER:rec-s1:CANCELLED:40',
+      sourceType: 'LEDGER_HISTORY',
+    }),
+    posRow({
+      id: 41,
+      branchId: 7,
+      code: 'SQ-1s2',
+      status: 'CANCELLED',
+      cancelReason: DROP,
+      transactionType: 'RECEIPT',
+      amount: 500000,
+      occurredAt: before(8),
+      sourceKey: 'LARK_LEDGER:rec-s2:CANCELLED:41',
+      sourceType: 'LEDGER_HISTORY',
+    }),
+    // Đơn PHIẾU CHI: đối chiếu riêng theo đơn, không hủy ở đây.
+    posRow({
+      id: 42,
+      branchId: 7,
+      transactionType: 'EXPENSE',
+      amount: 100000,
+      occurredAt: before(10, 12),
+      sourceKey: 'PAYMENT_VOUCHER:1',
+      sourceType: 'LARK_PAYMENT_VOUCHER',
+    }),
+    // Tiền vào tài khoản trùng dòng thu của sổ: hủy.
+    posRow({
+      id: 43,
+      branchId: 7,
+      transactionType: 'RECEIPT',
+      amount: 500000,
+      occurredAt: before(8, 11),
+      sourceKey: 'SEPAY_VPSG:9',
+      sourceType: 'SEPAY_VPSG',
+    }),
+    // Không có dòng sổ cùng khoản: giữ.
+    posRow({
+      id: 44,
+      branchId: 7,
+      transactionType: 'TRANSFER_IN',
+      amount: 999,
+      occurredAt: before(7),
+      sourceKey: 'TRANSFER:5:TRANSFER_IN',
+      sourceType: 'INTERNAL_FUND_TRANSFER',
+    }),
+  ];
+  const options = { merge: true, restoreReason: DROP };
+
+  it('restores rows dropped earlier and only voids POS rows the ledger already has', async () => {
+    const plan = await planLedgerImport(
+      fakeDb(sgRows) as any,
+      sgRecords,
+      7,
+      undefined,
+      options,
+    );
+    expect(plan.restored.map((row) => [row.id, row.sourceKey])).toEqual([
+      [40, 'LARK_LEDGER:rec-s1'],
+      [41, 'LARK_LEDGER:rec-s2'],
+    ]);
+    expect(plan.existing.map((row) => row.sourceKey)).toEqual([
+      'LARK_LEDGER:rec-s1',
+      'LARK_LEDGER:rec-s2',
+    ]);
+    expect(plan.add.map((row) => row.sourceKey)).toEqual([
+      'LARK_LEDGER:rec-s3',
+    ]);
+    expect(
+      plan.voids.map((item) => [item.pos.id, item.twin?.sourceKey]),
+    ).toEqual([[43, 'LARK_LEDGER:rec-s2']]);
+    expect(plan.ledger).toHaveLength(3);
+    expect(Number(plan.posBefore)).toBe(-100000 + 500000 + 999);
+    expect(Number(plan.posAfter)).toBe(
+      Number(plan.posBefore) + 400000 - 70000 - 500000,
+    );
+  });
+
+  it('turns restored rows back on (same id and code) before anything else', async () => {
+    const tx = fakeDb(sgRows);
+    const plan = await planLedgerImport(
+      tx as any,
+      sgRecords,
+      7,
+      undefined,
+      options,
+    );
+    await applyLedgerPlan(tx as any, plan, 5, new InternalFundLedgerService());
+    const updates = tx.internalFundTransaction.update.mock.calls.map(
+      ([args]: any) => [args.where.id, args.data],
+    );
+    expect(updates.slice(0, 2)).toEqual([
+      [
+        40,
+        {
+          status: 'POSTED',
+          sourceKey: 'LARK_LEDGER:rec-s1',
+          cancelledAt: null,
+          cancelledBy: null,
+          cancelReason: null,
+        },
+      ],
+      [41, expect.objectContaining({ sourceKey: 'LARK_LEDGER:rec-s2' })],
+    ]);
+    expect(updates[2]).toEqual([
+      43,
+      expect.objectContaining({ status: 'CANCELLED' }),
+    ]);
+    expect(
+      tx.internalFundTransaction.createMany.mock.calls[0][0].data.map(
+        (row: any) => row.sourceKey,
+      ),
+    ).toEqual(['LARK_LEDGER:rec-s3']);
+  });
+});
+
+describe('planLedgerImport (re-run follows Lark)', () => {
   it('re-adds edited rows, renames, cancels rows Lark dropped, and keeps the balance row', async () => {
-    const plan = await planLedgerImport(fakeDb(sgPosRows) as any, sgRecords, 7);
+    const plan = await planLedgerImport(
+      fakeDb(rerunPosRows) as any,
+      rerunRecords,
+      4,
+    );
 
     expect(plan.add).toEqual([]);
     expect(
@@ -416,11 +564,11 @@ describe('applyLedgerImport', () => {
     expect(tx.internalFundDailyClosing.updateMany).toHaveBeenCalled();
   });
 
-  it('syncs VPSG rows edited on Lark and leaves the balance row alone', async () => {
-    const tx = fakeDb(sgPosRows);
+  it('syncs rows edited on Lark and leaves the balance row alone', async () => {
+    const tx = fakeDb(rerunPosRows);
     const prisma: any = { $transaction: jest.fn((fn: any) => fn(tx)) };
 
-    await applyLedgerImport(prisma, sgRecords, 7, 5);
+    await applyLedgerImport(prisma, rerunRecords, 4, 5);
 
     const byId = new Map<number, any>(
       tx.internalFundTransaction.update.mock.calls.map(
@@ -429,7 +577,7 @@ describe('applyLedgerImport', () => {
     );
     expect(byId.get(27)).toMatchObject({
       status: 'CANCELLED',
-      cancelReason: voidReason(VPSG_FUND_START),
+      cancelReason: voidReason(VPHN_LEDGER_CUTOFF),
     });
     expect(byId.get(22)).toMatchObject({
       status: 'CANCELLED',
