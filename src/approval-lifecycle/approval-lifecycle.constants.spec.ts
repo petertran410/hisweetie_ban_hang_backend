@@ -282,6 +282,7 @@ describe('larkFundCutoff', () => {
     );
     expect(larkFundCutoff(4, null)).toEqual(VPHN_LEDGER_CUTOFF);
     // VPSG lên POS sau 02/11: tạm ứng lương theo mốc của VPSG.
+    expect(larkFundCutoff(7, 'LARK_PAYMENT_VOUCHER')).toEqual(VPSG_FUND_START);
     expect(larkFundCutoff(7, 'LARK_SALARY_ADVANCE')).toEqual(VPSG_FUND_START);
   });
 });

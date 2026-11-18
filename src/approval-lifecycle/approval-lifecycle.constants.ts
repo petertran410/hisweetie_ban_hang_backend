@@ -221,6 +221,7 @@ export const PAYMENT_VOUCHER = {
     department: 'chi phi thuoc phong ban',
     supplier: 'ncu',
     transferAmount: 'so tien chuyen khoan',
+    paymentDate: 'ngay chi tien',
   },
 } as const;
 
@@ -287,6 +288,19 @@ export function readPaymentVoucherDetails(
     cashAmount: cash?.amount ?? number(byId(ids.cashAmount)),
     transferAmount: number(byName(names.transferAmount)),
   };
+}
+
+/** Ô "Ngày chi tiền" của đơn PHIẾU CHI (tìm theo tên ô); null nếu trống. */
+export function readPaymentVoucherDate(form: ApprovalFormItem[]): Date | null {
+  const item = form.find(
+    (field) =>
+      normalizeLabel(field.name) ===
+      PAYMENT_VOUCHER.detailFieldNames.paymentDate,
+  );
+  const raw = item?.value;
+  if (raw === undefined || raw === null || raw === '') return null;
+  const date = new Date(typeof raw === 'number' ? raw : String(raw));
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 /** Phần tiền mặt chi từ quỹ nội bộ của một đơn PHIẾU CHI; null nếu đơn không dùng quỹ. */
@@ -504,10 +518,9 @@ export const LARK_LEDGER_CUTOFF = new Date('2026-10-14T00:00:00+07:00');
 export const VPHN_LEDGER_CUTOFF = new Date('2026-11-01T00:00:00+07:00');
 
 /**
- * Văn phòng SG lên POS: sổ quỹ Lark là số đúng tới hết ngày trước mốc (chép
- * vào Quỹ nội bộ bằng `yarn import:office-ledger --branch=7`), POS tự ghi quỹ
- * từ mốc. Đơn duyệt trước mốc chỉ có phiếu, không ghi quỹ. VPSG ghi sổ Lark
- * tới hết 03/11/2026 rồi ngừng, nên POS tự ghi quỹ từ 04/11/2026.
+ * Văn phòng SG: sổ quỹ Lark Base ghi tới hết 03/11/2026. Trước mốc, quỹ VPSG =
+ * sổ Lark + đơn Lark Approval mà sổ không ghi (`yarn import:office-ledger
+ * --branch=7`, chống trùng theo số tiền + ngày); từ mốc POS tự ghi quỹ.
  */
 export const VPSG_FUND_START = new Date('2026-11-04T00:00:00+07:00');
 

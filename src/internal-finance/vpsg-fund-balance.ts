@@ -1,5 +1,4 @@
 import { Prisma, PrismaClient } from '@prisma/client';
-import { VPSG_FUND_START } from '../approval-lifecycle/approval-lifecycle.constants';
 import {
   FUND_SOURCE_TYPE,
   InternalFundLedgerService,
@@ -7,11 +6,11 @@ import {
 import { VPSG_BRANCH_ID } from './internal-finance.constants';
 
 /**
- * Cân bằng quỹ tiền mặt VPSG theo tiền đếm thực tế. Sau khi chép sổ quỹ Lark
- * (`yarn import:office-ledger --branch=7`), nếu tiền đếm khác số dư trên POS thì
- * ghi một dòng "Cân bằng quỹ" bằng phần chênh lệch, lúc 23:59:59 ngày đếm, nên
- * đầu kỳ ngày hôm sau đúng bằng số đếm. Chạy lại: hủy dòng cân bằng cũ rồi ghi
- * dòng mới. Lệnh import không hủy dòng này.
+ * Cân bằng quỹ tiền mặt VPSG theo tiền đếm thực tế (không bắt buộc). Sau khi
+ * nhập sổ quỹ Lark + đơn duyệt (`yarn import:office-ledger --branch=7`), nếu
+ * tiền đếm khác số dư trên POS thì ghi một dòng "Cân bằng quỹ" bằng phần chênh
+ * lệch lúc 23:59:59 ngày đếm, nên số dư hết ngày đếm đúng bằng tiền đếm. Chạy
+ * lại (đếm lại, hoặc sau khi nhập lại sổ): hủy dòng cũ rồi ghi dòng mới.
  */
 
 type Db = PrismaClient | Prisma.TransactionClient;
@@ -25,11 +24,10 @@ const vnDate = (value: Date) =>
 const money = (value: Prisma.Decimal) =>
   Number(value).toLocaleString('vi-VN', { maximumFractionDigits: 0 });
 
-/** Hết ngày đếm theo giờ Việt Nam; mặc định ngày trước mốc quỹ VPSG lên POS. */
+/** Hết ngày đếm tiền theo giờ Việt Nam. */
 export function countedDayEnd(date?: string) {
-  if (!date) return VPSG_FUND_START;
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date))
-    throw new Error('--date phải có dạng YYYY-MM-DD');
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date))
+    throw new Error('Cần --date=YYYY-MM-DD (ngày đếm tiền, tính tới hết ngày)');
   return new Date(new Date(`${date}T00:00:00+07:00`).getTime() + DAY);
 }
 
