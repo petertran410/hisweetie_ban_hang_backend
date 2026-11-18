@@ -1,6 +1,9 @@
 import { randomUUID } from 'crypto';
 import { Prisma, PrismaClient } from '@prisma/client';
-import { fundClosingDate } from '../internal-fund/internal-fund-ledger.service';
+import {
+  approvedExpenseDate,
+  fundClosingDate,
+} from '../internal-fund/internal-fund-ledger.service';
 import { readNumber, readText } from './legacy-fund-reconcile';
 import { plateHints, vnDay } from './lark-twin-dedupe';
 
@@ -9,7 +12,7 @@ import { plateHints, vnDay } from './lark-twin-dedupe';
  * (và kho chi) cả tuần, còn POS chỉ ghi Đã chi cho phiếu đủ hai tick. Phiếu xe
  * POS giữ thay dòng phiếu chi Lark lúc đồng bộ không mang tick nên bị gỡ khỏi
  * tuần. Theo LarkBase: phiếu Lark tính vào tuần thì POS tick đủ, gắn vào tuần,
- * ghi Đã chi và trừ quỹ vào ngày duyệt.
+ * ghi Đã chi và trừ quỹ vào ngày chi của phiếu.
  */
 type Db = PrismaClient | Prisma.TransactionClient;
 
@@ -327,7 +330,7 @@ export async function applyApprovedWeeks(
         if (!plan.request?.completedAt || !plan.batch || plan.rowSet === 'none')
           continue;
         const issuedAt = plan.request.completedAt;
-        let touched = false;
+        let firstDate: Date | null = null;
         for (const line of plan.lines) {
           if (line.status !== 'toFix' || !line.entry) continue;
           const entry = line.entry;
@@ -361,7 +364,7 @@ export async function applyApprovedWeeks(
               entryId: entry.id,
               transactionType: 'EXPENSE',
               amount: entry.amount,
-              occurredAt: issuedAt,
+              occurredAt: approvedExpenseDate(entry),
               description: entry.description || entry.code,
               sourceType: 'INTERNAL_FINANCE_ENTRY',
               sourceId: String(entry.id),
@@ -370,13 +373,14 @@ export async function applyApprovedWeeks(
               createdBy: userId,
             },
           });
-          touched = true;
+          const date = approvedExpenseDate(entry);
+          if (!firstDate || date < firstDate) firstDate = date;
         }
-        if (touched)
+        if (firstDate)
           await tx.internalFundDailyClosing.updateMany({
             where: {
               branchId: input.branchId,
-              closingDate: { gte: fundClosingDate(issuedAt) },
+              closingDate: { gte: fundClosingDate(firstDate) },
               closedAt: { not: null },
             },
             data: { reconciliationStatus: 'PENDING' },

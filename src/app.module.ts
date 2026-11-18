@@ -103,6 +103,7 @@ import { CustomerDemandModule } from './customer-demand/customer-demand.module';
 import { ProductQualityModule } from './product-quality/product-quality.module';
 import { InternalFinanceModule } from './internal-finance/internal-finance.module';
 import { InternalFundModule } from './internal-fund/internal-fund.module';
+import { VpsgCashModule } from './vpsg-cash/vpsg-cash.module';
 import { ManufacturersModule } from './manufacturers/manufacturers.module';
 
 @Module({
@@ -222,6 +223,7 @@ import { ManufacturersModule } from './manufacturers/manufacturers.module';
     ProductQualityModule,
     InternalFinanceModule,
     InternalFundModule,
+    VpsgCashModule,
   ],
   providers: [
     {

@@ -20,6 +20,10 @@ import {
 } from '../orders/dto/order-status.constants';
 import { DEBT_RULE_TYPE } from '../debt-tracking/debt-tracking.constants';
 import { isSepaySpecialAccount } from './utils/sepay-special-account';
+import {
+  isVpsgTransaction,
+  vpsgAccountNumbers,
+} from '../vpsg-cash/vpsg-cash.accounts';
 import { DebtTicketAutoCloseService } from '../debt-tickets/debt-ticket-auto-close.service';
 
 /**
@@ -144,13 +148,16 @@ export class SepayMatchService {
     ]);
 
     const txAmountMap = new Map(
-      txAmounts.map((t) => [
-        t.id,
-        {
-          amountIn: Number(t.amountIn),
-          suggestedOrderId: t.suggestedOrderId,
-        },
-      ] as const),
+      txAmounts.map(
+        (t) =>
+          [
+            t.id,
+            {
+              amountIn: Number(t.amountIn),
+              suggestedOrderId: t.suggestedOrderId,
+            },
+          ] as const,
+      ),
     );
     const suggestedOrderIds = Array.from(
       new Set(
@@ -179,21 +186,24 @@ export class SepayMatchService {
         })
       : [];
     const suggestedOrderMap = new Map(
-      suggestedOrders.map((order) => [
-        order.id,
-        {
-          id: order.id,
-          code: order.code,
-          orderDate: order.orderDate,
-          grandTotal: Number(order.grandTotal),
-          paidAmount: Number(order.paidAmount),
-          debtAmount: Number(order.debtAmount),
-          status: order.status,
-          statusValue: getStatusLabel(order.status),
-          customer: order.customer!,
-          branch: order.branch,
-        } satisfies SepaySuggestedOrder,
-      ] as const),
+      suggestedOrders.map(
+        (order) =>
+          [
+            order.id,
+            {
+              id: order.id,
+              code: order.code,
+              orderDate: order.orderDate,
+              grandTotal: Number(order.grandTotal),
+              paidAmount: Number(order.paidAmount),
+              debtAmount: Number(order.debtAmount),
+              status: order.status,
+              statusValue: getStatusLabel(order.status),
+              customer: order.customer!,
+              branch: order.branch,
+            } satisfies SepaySuggestedOrder,
+          ] as const,
+      ),
     );
 
     const webhookMap = new Map<
@@ -355,6 +365,17 @@ export class SepayMatchService {
     return result;
   }
 
+  /** Tiền vào tài khoản quỹ VPSG không phải tiền khách: chặn gắn khách / đơn / phiếu thu. */
+  private async assertCustomerTransaction(tx: {
+    accountNumber: string | null;
+    subAccount: string | null;
+  }) {
+    if (isVpsgTransaction(tx, await vpsgAccountNumbers(this.prisma)))
+      throw new BadRequestException(
+        'Tiền vào tài khoản quỹ tiền mặt VPSG, không phải tiền khách',
+      );
+  }
+
   /** Lấy 1 giao dịch + allocations + match info (dùng nội bộ cho assign/confirm guard). */
   private async getTxWithMatch(id: number) {
     const tx = await this.prisma.sepayTransaction.findUnique({ where: { id } });
@@ -431,6 +452,7 @@ export class SepayMatchService {
 
   async selectOrder(id: number, dto: SelectOrderDto, userId: number) {
     const { tx, match } = await this.getTxWithMatch(id);
+    await this.assertCustomerTransaction(tx);
     if (match.status === 'completed') {
       throw new ConflictException(
         'Giao dịch đã hoàn thành, không thể gắn đơn hàng',
@@ -607,6 +629,7 @@ export class SepayMatchService {
    */
   async assignCustomers(id: number, dto: AssignCustomersDto, userId: number) {
     const { tx, match } = await this.getTxWithMatch(id);
+    await this.assertCustomerTransaction(tx);
 
     if (match.status === 'completed') {
       throw new ConflictException(
@@ -783,6 +806,7 @@ export class SepayMatchService {
    */
   async confirmReceipt(id: number, dto: ConfirmReceiptDto, userId: number) {
     const { tx, match } = await this.getTxWithMatch(id);
+    await this.assertCustomerTransaction(tx);
 
     if (match.status === 'completed') {
       throw new ConflictException('Giao dịch đã có phiếu thu / đã hoàn thành');

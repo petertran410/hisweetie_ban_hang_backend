@@ -17,6 +17,9 @@ describe('SepayMatchService order candidates', () => {
       cashFlow: {
         findMany: jest.fn(),
       },
+      bankAccount: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
       $transaction: jest.fn(),
     };
     const service = new SepayMatchService(
@@ -30,6 +33,26 @@ describe('SepayMatchService order candidates', () => {
       .mockResolvedValue({ tx, match: { status: 'processing' } });
     return { service, prisma };
   };
+
+  it('không cho gắn khách, gắn đơn hay lập phiếu thu cho tiền vào tài khoản quỹ VPSG', async () => {
+    const { service, prisma } = createService();
+    prisma.bankAccount.findMany.mockResolvedValue([
+      { accountNumber: '96460247777' },
+    ]);
+    (service as any).getTxWithMatch.mockResolvedValue({
+      tx: { ...tx, accountNumber: '8601539888', subAccount: '96460247777' },
+      match: { status: 'processing' },
+    });
+    await expect(
+      service.assignCustomers(8, { customerIds: [1] } as any, 7),
+    ).rejects.toThrow('quỹ tiền mặt VPSG');
+    await expect(
+      service.selectOrder(8, { orderId: 12 } as any, 7),
+    ).rejects.toThrow('quỹ tiền mặt VPSG');
+    await expect(service.confirmReceipt(8, {} as any, 7)).rejects.toThrow(
+      'quỹ tiền mặt VPSG',
+    );
+  });
 
   it('lọc cùng tập đơn NONE và trạng thái 1/5 cho danh sách lẫn tổng', async () => {
     const { service, prisma } = createService();

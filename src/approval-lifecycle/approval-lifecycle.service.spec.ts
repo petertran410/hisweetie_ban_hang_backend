@@ -154,6 +154,7 @@ describe('ApprovalLifecycleService', () => {
         status: 'APPROVED',
         sourceType: 'INTERNAL_FUND_RECEIPT',
       }),
+      { skipBranchIds: [] },
     );
     expect(f.cashFlowsService.createApprovalCashFlow).not.toHaveBeenCalled();
   });
@@ -1619,6 +1620,10 @@ describe('ApprovalLifecycleService', () => {
         update: jest.fn(async ({ data }: any) =>
           Object.assign(transfers[0], data),
         ),
+        findUnique: jest.fn(
+          async ({ where }: any) =>
+            transfers.find((row) => row.id === where.id) || null,
+        ),
       };
       (f.fundLedger as any).code = jest.fn().mockReturnValue('QF-CHUYEN-test');
       f.prisma.approvalRequestEvent = {
@@ -1686,11 +1691,30 @@ describe('ApprovalLifecycleService', () => {
         sourceType: 'INTERNAL_FUND_TRANSFER',
         status: 'APPROVED',
       });
+      // Duyệt 14/10: Kho HN đã lên POS, VPHN chưa (từ 01/11) nên chỉ ghi
+      // bên Kho HN; bên VPHN đã có trong sổ quỹ Lark.
+      expect(f.fundLedger.applyApproval.mock.calls[0][2]).toEqual({
+        skipBranchIds: [4],
+      });
 
       // Sự kiện lặp lại không tạo lệnh chuyển thứ hai.
       await f.service.handleInstanceEvent({ ...approvedEvent, uuid: 'again' });
       expect(f.transfers).toHaveLength(1);
       expect(f.requests).toHaveLength(1);
+    });
+
+    it('posts only the leg whose fund is already on POS when the other is not yet', async () => {
+      // Kho HN (lên POS 14/10) chuyển cho VPSG (lên POS từ VPSG_FUND_START).
+      const f = receiptService(transferForm('msmnlqf7-dfecjahtjww-7'));
+      await f.service.handleInstanceEvent(approvedEvent);
+      expect(f.transfers[0]).toMatchObject({
+        sourceBranchId: 6,
+        destinationBranchId: 7,
+      });
+      expect(f.fundLedger.applyApproval).toHaveBeenCalledTimes(1);
+      expect(f.fundLedger.applyApproval.mock.calls[0][2]).toEqual({
+        skipBranchIds: [7],
+      });
     });
 
     it('turns a cash "other" receipt into a fund receipt of the chosen fund', async () => {

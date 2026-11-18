@@ -15,6 +15,7 @@ const FINANCE_RESOURCES = [
   'cash_flows',
   'lark_approval',
   'salary_advance',
+  'vpsg_cash',
 ];
 
 /** Người thao tác: id, hoặc user của request (đã có vai trò và chi nhánh). */

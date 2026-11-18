@@ -2,6 +2,7 @@ import {
   LARK_LEDGER_CUTOFF,
   SALARY_ADVANCE_FUND_FROM,
   VPHN_LEDGER_CUTOFF,
+  VPSG_FUND_START,
   larkFundCutoff,
   larkLedgerCutoff,
   readFundReceipt,
@@ -119,10 +120,11 @@ describe('readFundReceipt', () => {
 });
 
 describe('larkLedgerCutoff', () => {
-  it('uses 14/10 for the warehouses and 01/11 for Văn phòng HN', () => {
+  it('uses 14/10 for the warehouses, 01/11 for Văn phòng HN and the VPSG fund start', () => {
     expect(larkLedgerCutoff(6)).toEqual(LARK_LEDGER_CUTOFF);
     expect(larkLedgerCutoff(1)).toEqual(LARK_LEDGER_CUTOFF);
     expect(larkLedgerCutoff(4)).toEqual(VPHN_LEDGER_CUTOFF);
+    expect(larkLedgerCutoff(7)).toEqual(VPSG_FUND_START);
     expect(larkLedgerCutoff(null)).toEqual(LARK_LEDGER_CUTOFF);
     expect(VPHN_LEDGER_CUTOFF.toISOString()).toBe('2026-10-31T17:00:00.000Z');
   });
@@ -279,5 +281,7 @@ describe('larkFundCutoff', () => {
       LARK_LEDGER_CUTOFF,
     );
     expect(larkFundCutoff(4, null)).toEqual(VPHN_LEDGER_CUTOFF);
+    // VPSG lên POS sau 02/11: tạm ứng lương theo mốc của VPSG.
+    expect(larkFundCutoff(7, 'LARK_SALARY_ADVANCE')).toEqual(VPSG_FUND_START);
   });
 });

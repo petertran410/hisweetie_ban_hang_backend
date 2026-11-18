@@ -6,6 +6,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import { InvoicePaymentsService } from '../invoices/invoice-payments.service';
 import { OrderPaymentsService } from '../orders/order-payments.service';
 import { NotificationsService } from '../notifications/notifications.service';
+import {
+  isVpsgTransaction,
+  vpsgAccountNumbers,
+} from '../vpsg-cash/vpsg-cash.accounts';
 import { NotificationFanoutService } from '../notifications/notification-fanout.service';
 import { SepayWebhookDto } from './dto/sepay-webhook.dto';
 
@@ -35,6 +39,19 @@ export class SepayService {
       return {
         success: true,
         message: 'Skipped: not an incoming transfer',
+      };
+    }
+
+    // Tài khoản quỹ tiền mặt VPSG: không phải tiền khách, không tự gắn đơn.
+    if (
+      await this.isVpsgAccount(
+        payload.accountNumber,
+        payload.subAccount ?? null,
+      )
+    ) {
+      return {
+        success: true,
+        message: 'Skipped: VPSG cash fund account',
       };
     }
 
@@ -434,6 +451,16 @@ export class SepayService {
     }
   }
 
+  private async isVpsgAccount(
+    accountNumber: string | null | undefined,
+    subAccount: string | null,
+  ) {
+    return isVpsgTransaction(
+      { accountNumber: accountNumber ?? null, subAccount },
+      await vpsgAccountNumbers(this.prisma),
+    );
+  }
+
   /**
    * Tạo thông báo in-app cho các user được phép thấy giao dịch tiền vào.
    * Bọc try/catch riêng — lỗi fan-out không được làm hỏng luồng webhook.
@@ -449,6 +476,8 @@ export class SepayService {
     transactionContent: string | null;
   }) {
     try {
+      // Tiền vào tài khoản quỹ VPSG không phải khách chuyển khoản.
+      if (await this.isVpsgAccount(tx.accountNumber, tx.subAccount)) return;
       const recipients =
         await this.notificationFanoutService.resolveSepayRecipients({
           accountNumber: tx.accountNumber,

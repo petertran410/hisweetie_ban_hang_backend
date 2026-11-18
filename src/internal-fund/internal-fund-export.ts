@@ -41,6 +41,8 @@ const TYPE_LABELS: Record<string, string> = {
 const SOURCE_LABELS: Record<string, string> = {
   WAREHOUSE_CASH_RECEIPT: 'Thu tiền khách',
   LARK_PAYMENT_VOUCHER: 'Phiếu chi theo đơn duyệt',
+  SEPAY_VPSG: 'Thu từ tài khoản VPSG',
+  BALANCE_ADJUSTMENT: 'Cân bằng quỹ',
 };
 const MONEY_FORMAT = '#,##0.00;[Red](#,##0.00);"-"';
 const DATE_FORMAT = 'dd/mm/yyyy hh:mm';

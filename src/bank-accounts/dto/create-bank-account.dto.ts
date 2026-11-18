@@ -4,6 +4,7 @@ import {
   IsOptional,
   IsArray,
   IsInt,
+  IsBoolean,
 } from 'class-validator';
 
 export class CreateBankAccountDto {
@@ -35,4 +36,9 @@ export class CreateBankAccountDto {
   @IsInt({ each: true })
   @IsOptional()
   branchIds?: number[];
+
+  /** Tài khoản nhận tiền mặt quỹ nội bộ Văn phòng SG (không phải tiền khách). */
+  @IsBoolean()
+  @IsOptional()
+  vpsgCashFund?: boolean;
 }
