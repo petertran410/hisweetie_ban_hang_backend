@@ -104,7 +104,11 @@ export const INTERNAL_FINANCE_WEEKLY_STATUS = {
 
 export const INTERNAL_FINANCE_BRANCH_IDS = [1, 4, 6, 7] as const;
 
+/** Kho HN (6), Kho SG (1): phí báo đơn, xe, phiếu chi kho. */
 export const WAREHOUSE_CASH_BRANCH_IDS = [6, 1] as const;
+
+/** Trang Tiền mặt kho: phiếu thu tiền mặt của 2 kho và 2 văn phòng. */
+export const CASH_RECEIPT_BRANCH_IDS = [6, 1, 4, 7] as const;
 
 /** Văn phòng HN (4), Văn phòng SG (7): không có báo đơn, xe, Approval tuần. */
 export const OFFICE_BRANCH_IDS = [4, 7] as const;

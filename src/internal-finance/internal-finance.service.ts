@@ -19,10 +19,12 @@ import {
 } from '../auth/finance-access.service';
 import {
   EXPENSE_FIELD_IDS,
+  larkLedgerCutoff,
   type ApprovalFormItem,
 } from '../approval-lifecycle/approval-lifecycle.constants';
 import {
   DELIVERY_EXPENSE_CATEGORIES,
+  CASH_RECEIPT_BRANCH_IDS,
   INTERNAL_FINANCE_CATEGORY,
   INTERNAL_FINANCE_DIRECTION,
   INTERNAL_FINANCE_EVIDENCE_STATUS,
@@ -388,9 +390,9 @@ export class InternalFinanceService {
     const limit = Math.min(query.limit || 50, 100);
     const page = query.page || 1;
     const branchIds = (
-      query.branchIds?.length ? query.branchIds : [...WAREHOUSE_CASH_BRANCH_IDS]
+      query.branchIds?.length ? query.branchIds : [...CASH_RECEIPT_BRANCH_IDS]
     ).filter((id) =>
-      (WAREHOUSE_CASH_BRANCH_IDS as readonly number[]).includes(id),
+      (CASH_RECEIPT_BRANCH_IDS as readonly number[]).includes(id),
     );
     const emptyTotals = { amount: 0, confirmedAmount: 0, difference: 0 };
     if (!branchIds.length)
@@ -680,7 +682,8 @@ export class InternalFinanceService {
    * nhận: có xác nhận (> 0) thì ghi quỹ ngày báo đơn; đổi số / ngày / kho thì
    * hủy dòng cũ ghi lại; bỏ xác nhận hoặc hủy phiếu thì rút khỏi quỹ. Phiếu đã
    * lập giữ nguyên. Dòng đồng bộ từ Lark hoặc đã ghi trên sổ quỹ Lark thì không
-   * ghi quỹ lần hai.
+   * ghi quỹ lần hai; phiếu văn phòng có ngày thu trước mốc sổ quỹ
+   * (`larkLedgerCutoff`) cũng vậy.
    */
   private async syncWarehouseReceiptFund(
     tx: Prisma.TransactionClient,
@@ -700,10 +703,15 @@ export class InternalFinanceService {
     const current = await tx.internalFundTransaction.findUnique({
       where: { sourceKey: key },
     });
+    // Văn phòng: tiền thu trước mốc sổ quỹ đã nằm trong sổ quỹ Lark.
+    const beforeOfficeLedger =
+      (OFFICE_BRANCH_IDS as readonly number[]).includes(entry.branchId) &&
+      new Date(entry.occurredAt) < larkLedgerCutoff(entry.branchId);
     const skip =
       entry.status === INTERNAL_FINANCE_STATUS.CANCELLED ||
       String(entry.sourceKey || '').startsWith('LARK_CASH:') ||
-      isLarkLedgerRecorded(entry);
+      isLarkLedgerRecorded(entry) ||
+      beforeOfficeLedger;
     const amount =
       skip || entry.confirmedAmount === null
         ? 0
@@ -723,7 +731,9 @@ export class InternalFinanceService {
         userId,
         amount > 0
           ? 'Kế toán kho đổi số tiền thực nhận'
-          : 'Bỏ xác nhận số tiền thực nhận',
+          : beforeOfficeLedger
+            ? 'Ngày thu trước mốc sổ quỹ: đã ghi trên sổ quỹ Lark'
+            : 'Bỏ xác nhận số tiền thực nhận',
       );
     if (amount > 0)
       await this.fundLedger.postSystemTransaction(tx, {
@@ -4320,8 +4330,9 @@ export class InternalFinanceService {
     }
 
     const cashAmount = Number(packingSlip.cashAmount || 0);
+    // Kho và văn phòng: báo đơn thu tiền mặt thì sinh phiếu Tiền mặt kho.
     const warehouseBranch = (
-      WAREHOUSE_CASH_BRANCH_IDS as readonly number[]
+      CASH_RECEIPT_BRANCH_IDS as readonly number[]
     ).includes(Number(packingSlip.branchId));
     const customerIds = this.packingCustomerIds(packingSlip);
     if (
@@ -4703,9 +4714,9 @@ export class InternalFinanceService {
   }
 
   private assertWarehouseBranch(branchId: number) {
-    if (!(WAREHOUSE_CASH_BRANCH_IDS as readonly number[]).includes(branchId)) {
+    if (!(CASH_RECEIPT_BRANCH_IDS as readonly number[]).includes(branchId)) {
       throw new BadRequestException(
-        'Phiếu thu tiền mặt chỉ dùng cho Kho Hà Nội và Kho Sài Gòn',
+        'Phiếu thu tiền mặt chỉ dùng cho kho và văn phòng',
       );
     }
   }
@@ -4731,9 +4742,7 @@ export class InternalFinanceService {
   private isWarehouseReceipt(entry: any) {
     return (
       entry?.direction === INTERNAL_FINANCE_DIRECTION.RECEIPT &&
-      (WAREHOUSE_CASH_BRANCH_IDS as readonly number[]).includes(
-        entry.branchId,
-      ) &&
+      (CASH_RECEIPT_BRANCH_IDS as readonly number[]).includes(entry.branchId) &&
       ['PACKING_SLIP', 'MANUAL_RECEIPT'].includes(entry.sourceType) &&
       [
         INTERNAL_FINANCE_CATEGORY.CUSTOMER_RECEIPT,
@@ -5070,7 +5079,7 @@ export class InternalFinanceService {
     return this.access.branchesFor(
       user,
       `warehouse_cash:${action}`,
-      WAREHOUSE_CASH_BRANCH_IDS,
+      CASH_RECEIPT_BRANCH_IDS,
     );
   }
 

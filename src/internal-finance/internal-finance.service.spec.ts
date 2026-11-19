@@ -316,6 +316,10 @@ describe('InternalFinanceService', () => {
     } as any);
 
     expect(result.data.map((row: any) => row.id)).toEqual([3, 1, 4]);
+    // Không chọn chi nhánh: lấy cả 2 kho và 2 văn phòng.
+    expect(findMany.mock.calls[0][0].where.AND).toContainEqual({
+      branchId: { in: [6, 1, 4, 7] },
+    });
     expect(result.totals).toEqual({
       amount: 700000,
       confirmedAmount: 470000,
@@ -1525,6 +1529,49 @@ describe('InternalFinanceService', () => {
     expect(update).not.toHaveBeenCalled();
   });
 
+  it('creates a manual cash receipt at an office and rejects a branch outside the books', async () => {
+    const create = jest.fn(async ({ data }: any) => ({ id: 5, ...data }));
+    const { service } = makeService({
+      internalFinanceEntry: {
+        findUnique: jest.fn(),
+        create,
+        update: jest.fn(),
+        updateMany: jest.fn(),
+      },
+    });
+    const dto = {
+      branchId: 7,
+      amount: 250000,
+      occurredAt: '2026-11-18T03:00:00.000Z',
+      receiptKind: 'WAREHOUSE_SALE',
+      description: 'Thu tiền mặt tại văn phòng',
+    };
+
+    await service.createWarehouseReceipt(dto as any, 9);
+    expect(create.mock.calls[0][0].data).toMatchObject({
+      branchId: 7,
+      direction: 'RECEIPT',
+      sourceType: 'MANUAL_RECEIPT',
+    });
+    await expect(
+      service.createWarehouseReceipt({ ...dto, branchId: 2 } as any, 9),
+    ).rejects.toThrow('kho và văn phòng');
+  });
+
+  it('lists office branches in the cash receipt scope by role at each branch', async () => {
+    const { service, authService } = makeService();
+    authService.getPermissionsForBranch.mockImplementation(
+      async (_userId: number, branchId: number) =>
+        branchId === 7 ? ['warehouse_cash:view'] : [],
+    );
+    await expect(
+      service.warehouseCashBranches(
+        { id: 9, roles: [], branchIds: [1, 7] },
+        'view',
+      ),
+    ).resolves.toEqual([7]);
+  });
+
   it('records the default accountant review for a manual cash receipt', async () => {
     const entryCreate = jest.fn().mockResolvedValue({ id: 21 });
     const { service } = makeService({
@@ -2011,7 +2058,7 @@ describe('InternalFinanceService', () => {
     });
   });
 
-  it('does not create a warehouse receipt for transfer, zero cash, or a non-warehouse branch', async () => {
+  it('does not create a cash receipt for transfer, zero cash, or a branch outside the finance books', async () => {
     const db = memoryFinanceDb();
     const { service } = makeService();
     const base = {
@@ -2046,7 +2093,7 @@ describe('InternalFinanceService', () => {
       {
         ...base,
         id: 22,
-        branchId: 4,
+        branchId: 2,
         paymentMethod: 'cash',
         cashAmount: 50000,
       },
@@ -2069,6 +2116,42 @@ describe('InternalFinanceService', () => {
         (entry) => entry.category === 'CUSTOMER_RECEIPT',
       ),
     ).toBe(false);
+  });
+
+  it('creates a cash receipt for an office packing slip paid in cash, without delivery fees', async () => {
+    const db = memoryFinanceDb();
+    const { service } = makeService();
+    await service.syncPackingSlipEntriesInTransaction(
+      db as any,
+      {
+        id: 25,
+        code: 'BD-25',
+        branchId: 7,
+        createdAt: new Date('2026-11-10T03:00:00.000Z'),
+        paymentMethod: 'cash',
+        cashAmount: 70000,
+        hasFeeGuiBen: true,
+        feeGuiBen: 10000,
+        hasFeeGrab: false,
+        feeGrab: 0,
+        hasCuocGuiHang: false,
+        cuocGuiHang: 0,
+        hasCuocNhanHang: false,
+        cuocNhanHang: 0,
+        invoices: [{ invoiceId: 1, invoice: { customerId: 8 } }],
+        expenseFiles: [],
+        images: [],
+      },
+      7,
+    );
+
+    expect(db.entries.get('PACKING_SLIP:25:CUSTOMER_RECEIPT')).toMatchObject({
+      branchId: 7,
+      direction: 'RECEIPT',
+      amount: 70000,
+    });
+    // Phí báo đơn vẫn chỉ ở kho.
+    expect(db.entries.has('PACKING_SLIP:25:FEE_GUI_BEN')).toBe(false);
   });
 
   it('updates the Lark-synced fee entry of the same packing slip instead of creating a twin', async () => {
@@ -2547,6 +2630,67 @@ describe('InternalFinanceService', () => {
         'Bỏ xác nhận số tiền thực nhận',
       );
       expect(f.reviewCreate).toHaveBeenCalledTimes(3);
+    });
+
+    it('books an office receipt to the office fund from the fund start date only', async () => {
+      // VPSG: sổ quỹ POS bắt đầu 04/11.
+      const after = setup({
+        branchId: 7,
+        confirmedAmount: null,
+        occurredAt: new Date('2026-11-10T03:00:00.000Z'),
+      });
+      await after.service.confirmWarehouseReceiptAmount(
+        4,
+        { mode: 'MATCH' },
+        9,
+      );
+      expect(after.fundLedger.postSystemTransaction).toHaveBeenCalledWith(
+        after.prisma,
+        expect.objectContaining({
+          branchId: 7,
+          sourceKey: 'WAREHOUSE_RECEIPT:4',
+          amount: 100000,
+        }),
+      );
+
+      // Trước mốc: sổ quỹ Lark đã có khoản này, chỉ lưu số xác nhận.
+      for (const [branchId, occurredAt] of [
+        [7, '2026-11-03T10:00:00.000Z'],
+        [4, '2026-10-30T10:00:00.000Z'],
+      ] as const) {
+        const before = setup({
+          branchId,
+          confirmedAmount: null,
+          occurredAt: new Date(occurredAt),
+        });
+        await before.service.confirmWarehouseReceiptAmount(
+          4,
+          { mode: 'MATCH' },
+          9,
+        );
+        expect(before.state.confirmedAmount).toBe(100000);
+        expect(before.fundLedger.postSystemTransaction).not.toHaveBeenCalled();
+      }
+    });
+
+    it('takes the fund row back when an office receipt moves before the fund start', async () => {
+      const f = setup({
+        branchId: 7,
+        occurredAt: new Date('2026-11-03T10:00:00.000Z'),
+      });
+      f.prisma.internalFundTransaction.findUnique.mockResolvedValue({
+        amount: 100000,
+        branchId: 7,
+        occurredAt: new Date('2026-11-10T03:00:00.000Z'),
+      });
+      await f.service.confirmWarehouseReceiptAmount(4, { mode: 'MATCH' }, 9);
+      expect(f.fundLedger.cancelBySource).toHaveBeenCalledWith(
+        f.prisma,
+        'WAREHOUSE_RECEIPT:4',
+        9,
+        'Ngày thu trước mốc sổ quỹ: đã ghi trên sổ quỹ Lark',
+      );
+      expect(f.fundLedger.postSystemTransaction).not.toHaveBeenCalled();
     });
 
     it('does not change the confirmation of a posted receipt', async () => {
