@@ -10,12 +10,42 @@ import { INVOICE_STATUS } from '../invoices/dto/invoice-status.constants';
 import * as QRCode from 'qrcode';
 import { USER_PUBLIC_SELECT } from '../common/user-select.util';
 import {
+  BuiltinPrintVariable,
   mapProductionExternal,
   PRODUCTION_EXTERNAL,
   PRODUCTION_EXTERNAL_DEFAULT_TEMPLATE,
   PRODUCTION_EXTERNAL_ITEM_KEYS,
   PRODUCTION_EXTERNAL_VARIABLES,
 } from './production-external-print';
+import {
+  MANUFACTURER_STOCK,
+  MANUFACTURER_STOCK_DEFAULT_TEMPLATE,
+  MANUFACTURER_STOCK_ITEM_KEYS,
+  MANUFACTURER_STOCK_VARIABLES,
+  mapManufacturerStock,
+} from './manufacturer-stock-print';
+
+/**
+ * Loại mẫu in có biến + mẫu mặc định dựng sẵn trong code (không cần seed): biến
+ * gộp vào danh sách biến DB (DB cùng key được ưu tiên), mẫu mặc định tạo một lần
+ * khi mở danh sách mẫu của loại đó mà chưa có mẫu nào.
+ */
+const BUILTIN_PRINT_TYPES: Record<string, {
+  variables: BuiltinPrintVariable[];
+  itemKeys: string[];
+  defaultTemplate: { name: string; code: string; content: string };
+}> = {
+  [PRODUCTION_EXTERNAL]: {
+    variables: PRODUCTION_EXTERNAL_VARIABLES,
+    itemKeys: PRODUCTION_EXTERNAL_ITEM_KEYS,
+    defaultTemplate: { name: 'Phiếu gửi sản xuất mặc định', code: 'GSX_DEFAULT', content: PRODUCTION_EXTERNAL_DEFAULT_TEMPLATE },
+  },
+  [MANUFACTURER_STOCK]: {
+    variables: MANUFACTURER_STOCK_VARIABLES,
+    itemKeys: MANUFACTURER_STOCK_ITEM_KEYS,
+    defaultTemplate: { name: 'Phiếu nguyên liệu NSX mặc định', code: 'GNL_DEFAULT', content: MANUFACTURER_STOCK_DEFAULT_TEMPLATE },
+  },
+};
 
 @Injectable()
 export class PrintTemplatesService {
@@ -27,8 +57,8 @@ export class PrintTemplatesService {
     params: { templateFor?: string; isActive?: boolean },
     userId?: number,
   ) {
-    if (params.templateFor === PRODUCTION_EXTERNAL && userId) {
-      await this.ensureProductionExternalDefault(userId);
+    if (params.templateFor && BUILTIN_PRINT_TYPES[params.templateFor] && userId) {
+      await this.ensureBuiltinDefault(params.templateFor, userId);
     }
     return this.prisma.printTemplate.findMany({
       where: {
@@ -40,21 +70,23 @@ export class PrintTemplatesService {
   }
 
   /**
-   * Phiếu gửi sản xuất chưa có mẫu nào → tạo mẫu mặc định (không có biến tiền)
-   * một lần, để in được ngay mà không cần chạy seed. Đã có mẫu thì không đụng.
+   * Loại mẫu dựng sẵn (phiếu gửi sản xuất, phiếu nguyên liệu NSX) chưa có mẫu nào
+   * → tạo mẫu mặc định (không có biến tiền) một lần, để in được ngay mà không cần
+   * chạy seed. Đã có mẫu thì không đụng.
    */
-  private async ensureProductionExternalDefault(userId: number) {
+  private async ensureBuiltinDefault(templateFor: string, userId: number) {
+    const builtin = BUILTIN_PRINT_TYPES[templateFor];
     const count = await this.prisma.printTemplate.count({
-      where: { templateFor: PRODUCTION_EXTERNAL },
+      where: { templateFor },
     });
     if (count) return;
     await this.prisma.printTemplate.createMany({
       data: [
         {
-          name: 'Phiếu gửi sản xuất mặc định',
-          code: 'GSX_DEFAULT',
-          templateFor: PRODUCTION_EXTERNAL,
-          content: PRODUCTION_EXTERNAL_DEFAULT_TEMPLATE,
+          name: builtin.defaultTemplate.name,
+          code: builtin.defaultTemplate.code,
+          templateFor,
+          content: builtin.defaultTemplate.content,
           isActive: true,
           isDefault: true,
           paperSize: 'A5',
@@ -129,10 +161,11 @@ export class PrintTemplatesService {
       where: { templateFor, isActive: true },
       orderBy: [{ group: 'asc' }, { sortOrder: 'asc' }],
     });
-    // Biến dựng sẵn trong code (phiếu gửi sản xuất) — biến cùng key trong DB được ưu tiên.
-    if (templateFor === PRODUCTION_EXTERNAL) {
+    // Biến dựng sẵn trong code — biến cùng key trong DB được ưu tiên.
+    const builtin = BUILTIN_PRINT_TYPES[templateFor];
+    if (builtin) {
       const keys = new Set(variables.map((v) => v.key));
-      for (const v of PRODUCTION_EXTERNAL_VARIABLES) {
+      for (const v of builtin.variables) {
         if (keys.has(v.key)) continue;
         variables.push({
           id: 0,
@@ -219,9 +252,7 @@ export class PrintTemplatesService {
       select: { key: true },
     });
     const keys = new Set(vars.map((v) => v.key));
-    if (templateFor === PRODUCTION_EXTERNAL) {
-      for (const key of PRODUCTION_EXTERNAL_ITEM_KEYS) keys.add(key);
-    }
+    for (const key of BUILTIN_PRINT_TYPES[templateFor]?.itemKeys ?? []) keys.add(key);
     return keys;
   }
 
@@ -382,6 +413,10 @@ export class PrintTemplatesService {
         return mapProductionExternal(
           await this.loadProductionExternal(entityId),
         );
+      case MANUFACTURER_STOCK:
+        return mapManufacturerStock(
+          await this.loadManufacturerStock(entityId),
+        );
       default:
         throw new BadRequestException(
           `Unsupported templateFor: ${templateFor}`,
@@ -409,6 +444,24 @@ export class PrintTemplatesService {
     });
     if (!entity?.manufacturerId)
       throw new NotFoundException('Không tìm thấy phiếu gửi sản xuất');
+    return entity;
+  }
+
+  /** Phiếu nguyên liệu tại NSX. Không lấy giá vốn / giá trị vào dữ liệu in. */
+  private async loadManufacturerStock(id: number) {
+    const entity = await this.prisma.manufacturerStockSlip.findUnique({
+      where: { id },
+      include: {
+        lines: {
+          orderBy: { id: 'asc' },
+          include: { product: { select: { unit: true } } },
+        },
+        manufacturer: true,
+        branch: true,
+      },
+    });
+    if (!entity)
+      throw new NotFoundException('Không tìm thấy phiếu nguyên liệu NSX');
     return entity;
   }
 
