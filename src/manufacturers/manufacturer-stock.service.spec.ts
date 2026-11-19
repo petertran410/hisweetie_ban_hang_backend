@@ -234,6 +234,35 @@ describe('material stock held at the manufacturer', () => {
     expect((await stockOf(1))!.units).toBe(0.475);
   });
 
+  it('declaring opening stock (already at the NSX, already out of our stock) adds NSX stock only, at the declared cost', async () => {
+    const { service, inventories, logs, stockOf, consume } = setup();
+    const slip = await service.create(5, { type: 'OPENING', lines: [{ productId: 1, quantity: 10, unit: 'kg', unitCost: 3000000 }] }, 7);
+    expect(slip.code).toMatch(/^TDK/);
+    expect(slip.branchId).toBeNull();
+    expect(Number(slip.lines[0].units)).toBe(0.5);
+    expect(Number(slip.totalValue)).toBe(1500000);
+    // Không đụng kho mình, không ghi log kho.
+    expect(logs).toHaveLength(0);
+    expect(inventories.get('1:2').onHand).toBe(3);
+    expect(await stockOf(1)).toMatchObject({ units: 0.5, avgCost: 3000000, value: 1500000 });
+    // Phiếu sản xuất dùng tồn này lấy đúng giá khai báo.
+    await consume(1, 0.2);
+    expect((await stockOf(1))!.units).toBe(0.3);
+    // Đã dùng 0.2 → không giảm khai báo xuống dưới 4 kg, không hủy được.
+    await expect(service.update(slip.id, { lines: [{ productId: 1, quantity: 3, unit: 'kg', unitCost: 3000000 }] }, 7))
+      .rejects.toThrow('Không đủ tồn "Trà A 20kg" tại NSX');
+    await expect(service.cancel(slip.id, 7)).rejects.toThrow('Không hủy được');
+  });
+
+  it('opening stock requires a cost; editing can correct the declared cost', async () => {
+    const { service, stockOf } = setup();
+    await expect(service.create(5, { type: 'OPENING', lines: [{ productId: 2, quantity: 5, unit: 'kg' }] }, 7))
+      .rejects.toThrow('Nhập giá vốn cho "Trà B"');
+    const slip = await service.create(5, { type: 'OPENING', lines: [{ productId: 2, quantity: 5, unit: 'kg', unitCost: 100 }] }, 7);
+    await service.update(slip.id, { lines: [{ productId: 2, quantity: 5, unit: 'kg', unitCost: 120 }] }, 7);
+    expect(await stockOf(2)).toMatchObject({ units: 5, avgCost: 120, value: 600 });
+  });
+
   it('rejects a send/return without a branch and duplicate products', async () => {
     const { service } = setup();
     await expect(service.create(5, send({ branchId: undefined }), 7)).rejects.toThrow('Vui lòng chọn kho gửi');

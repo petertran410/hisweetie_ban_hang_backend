@@ -52,6 +52,18 @@ describe('manufacturer_stock print data', () => {
     expect(adjust).toMatchObject({ Kho: 'Tồn tại nhà sản xuất', Cot_Quy_Doi: 'Chênh lệch', items: [{ So_Luong: '1.5', Quy_Doi: '−0.025', Ton_He_Thong: '0.1' }] });
   });
 
+  it('an opening-stock declaration prints as a declaration at the manufacturer, without money', () => {
+    const data = mapManufacturerStock(slip({
+      type: 'OPENING', branchId: null, branchName: null, branch: null,
+      lines: [{ productCode: 'A', productName: 'A', quantity: 10, unit: 'kg', units: 0.5, unitCost: 3000000, amount: 1500000, product: { unit: 'Thùng' } }],
+    }));
+    expect(data).toMatchObject({
+      Tieu_De: 'PHIẾU KHAI BÁO TỒN NGUYÊN LIỆU TẠI NHÀ SẢN XUẤT', Loai_Phieu: 'Khai báo tồn đầu', Kho: 'Tồn tại nhà sản xuất',
+      items: [{ So_Luong: '10', Don_Vi: 'kg', Quy_Doi: '0.5' }],
+    });
+    expect(JSON.stringify(data)).not.toMatch(/3,000,000|3000000|1,500,000|1500000/);
+  });
+
   it('escapes names; the default template only uses declared keys and has no money words', () => {
     const data = mapManufacturerStock(slip({ manufacturer: { code: 'N', name: '<b>X</b>' } }));
     expect(data.Nha_San_Xuat).toBe('&lt;b&gt;X&lt;/b&gt;');
