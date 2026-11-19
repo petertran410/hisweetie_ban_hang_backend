@@ -6207,6 +6207,21 @@ model QuoteTemplate {
   @@map("quote_templates")
 }
 
+/// Bảng giá public price.hisweetievietnam.com — một dòng duy nhất (id = 1).
+/// draft: cấu hình đang sửa trong POS; published: { config, data } chốt lúc bấm Xuất bản (giá đóng băng tại thời điểm đó).
+model PublicPricePage {
+  id              Int       @id @default(1)
+  draft           Json      @default("{}")
+  published       Json?
+  publishedAt     DateTime? @map("published_at")
+  publishedById   Int?      @map("published_by_id")
+  publishedByName String?   @map("published_by_name")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+  updatedById     Int?      @map("updated_by_id")
+
+  @@map("public_price_pages")
+}
+
 /// Báo giá gửi khách (/khach-hang/bao-gia). isLibrary = báo giá mẫu trong Thư viện (không gắn khách).
 model Quote {
   id              Int            @id @default(autoincrement())
