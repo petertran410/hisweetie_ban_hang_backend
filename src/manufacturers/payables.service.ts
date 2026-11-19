@@ -6,6 +6,7 @@ import { calculateSupplierDebt, recalcSupplierDebt, SUPPLIER_DEBT_PO_WHERE } fro
 import { PayablePaymentDto } from './dto';
 import { money } from './external-production.util';
 import { heldMaterialValueOf } from '../common/production-factory.util';
+import { manufacturerStockValue } from './manufacturer-stock.util';
 
 type AccountType = 'S' | 'M';
 export interface PayableRow {
@@ -124,10 +125,13 @@ export class PayablesService {
         orderBy: { createdAt: 'desc' }, take: 100,
       });
       const own = productions.filter((row) => account.type === 'S' ? row.supplierId === account.id : row.supplierId == null);
+      // Tồn nguyên liệu gửi trước tại NSX thuộc tài khoản hiện tại của NSX.
+      const isCurrent = account.type === current.type && account.id === current.id;
+      const stockValue = isCurrent ? await manufacturerStockValue(this.prisma, [id]) : 0;
       return {
         ...summary, batches,
         manufacturerProductionDebt: money(own.filter((row) => row.status === 2 || row.status === 5).reduce((sum, row) => sum + Number(row.debtAmount), 0)),
-        heldMaterialValue: money(own.reduce((sum, row) => sum + heldMaterialValueOf(row), 0)),
+        heldMaterialValue: money(own.reduce((sum, row) => sum + heldMaterialValueOf(row), 0) + stockValue),
       };
     }));
     return { manufacturer, productions, groups };

@@ -60,6 +60,12 @@ const ACTIVE_FINDERS: Record<
       where: { id: { in: ids }, status: 1, production: { status: { not: 3 } } },
       select: { id: true },
     }),
+  // Phiếu nguyên liệu tại NSX (gửi đi / NSX trả về): còn hiệu lực khi chưa hủy.
+  manufacturer_stock: (tx, ids) =>
+    tx.manufacturerStockSlip.findMany({
+      where: { id: { in: ids }, status: 1 },
+      select: { id: true },
+    }),
   destruction: (tx, ids) =>
     tx.destruction.findMany({
       where: { id: { in: ids }, status: { not: 3 } },

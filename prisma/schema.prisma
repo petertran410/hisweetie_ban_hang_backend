@@ -363,6 +363,7 @@ model Branch {
   priceBookBranches         PriceBookBranch[]
   productionsDestination    Production[]             @relation("ProductionDestination")
   productionsSource         Production[]             @relation("ProductionSource")
+  manufacturerStockSlips    ManufacturerStockSlip[]
   promotionBranches         PromotionBranch[]
   purchaseOrders            PurchaseOrder[]
   returnOrders              ReturnOrder[]
@@ -836,6 +837,7 @@ model Product {
   images                         ProductImage[]
   quoteItems                     QuoteItem[]
   productionComponents           ProductionComponent[]
+  manufacturerStockSlipLines     ManufacturerStockSlipLine[]
   productions                    Production[]
   masterProduct                  Product?                       @relation("ProductUnits", fields: [masterProductId], references: [id])
   productUnits                   Product[]                      @relation("ProductUnits")
@@ -1143,6 +1145,8 @@ model ProductionComponent {
   unit               String?
   conversionFactor   Decimal?   @db.Decimal(18, 8)
   unitCost           Decimal?   @db.Decimal(18, 6)
+  /// Nguồn trừ của dòng hàng mình gửi NSX: branch = kho gửi, manufacturer = tồn NL đang ở NSX.
+  source             String     @default("branch")
   componentProduct   Product    @relation(fields: [componentProductId], references: [id])
   production         Production @relation(fields: [productionId], references: [id], onDelete: Cascade)
 
@@ -1166,6 +1170,7 @@ model Manufacturer {
   supplier       Supplier? @relation(fields: [supplierId], references: [id])
   productions    Production[]
   templates      ExternalProductionTemplate[]
+  stockSlips     ManufacturerStockSlip[]
 
   @@index([supplierId])
   @@map("manufacturers")
@@ -1260,6 +1265,61 @@ model ProductionReceipt {
   @@unique([productionId, seq])
   @@index([productionId, status])
   @@map("production_receipts")
+}
+
+/// Phiếu nguyên liệu tại NSX: gửi trước để NSX dùng dần (SEND), NSX trả về kho
+/// (RETURN), điều chỉnh tồn tại NSX / hao hụt (ADJUST). Lưu là có hiệu lực.
+model ManufacturerStockSlip {
+  id              Int       @id @default(autoincrement())
+  code            String    @unique
+  /// SEND | RETURN | ADJUST
+  type            String
+  /// 1 hiệu lực, 2 đã hủy.
+  status          Int       @default(1)
+  manufacturerId  Int
+  /// Kho gửi (SEND) / kho nhận (RETURN); ADJUST để trống.
+  branchId        Int?
+  branchName      String?
+  date            DateTime
+  note            String?
+  totalValue      Decimal   @default(0) @db.Decimal(18, 2)
+  createdById     Int
+  createdByName   String
+  updatedByName   String?
+  cancelledAt     DateTime?
+  cancelledByName String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  manufacturer    Manufacturer @relation(fields: [manufacturerId], references: [id])
+  branch          Branch?   @relation(fields: [branchId], references: [id])
+  lines           ManufacturerStockSlipLine[]
+
+  @@index([manufacturerId, status])
+  @@map("manufacturer_stock_slips")
+}
+
+model ManufacturerStockSlipLine {
+  id               Int      @id @default(autoincrement())
+  slipId           Int
+  productId        Int
+  productCode      String
+  productName      String
+  /// Lượng và đơn vị như người dùng nhập (g, kg hoặc đơn vị kho).
+  quantity         Decimal  @db.Decimal(18, 4)
+  unit             String
+  conversionFactor Decimal? @db.Decimal(18, 8)
+  /// Lượng đơn vị kho có dấu theo tồn NSX: SEND +, RETURN −, ADJUST thực tế − hệ thống.
+  units            Decimal  @db.Decimal(18, 4)
+  /// ADJUST: tồn hệ thống tại NSX lúc điều chỉnh (đơn vị kho).
+  systemUnits      Decimal? @db.Decimal(18, 4)
+  unitCost         Decimal  @default(0) @db.Decimal(18, 6)
+  amount           Decimal  @default(0) @db.Decimal(18, 2)
+  slip             ManufacturerStockSlip @relation(fields: [slipId], references: [id], onDelete: Cascade)
+  product          Product  @relation(fields: [productId], references: [id])
+
+  @@index([slipId])
+  @@index([productId])
+  @@map("manufacturer_stock_slip_lines")
 }
 
 model PayablePaymentBatch {

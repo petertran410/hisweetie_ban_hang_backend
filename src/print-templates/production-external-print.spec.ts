@@ -52,7 +52,7 @@ describe('production_external print data', () => {
       Tong_So_Mat_Hang: '1',
     });
     expect(data.items).toEqual([
-      { STT: '1', Ma_Hang: 'SP007606', Ten_Hang_Hoa: 'Trà Olong 20Kg', Luong_Gui: '250,000', Don_Vi_Gui: 'g', So_Luong_Tru_Kho: '12.5', Don_Vi_Tinh: 'Thùng' },
+      { STT: '1', Ma_Hang: 'SP007606', Ten_Hang_Hoa: 'Trà Olong 20Kg', Lay_Tu: 'Kho gửi', Luong_Gui: '250,000', Don_Vi_Gui: 'g', So_Luong_Tru_Kho: '12.5', Don_Vi_Tinh: 'Thùng' },
     ]);
     const text = JSON.stringify(data);
     for (const money of ['59423010', '59,423,010', '500,000', '51,800,000', '51,300,000', '205,200', '205200', '4753840', '111223']) {
@@ -68,6 +68,17 @@ describe('production_external print data', () => {
     expect(Nguyen_Lieu_NSX).toContain('250,000 g');
     expect(Nguyen_Lieu_NSX).not.toMatch(/205|51,300|đ\b/);
     expect(mapProductionExternal(slip({ manufacturerMaterials: [] })).Nguyen_Lieu_NSX).toBe('');
+  });
+
+  it('marks lines taken from the stock already held at the manufacturer', () => {
+    const data = mapProductionExternal(slip({
+      components: [
+        { componentCode: 'A', componentName: 'Trà A', actualGrams: 3000, unit: 'g', unitsDeducted: 0.15, source: 'manufacturer', componentProduct: { unit: 'Thùng' } },
+        { componentCode: 'B', componentName: 'Trà B', actualGrams: 1, unit: 'kg', unitsDeducted: 1, source: 'branch', componentProduct: { unit: 'kg' } },
+      ],
+    }));
+    expect(data.items.map((item: any) => item.Lay_Tu)).toEqual(['Tồn tại NSX', 'Kho gửi']);
+    expect(PRODUCTION_EXTERNAL_DEFAULT_TEMPLATE).toContain('{Lay_Tu}');
   });
 
   it('a draft has not deducted stock yet: deduction columns stay blank', () => {

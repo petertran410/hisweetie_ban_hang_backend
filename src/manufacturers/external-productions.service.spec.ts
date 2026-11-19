@@ -514,4 +514,97 @@ describe('external production lifecycle', () => {
       await expect(service.updateSent(1, dto() as any, 7)).rejects.toThrow('Phiếu đã hủy');
     });
   });
+
+  describe('using material already held at the manufacturer (tồn NSX)', () => {
+    // NSX đang giữ 0.5 thùng (10 kg) Trà A gửi trước, giá vốn 4.000.000 / thùng 20 kg.
+    const product = { id: 10, code: 'A', name: 'Tea A', type: 2, unit: 'Thùng', weight: 20, weightUnit: 'kg' };
+    const withStock = (status = 1, kg = 3) => {
+      const ctx = fixture(status);
+      ctx.row.components = [{ id: 1, componentProductId: 10, componentCode: 'A', componentName: 'Tea A', actualGrams: kg, unit: 'kg', conversionFactor: 0.05, unitsDeducted: status === 1 ? 0 : kg * 0.05, unitCost: status === 1 ? 0 : 4000000, source: 'manufacturer' }];
+      ctx.tx.product.findMany.mockResolvedValue([product]);
+      ctx.tx.manufacturerStockSlipLine = {
+        findMany: jest.fn().mockResolvedValue([{ productId: 10, units: '0.5', unitCost: '4000000', amount: '2000000', slip: { id: 1, type: 'SEND', date: new Date('2026-11-01') } }]),
+      };
+      // Phiếu đang xét chỉ trừ tồn NSX khi đã gửi (2/4/5) và không bị loại ra (excludeProductionId).
+      ctx.tx.productionComponent.findMany = jest.fn(async ({ where }: any) => {
+        if (![2, 4, 5].includes(ctx.row.status) || where.production?.id?.not === ctx.row.id) return [];
+        return ctx.row.components.filter((line: any) => line.source === 'manufacturer')
+          .map((line: any) => ({ componentProductId: line.componentProductId, unitsDeducted: line.unitsDeducted, unitCost: line.unitCost }));
+      });
+      ctx.tx.productionComponent.update = jest.fn(async ({ where, data }: any) => Object.assign(ctx.row.components.find((line: any) => line.id === where.id), data));
+      return ctx;
+    };
+
+    it('sending takes the line from NSX stock: no stock-out at the branch, cost = average cost held at NSX', async () => {
+      const { service, tx, row } = withStock();
+      await service.send(1, undefined, 7);
+      expect(tx.inventoryLog.create).not.toHaveBeenCalled();
+      expect(Number(row.components[0].unitsDeducted)).toBe(0.15);
+      expect(Number(row.components[0].unitCost)).toBe(4000000);
+      // 0.15 × 4.000.000 = 600.000 vào giá thành.
+      expect(row).toMatchObject({ status: 4, materialValue: 600000 });
+      expect(recalcOnHandForPairs).toHaveBeenCalledWith(tx, []);
+    });
+
+    it('cannot use more than the manufacturer holds', async () => {
+      const { service, tx } = withStock(1, 12);
+      await expect(service.send(1, undefined, 7)).rejects.toThrow('Không đủ tồn "Tea A" tại NSX: cần 0.6 Thùng (= 12 kg), còn 0.5 Thùng');
+      expect(tx.production.update).not.toHaveBeenCalled();
+    });
+
+    it('one product may be split across both sources, but not repeated from the same source', async () => {
+      const { service, tx } = withStock();
+      const result = await (service as any).materials(tx, [
+        { productId: 10, quantity: 3, unit: 'kg', source: 'manufacturer' },
+        { productId: 10, quantity: 1, unit: 'kg' },
+      ], []);
+      expect(result.own.map((line: any) => line.source)).toEqual(['manufacturer', 'branch']);
+      await expect((service as any).materials(tx, [
+        { productId: 10, quantity: 3, unit: 'kg', source: 'manufacturer' },
+        { productId: 10, quantity: 1, unit: 'kg', source: 'manufacturer' },
+      ], [])).rejects.toThrow('không được trùng mã cùng nguồn');
+    });
+
+    describe('editing a sent slip that uses NSX stock', () => {
+      const dto = (ownMaterials: any[]) => ({
+        manufacturerId: 5, productId: 10, sourceBranchId: 2, destinationBranchId: 2, quantity: 160,
+        feeCurrency: 'VND', processingFee: 3000, ownMaterials,
+        manufacturerMaterials: [{ pricingMode: 'TOTAL', amount: 16000 }],
+      });
+
+      it('raising the NSX line past what the manufacturer holds fails before rewriting anything', async () => {
+        const { service, tx } = withStock(4);
+        await expect(service.updateSent(1, dto([{ productId: 10, quantity: 12, unit: 'kg', source: 'manufacturer' }]) as any, 7))
+          .rejects.toThrow('tại NSX: cần 0.6 Thùng (= 12 kg), còn 0.5 Thùng');
+        expect(tx.inventoryLog.deleteMany).not.toHaveBeenCalled();
+      });
+
+      it('keeps the NSX cost captured at send and writes no branch stock-out for NSX lines', async () => {
+        const { service, tx, row } = withStock(4);
+        await service.updateSent(1, dto([{ productId: 10, quantity: 6, unit: 'kg', source: 'manufacturer' }]) as any, 7);
+        expect(tx.inventoryLog.create).not.toHaveBeenCalled();
+        const created = tx.productionComponent.createMany.mock.calls[0][0].data;
+        expect(created).toEqual([expect.objectContaining({ source: 'manufacturer', unitsDeducted: expect.anything() })]);
+        expect(Number(created[0].unitsDeducted)).toBe(0.3);
+        expect(Number(created[0].unitCost)).toBe(4000000);
+        expect(row.materialValue).toBe(1200000);
+      });
+
+      it('moving a line from NSX stock to the branch writes a branch stock-out at the current branch cost', async () => {
+        const { service, tx } = withStock(4);
+        await service.updateSent(1, dto([{ productId: 10, quantity: 3, unit: 'kg', source: 'branch' }]) as any, 7);
+        const logs = tx.inventoryLog.create.mock.calls.map((call: any) => call[0].data);
+        expect(logs.map((log: any) => [log.productId, Number(log.quantity), Number(log.costPrice)])).toEqual([[10, -0.15, 100]]);
+        expect(recalcOnHandForPairs).toHaveBeenCalledWith(tx, [{ productId: 10, branchId: 2 }]);
+      });
+    });
+
+    it('cancelling the slip only re-counts branch lines; NSX stock comes back on its own', async () => {
+      const { service, tx } = withStock(4);
+      await service.cancel(1, 7);
+      expect(recalcOnHandForPairs).toHaveBeenCalledWith(tx, [{ productId: 10, branchId: 2 }]);
+      // Cặp duy nhất là thành phẩm ở kho nhận (10 @ kho 2), không phải dòng NSX.
+      expect((recalcOnHandForPairs as jest.Mock).mock.calls[0][1]).toHaveLength(1);
+    });
+  });
 });

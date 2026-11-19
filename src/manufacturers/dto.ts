@@ -9,6 +9,8 @@ export class OwnMaterialDto {
   @IsInt() @Min(1) productId: number;
   @IsNumber() @Min(0.0001) quantity: number;
   @IsString() @MaxLength(40) unit: string;
+  /** Lấy từ: branch = kho gửi (mặc định), manufacturer = tồn nguyên liệu đang ở NSX. */
+  @IsOptional() @IsIn(['branch', 'manufacturer']) source?: 'branch' | 'manufacturer';
 }
 
 /**

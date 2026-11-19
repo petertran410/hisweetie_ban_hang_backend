@@ -72,7 +72,9 @@ export class ManufacturersService {
     db: any, own: OwnMaterialDto[], supplied: ManufacturerMaterialDto[], strict = false,
   ) {
     const ids = own.map((line) => line.productId);
-    if (new Set(ids).size !== ids.length) throw new BadRequestException('Hàng mình gửi không được trùng mã');
+    // Một mã được tách 2 dòng nếu khác nguồn (một phần từ kho gửi, một phần từ tồn tại NSX).
+    const keys = own.map((line) => `${line.productId}:${line.source ?? 'branch'}`);
+    if (new Set(keys).size !== keys.length) throw new BadRequestException('Hàng mình gửi không được trùng mã cùng nguồn');
     if (strict) {
       const suppliedIds = supplied.map((line) => line.productId);
       if (suppliedIds.some((productId) => !productId)) {

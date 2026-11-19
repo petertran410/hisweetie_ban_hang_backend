@@ -3,6 +3,7 @@ import { ManufacturersController } from './manufacturers.controller';
 import { ManufacturersService } from './manufacturers.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { PayablesService } from './payables.service';
+import { ManufacturerStockService } from './manufacturer-stock.service';
 
 interface BatchWhere {
   isExternal?: boolean;
@@ -35,6 +36,7 @@ function controllerFixture() {
     controller: new ManufacturersController(
       { list } as unknown as ManufacturersService,
       {} as PayablesService,
+      {} as ManufacturerStockService,
     ),
   };
 }
