@@ -18,7 +18,7 @@ export const MANUFACTURER_STOCK_VARIABLES: BuiltinPrintVariable[] = [
   { key: 'So_Dien_Thoai_Cua_Hang', label: 'SĐT kho', group: GROUP_STORE, sortOrder: 3, isItemVariable: false },
   { key: 'Tieu_De', label: 'Tiêu đề theo loại phiếu', group: GROUP_SLIP, sortOrder: 1, isItemVariable: false },
   { key: 'Ma_Phieu', label: 'Mã phiếu', group: GROUP_SLIP, sortOrder: 2, isItemVariable: false },
-  { key: 'Loai_Phieu', label: 'Loại phiếu (Gửi / Trả / Điều chỉnh)', group: GROUP_SLIP, sortOrder: 3, isItemVariable: false },
+  { key: 'Loai_Phieu', label: 'Loại phiếu (Gửi / Trả / Điều chỉnh / Tồn đầu)', group: GROUP_SLIP, sortOrder: 3, isItemVariable: false },
   { key: 'Trang_Thai', label: 'Trạng thái phiếu', group: GROUP_SLIP, sortOrder: 4, isItemVariable: false },
   { key: 'Ngay_Phieu', label: 'Ngày phiếu (dd/mm/yyyy)', group: GROUP_SLIP, sortOrder: 5, isItemVariable: false },
   { key: 'Ngay', label: 'Ngày', group: GROUP_SLIP, sortOrder: 6, isItemVariable: false },
@@ -120,6 +120,10 @@ const TYPE_TEXT: Record<string, {
     label: 'Điều chỉnh tồn', title: 'PHIẾU ĐIỀU CHỈNH TỒN NGUYÊN LIỆU TẠI NHÀ SẢN XUẤT',
     quantity: 'Thực tế còn', converted: 'Chênh lệch', giver: 'Đại diện nhà sản xuất', receiver: 'Người kiểm',
   },
+  OPENING: {
+    label: 'Khai báo tồn đầu', title: 'PHIẾU KHAI BÁO TỒN NGUYÊN LIỆU TẠI NHÀ SẢN XUẤT',
+    quantity: 'Lượng đang ở NSX', converted: 'Quy đổi kho', giver: 'Đại diện nhà sản xuất', receiver: 'Người xác nhận',
+  },
 };
 
 const escapeHtml = (value: unknown) =>
@@ -164,7 +168,7 @@ export function mapManufacturerStock(slip: any) {
     Ngay: date ? ddmmyyyy(date) : '',
     Thang: date ? String(date.getMonth() + 1) : '',
     Nam: date ? String(date.getFullYear()) : '',
-    Kho: escapeHtml(slip.branchName || slip.branch?.name || (adjust ? 'Tồn tại nhà sản xuất' : '')),
+    Kho: escapeHtml(slip.branchName || slip.branch?.name || (adjust || slip.type === 'OPENING' ? 'Tồn tại nhà sản xuất' : '')),
     Nguoi_Lap: escapeHtml(slip.createdByName),
     Ghi_Chu: slip.note || '',
     Tong_So_Mat_Hang: String(lines.length),

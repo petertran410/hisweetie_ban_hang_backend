@@ -15,10 +15,15 @@ const D = (value: Prisma.Decimal.Value | null | undefined) => new Prisma.Decimal
 
 export const STOCK_SLIP_ACTIVE = 1;
 export const STOCK_SLIP_CANCELLED = 2;
-export const STOCK_SLIP_TYPES = ['SEND', 'RETURN', 'ADJUST'] as const;
+/**
+ * SEND gửi từ kho mình; RETURN NSX trả về kho; ADJUST kiểm lại (hao hụt / dư);
+ * OPENING khai báo tồn đầu: hàng đã ở NSX từ trước và kho mình đã trừ rồi —
+ * chỉ cộng tồn NSX với giá vốn khai báo, không đụng kho mình.
+ */
+export const STOCK_SLIP_TYPES = ['SEND', 'RETURN', 'ADJUST', 'OPENING'] as const;
 export type StockSlipType = (typeof STOCK_SLIP_TYPES)[number];
 export const STOCK_SLIP_LABEL: Record<StockSlipType, string> = {
-  SEND: 'Gửi nguyên liệu', RETURN: 'Trả nguyên liệu', ADJUST: 'Điều chỉnh tồn',
+  SEND: 'Gửi nguyên liệu', RETURN: 'Trả nguyên liệu', ADJUST: 'Điều chỉnh tồn', OPENING: 'Khai báo tồn đầu',
 };
 
 /** Nguồn trừ của dòng hàng mình gửi trên phiếu gửi sản xuất. */
@@ -83,7 +88,8 @@ export async function manufacturerStock(
     const row = entry(line.productId);
     row.units = row.units.add(line.units);
     row.value = row.value.add(line.amount);
-    if (line.slip.type === 'SEND') {
+    // Lần nhập gần nhất (gửi / khai báo tồn đầu) — giá dự phòng khi hết hàng.
+    if (line.slip.type === 'SEND' || line.slip.type === 'OPENING') {
       const at = new Date(line.slip.date).getTime();
       if (!row.lastSend || at > row.lastSend.at || (at === row.lastSend.at && line.slip.id > row.lastSend.id)) {
         row.lastSend = { at, id: line.slip.id, cost: D(line.unitCost) };

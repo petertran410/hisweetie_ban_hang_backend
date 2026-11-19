@@ -19,11 +19,15 @@ const EPSILON = 0.00005;
 
 /** refType của InventoryLog ghi ở kho mình (gửi đi / nhận lại). */
 export const MANUFACTURER_STOCK_REF = 'manufacturer_stock';
-const LOG_TYPE: Record<Exclude<StockSlipType, 'ADJUST'>, string> = {
+const LOG_TYPE: Record<'SEND' | 'RETURN', string> = {
   SEND: 'MANUFACTURER_STOCK_OUT', RETURN: 'MANUFACTURER_STOCK_IN',
 };
-const CODE_PREFIX: Record<StockSlipType, string> = { SEND: 'GNL', RETURN: 'TNL', ADJUST: 'DCN' };
-const DATE_LABEL: Record<StockSlipType, string> = { SEND: 'Ngày gửi', RETURN: 'Ngày trả', ADJUST: 'Ngày điều chỉnh' };
+const CODE_PREFIX: Record<StockSlipType, string> = { SEND: 'GNL', RETURN: 'TNL', ADJUST: 'DCN', OPENING: 'TDK' };
+const DATE_LABEL: Record<StockSlipType, string> = {
+  SEND: 'Ngày gửi', RETURN: 'Ngày trả', ADJUST: 'Ngày điều chỉnh', OPENING: 'Ngày khai báo',
+};
+/** Loại phiếu chạm kho mình (ghi InventoryLog); ADJUST / OPENING chỉ đổi tồn NSX. */
+const touchesBranch = (type: StockSlipType) => type === 'SEND' || type === 'RETURN';
 
 export const STOCK_SLIP_INCLUDE = {
   lines: { orderBy: { id: 'asc' as const } },
@@ -205,8 +209,9 @@ export class ManufacturerStockService {
 
   /**
    * Ghi phiếu (tạo / sửa). Dòng cũ giữ giá vốn đã chụp theo mã; mã mới: Gửi lấy
-   * giá vốn kho gửi, Trả / Điều chỉnh lấy giá BQ tại NSX. Ghi lại log kho mình
-   * của đúng phiếu, tính lại tồn, chặn âm kho mình và âm tồn NSX.
+   * giá vốn kho gửi, Trả / Điều chỉnh lấy giá BQ tại NSX, Khai báo tồn đầu lấy
+   * giá người dùng nhập (sửa được). Gửi / Trả ghi lại log kho mình của đúng
+   * phiếu; mọi loại đều tính lại và chặn âm tồn NSX.
    */
   private async write(tx: Tx, input: {
     manufacturerId: number; manufacturerName: string; type: StockSlipType;
@@ -215,7 +220,7 @@ export class ManufacturerStockService {
     const { manufacturerId, type, dto, userId, existing } = input;
     const branchId = existing ? existing.branchId : dto.branchId ?? null;
     let branch: { id: number; name: string } | null = null;
-    if (type !== 'ADJUST') {
+    if (touchesBranch(type)) {
       if (!branchId) throw new BadRequestException(type === 'SEND' ? 'Vui lòng chọn kho gửi' : 'Vui lòng chọn kho nhận');
       branch = await tx.branch.findUnique({ where: { id: branchId }, select: { id: true, name: true } });
       if (!branch) throw new BadRequestException('Kho không hợp lệ');
@@ -256,6 +261,13 @@ export class ManufacturerStockService {
         systemUnits = old?.systemUnits != null ? D(old.systemUnits) : balance.units;
         units = enteredUnits.sub(systemUnits);
         unitCost = old ? D(old.unitCost) : balance.avgCost;
+      } else if (type === 'OPENING') {
+        // Hàng đã ở NSX từ trước, kho mình đã trừ: người dùng khai lượng + giá vốn.
+        if (!enteredUnits.gt(0)) throw new BadRequestException(`Lượng quá nhỏ sau quy đổi: ${product.name}`);
+        const declared = line.unitCost ?? (old ? Number(old.unitCost) : undefined);
+        if (declared == null) throw new BadRequestException(`Nhập giá vốn cho "${product.name}"`);
+        units = enteredUnits;
+        unitCost = D(declared).toDecimalPlaces(6);
       } else {
         if (!enteredUnits.gt(0)) throw new BadRequestException(`Lượng quá nhỏ sau quy đổi: ${product.name}`);
         units = type === 'SEND' ? enteredUnits : enteredUnits.negated();

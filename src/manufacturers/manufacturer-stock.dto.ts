@@ -11,12 +11,14 @@ export class ManufacturerStockLineDto {
   @IsNumber() @Min(0) quantity: number;
   /** g | kg | đơn vị kho của sản phẩm. */
   @IsString() @MaxLength(40) unit: string;
+  /** Khai báo tồn đầu: giá vốn / 1 đơn vị kho (bắt buộc). Loại khác bỏ qua. */
+  @IsOptional() @IsNumber() @Min(0) unitCost?: number;
 }
 
 export class ManufacturerStockSlipDto {
   /** Bắt buộc khi tạo; khi sửa phải trùng loại đang có. */
   @IsOptional() @IsIn(STOCK_SLIP_TYPES) type?: StockSlipType;
-  /** Kho gửi (Gửi) / kho nhận (Trả); Điều chỉnh để trống. */
+  /** Kho gửi (Gửi) / kho nhận (Trả); Điều chỉnh và Khai báo tồn đầu để trống. */
   @IsOptional() @IsInt() @Min(1) branchId?: number | null;
   @IsOptional() @IsDateString() date?: string;
   @IsOptional() @IsString() @MaxLength(2000) note?: string | null;
