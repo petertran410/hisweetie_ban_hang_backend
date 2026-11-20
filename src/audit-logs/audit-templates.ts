@@ -1,3 +1,5 @@
+import { FINANCE_AUDIT_TEMPLATES } from '../finance-audit/finance-audit.catalog';
+
 export const AUDIT_TEMPLATES: Record<
   string,
   { template: string; category: string; severity: string }
@@ -360,12 +362,14 @@ export const AUDIT_TEMPLATES: Record<
     severity: 'info',
   },
   PRODUCTION_FACTORY_RECEIVE: {
-    template: 'Nhận {receivedQuantity} thành phẩm từ nhà máy, phiếu {productionCode}',
+    template:
+      'Nhận {receivedQuantity} thành phẩm từ nhà máy, phiếu {productionCode}',
     category: 'production',
     severity: 'info',
   },
   PRODUCTION_FACTORY_APPLY_COST: {
-    template: 'Áp giá vốn {newCostAmount} cho thành phẩm của phiếu {productionCode}',
+    template:
+      'Áp giá vốn {newCostAmount} cho thành phẩm của phiếu {productionCode}',
     category: 'production',
     severity: 'warning',
   },
@@ -764,6 +768,8 @@ export const AUDIT_TEMPLATES: Record<
     category: 'consignment_return',
     severity: 'warning',
   },
+  // Tài chính nội bộ (FIN_*): mẫu câu nằm ở finance-audit/finance-audit.catalog.ts.
+  ...FINANCE_AUDIT_TEMPLATES,
 };
 
 export function renderAuditMessage(

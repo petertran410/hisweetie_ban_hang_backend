@@ -1,14 +1,34 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Optional } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import type { InternalFundTransaction } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import {
   RECEIPT_FIELD_IDS,
   larkLedgerCutoff,
 } from '../approval-lifecycle/approval-lifecycle.constants';
 import {
+  INTERNAL_FINANCE_STATUS,
+  INTERNAL_FINANCE_WEEKLY_STATUS,
   OFFICE_BRANCH_IDS,
   VPSG_BRANCH_ID,
 } from '../internal-finance/internal-finance.constants';
+import {
+  FINANCE_AUDIT_ENTITY,
+  FinanceAuditService,
+  auditActor,
+  batchStatusLabel,
+  branchLabel,
+  formatDate,
+  formatMoney,
+  fundSourceLabel,
+  fundTransferStatusLabel,
+  fundTxnTypeLabel,
+  reasonSuffix,
+  type AuditActor,
+  type FinanceAuditChange,
+  type FinanceAuditEntityType,
+  type FinanceAuditEntry,
+} from '../finance-audit';
 
 export function fundDateKey(value: Date | string): string {
   if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value))
@@ -100,10 +120,123 @@ export interface SystemFundTransactionInput {
   userId: number;
   assertOpen?: boolean;
   adjust?: boolean;
+  /** Người/hệ thống thực hiện cho lịch sử; mặc định là `userId`. */
+  auditActor?: AuditActor;
+}
+
+/** Kết quả rút phiếu khỏi batch tuần chưa gửi Approval. */
+export interface DetachFromBatchResult {
+  batchId: number;
+  batchCode: string | null;
+  /** Batch không còn phiếu nên được hủy (giữ lại, trạng thái Đã hủy). */
+  batchCancelled: boolean;
+  remainingTotal: number;
+}
+
+export interface DetachFromBatchOptions {
+  /** Người rút phiếu; người hủy batch khi batch rỗng là actor USER. */
+  actor?: AuditActor;
+  /** Lý do rút phiếu, cũng là lý do hủy batch khi batch rỗng. */
+  reason?: string;
+  /**
+   * Bên gọi tự đặt trạng thái phiếu ngay sau đó (hủy phiếu, bỏ tick, hủy báo
+   * đơn): không đổi trạng thái "Đã gom tuần" ở đây.
+   */
+  keepStatus?: boolean;
+}
+
+/** Lý do mặc định khi batch tự hủy vì không còn phiếu. */
+export const EMPTY_BATCH_CANCEL_REASON = 'Tự hủy: không còn phiếu';
+
+type AuditLog = FinanceAuditEntry[];
+type FundRowRef = {
+  id: number;
+  branchId: number;
+  occurredAt: Date;
+  sourceKey: string;
+};
+
+const SYSTEM_TRIGGER = 'fund-ledger';
+const LARK_TRIGGER = 'lark-approval';
+
+function fundRowLines(row: InternalFundTransaction) {
+  return [
+    { label: 'Quỹ', value: branchLabel(row.branchId) },
+    { label: 'Loại', value: fundTxnTypeLabel(row.transactionType) },
+    { label: 'Số tiền', value: formatMoney(row.amount) },
+    { label: 'Ngày ghi quỹ', value: formatDate(row.occurredAt) },
+    { label: 'Nội dung', value: row.description || '—' },
+    { label: 'Nguồn', value: fundSourceLabel(row.sourceType) },
+  ];
 }
 
 @Injectable()
 export class InternalFundLedgerService {
+  // Không có FinanceAuditService (script/spec tạo `new InternalFundLedgerService()`)
+  // thì bỏ qua ghi lịch sử.
+  constructor(@Optional() private readonly audit?: FinanceAuditService) {}
+
+  /** Thêm một dòng lịch sử (chỉ dựng khi có FinanceAuditService). */
+  private record(log: AuditLog, build: () => FinanceAuditEntry | null) {
+    if (!this.audit) return;
+    const entry = build();
+    if (entry) log.push(entry);
+  }
+
+  private async flush(tx: Prisma.TransactionClient, log: AuditLog) {
+    if (this.audit && log.length) await this.audit.write(tx, log);
+  }
+
+  private async withLog<T>(
+    tx: Prisma.TransactionClient,
+    run: (log: AuditLog) => Promise<T>,
+  ): Promise<T> {
+    const log: AuditLog = [];
+    const result = await run(log);
+    await this.flush(tx, log);
+    return result;
+  }
+
+  private statusChange(
+    entityType: FinanceAuditEntityType,
+    field: string,
+    from: unknown,
+    to: unknown,
+  ): FinanceAuditChange[] {
+    return this.audit
+      ? this.audit.diff(entityType, { [field]: from }, { [field]: to }, [field])
+      : [];
+  }
+
+  private fundPostEntry(
+    row: InternalFundTransaction,
+    actor: AuditActor,
+  ): FinanceAuditEntry {
+    return {
+      action: 'FIN_FUND_TXN_POST',
+      entityType: FINANCE_AUDIT_ENTITY.FUND_TXN,
+      entityId: row.id,
+      entityCode: row.code,
+      branchId: row.branchId,
+      actor,
+      params: {
+        typeLabel: fundTxnTypeLabel(row.transactionType),
+        code: row.code,
+        amount: Number(row.amount),
+        sourceLabel: fundSourceLabel(row.sourceType),
+      },
+      snapshot: { lines: fundRowLines(row) },
+      metadata: {
+        sourceType: row.sourceType,
+        sourceKey: row.sourceKey,
+        sourceId: row.sourceId ?? null,
+        entryId: row.entryId ?? null,
+        approvalRequestId: row.approvalRequestId ?? null,
+        transferId: row.transferId ?? null,
+      },
+    };
+  }
+
   // All fund mutations and closings share branch locks to prevent close/post races.
   async lock(tx: Prisma.TransactionClient, branchIds: number[]) {
     for (const id of [...new Set(branchIds)].sort((a, b) => a - b)) {
@@ -134,19 +267,79 @@ export class InternalFundLedgerService {
       throw new BadRequestException('Ngày đã chốt sổ; cần quyền điều chỉnh');
   }
 
+  /**
+   * Chốt sổ từ ngày `date` trở đi cần đối soát lại. `cause` ghi vào lịch sử
+   * (chỉ các ngày thật sự chuyển sang PENDING).
+   */
   async invalidateClosings(
     tx: Prisma.TransactionClient,
     branchId: number,
     date: Date,
+    cause?: string,
+    actor?: AuditActor,
   ) {
+    await this.withLog(tx, (log) =>
+      this.invalidateClosingsInto(tx, branchId, date, log, cause, actor),
+    );
+  }
+
+  private async invalidateClosingsInto(
+    tx: Prisma.TransactionClient,
+    branchId: number,
+    date: Date,
+    log: AuditLog,
+    cause?: string,
+    actor?: AuditActor,
+  ) {
+    const where = {
+      branchId,
+      closingDate: { gte: fundClosingDate(date) },
+      closedAt: { not: null },
+    };
+    const flipping = this.audit
+      ? await tx.internalFundDailyClosing.findMany({
+          where: { ...where, reconciliationStatus: { not: 'PENDING' } },
+          select: {
+            id: true,
+            branchId: true,
+            closingDate: true,
+            reconciliationStatus: true,
+          },
+          orderBy: { closingDate: 'asc' },
+        })
+      : [];
     await tx.internalFundDailyClosing.updateMany({
-      where: {
-        branchId,
-        closingDate: { gte: fundClosingDate(date) },
-        closedAt: { not: null },
-      },
+      where,
       data: { reconciliationStatus: 'PENDING' },
     });
+    if (!flipping.length) return;
+    const by = actor ?? auditActor.system('SYSTEM', SYSTEM_TRIGGER);
+    for (const closing of flipping)
+      this.record(log, () => ({
+        action: 'FIN_FUND_CLOSING_INVALIDATE',
+        entityType: FINANCE_AUDIT_ENTITY.FUND_CLOSING,
+        entityId: closing.id,
+        branchId: closing.branchId,
+        actor: by,
+        params: {
+          branch: branchLabel(closing.branchId),
+          date: formatDate(closing.closingDate),
+          cause: cause || 'giao dịch quỹ thay đổi',
+        },
+        changes: this.statusChange(
+          FINANCE_AUDIT_ENTITY.FUND_CLOSING,
+          'reconciliationStatus',
+          closing.reconciliationStatus,
+          'PENDING',
+        ),
+        snapshot: {
+          lines: [
+            { label: 'Quỹ', value: branchLabel(closing.branchId) },
+            { label: 'Ngày chốt', value: formatDate(closing.closingDate) },
+          ],
+        },
+        metadata: { statusBefore: closing.reconciliationStatus },
+      }));
   }
 
   async issueExpense(
@@ -155,75 +348,92 @@ export class InternalFundLedgerService {
     userId: number,
     adjust = false,
     manualReason?: string,
+    actor?: AuditActor,
   ) {
-    await this.lock(tx, [entry.branchId]);
-    const current = await tx.internalFinanceEntry.findUnique({
-      where: { id: entry.id },
-      include: { weeklyBatch: { include: { approvalRequest: true } } },
-    });
-    if (!current || current.direction !== 'EXPENSE')
-      throw new BadRequestException('Không tìm thấy khoản chi');
-    const existing = await tx.internalFundTransaction.findUnique({
-      where: { sourceKey: `EXPENSE:${current.id}` },
-    });
-    if (existing) return existing;
-    if (current.cashFlowId || current.cashIssued) {
-      throw new BadRequestException(
-        'Khoản chi lịch sử đã ghi nhận; không tự động ghi lại vào quỹ mới',
-      );
-    }
-    const approved =
-      current.status === 'APPROVED' &&
-      current.weeklyBatch?.status === 'APPROVED' &&
-      Boolean(current.weeklyBatch.approvalRequestId) &&
-      current.weeklyBatch.approvalRequest?.status === 'APPROVED';
-    // Phiếu trong Approval tuần đã duyệt: ghi quỹ vào ngày chi của phiếu.
-    if (approved) {
-      const occurredAt = approvedExpenseDate(current);
-      await this.assertOpen(tx, current.branchId, occurredAt, adjust);
-      return this.postExpenseRow(tx, current, userId, {
-        approvalRequestId: current.weeklyBatch!.approvalRequestId!,
-        occurredAt,
-        invalidate: adjust,
+    const by = actor ?? auditActor.user(userId);
+    return this.withLog(tx, async (log) => {
+      await this.lock(tx, [entry.branchId]);
+      const current = await tx.internalFinanceEntry.findUnique({
+        where: { id: entry.id },
+        include: { weeklyBatch: { include: { approvalRequest: true } } },
       });
-    }
-
-    // VPSG: phiếu tay thành Đã chi khi Kế toán duyệt (tick Kế toán).
-    if (
-      current.branchId === VPSG_BRANCH_ID &&
-      current.sourceType === 'MANUAL_EXPENSE'
-    )
-      throw new BadRequestException(
-        'Phiếu chi VPSG đã chi khi Kế toán duyệt; hãy tick Kế toán duyệt',
-      );
-
-    // Chi ngoài Approval tuần: bắt buộc có lý do, phiếu rời khỏi batch chưa gửi.
-    // Văn phòng HN không có Approval tuần: phiếu tay chi thẳng từ quỹ.
-    const reason = manualReason?.trim() || undefined;
-    const office =
-      (OFFICE_BRANCH_IDS as readonly number[]).includes(current.branchId) &&
-      !current.weeklyBatch;
-    if (!reason && !office) {
-      throw new BadRequestException(
-        'Khoản chi chưa nằm trong Approval tuần đã duyệt; cần nhập lý do Đã chi',
-      );
-    }
-    if (['CANCELLED', 'REJECTED'].includes(current.status))
-      throw new BadRequestException('Khoản chi đã hủy hoặc bị từ chối');
-    if (current.weeklyBatch) {
-      if (current.weeklyBatch.status !== 'READY')
+      if (!current || current.direction !== 'EXPENSE')
+        throw new BadRequestException('Không tìm thấy khoản chi');
+      const existing = await tx.internalFundTransaction.findUnique({
+        where: { sourceKey: `EXPENSE:${current.id}` },
+      });
+      if (existing) return existing;
+      if (current.cashFlowId || current.cashIssued) {
         throw new BadRequestException(
-          'Khoản chi đang chờ duyệt Approval tuần, không thể tự đánh dấu Đã chi',
+          'Khoản chi lịch sử đã ghi nhận; không tự động ghi lại vào quỹ mới',
         );
-      await this.detachFromBatch(tx, current);
-    }
-    // Chi ngoài Approval tuần: tiền ra khỏi quỹ lúc tick Đã chi.
-    const issuedAt = new Date();
-    await this.assertOpen(tx, current.branchId, issuedAt, adjust);
-    return this.postExpenseRow(tx, current, userId, {
-      reason,
-      occurredAt: issuedAt,
-      invalidate: adjust,
+      }
+      const approved =
+        current.status === 'APPROVED' &&
+        current.weeklyBatch?.status === 'APPROVED' &&
+        Boolean(current.weeklyBatch.approvalRequestId) &&
+        current.weeklyBatch.approvalRequest?.status === 'APPROVED';
+      // Phiếu trong Approval tuần đã duyệt: ghi quỹ vào ngày chi của phiếu.
+      if (approved) {
+        const occurredAt = approvedExpenseDate(current);
+        await this.assertOpen(tx, current.branchId, occurredAt, adjust);
+        return this.postExpenseRow(tx, current, userId, {
+          approvalRequestId: current.weeklyBatch!.approvalRequestId!,
+          occurredAt,
+          invalidate: adjust,
+          actor: by,
+          log,
+        });
+      }
+
+      // VPSG: phiếu tay thành Đã chi khi Kế toán duyệt (tick Kế toán).
+      if (
+        current.branchId === VPSG_BRANCH_ID &&
+        current.sourceType === 'MANUAL_EXPENSE'
+      )
+        throw new BadRequestException(
+          'Phiếu chi VPSG đã chi khi Kế toán duyệt; hãy tick Kế toán duyệt',
+        );
+
+      // Chi ngoài Approval tuần: bắt buộc có lý do, phiếu rời khỏi batch chưa gửi.
+      // Văn phòng HN không có Approval tuần: phiếu tay chi thẳng từ quỹ.
+      const reason = manualReason?.trim() || undefined;
+      const office =
+        (OFFICE_BRANCH_IDS as readonly number[]).includes(current.branchId) &&
+        !current.weeklyBatch;
+      if (!reason && !office) {
+        throw new BadRequestException(
+          'Khoản chi chưa nằm trong Approval tuần đã duyệt; cần nhập lý do Đã chi',
+        );
+      }
+      if (['CANCELLED', 'REJECTED'].includes(current.status))
+        throw new BadRequestException('Khoản chi đã hủy hoặc bị từ chối');
+      if (current.weeklyBatch) {
+        if (current.weeklyBatch.status !== 'READY')
+          throw new BadRequestException(
+            'Khoản chi đang chờ duyệt Approval tuần, không thể tự đánh dấu Đã chi',
+          );
+        // Rời batch và trả trạng thái "Đã gom tuần" về như trước khi gom.
+        await this.detachFromBatchInto(
+          tx,
+          current,
+          {
+            actor: by,
+            reason: `Đã chi ngoài Approval tuần${reasonSuffix(reason)}`,
+          },
+          log,
+        );
+      }
+      // Chi ngoài Approval tuần: tiền ra khỏi quỹ lúc tick Đã chi.
+      const issuedAt = new Date();
+      await this.assertOpen(tx, current.branchId, issuedAt, adjust);
+      return this.postExpenseRow(tx, current, userId, {
+        reason,
+        occurredAt: issuedAt,
+        invalidate: adjust,
+        actor: by,
+        log,
+      });
     });
   }
 
@@ -236,22 +446,28 @@ export class InternalFundLedgerService {
     entry: { id: number; branchId: number },
     userId: number,
     adjust = false,
+    actor?: AuditActor,
   ) {
-    await this.lock(tx, [entry.branchId]);
-    const current = await tx.internalFinanceEntry.findUnique({
-      where: { id: entry.id },
-    });
-    if (!current || current.direction !== 'EXPENSE')
-      throw new BadRequestException('Không tìm thấy khoản chi');
-    const existing = await tx.internalFundTransaction.findUnique({
-      where: { sourceKey: `EXPENSE:${current.id}` },
-    });
-    if (existing) return existing;
-    const issuedAt = new Date();
-    await this.assertOpen(tx, current.branchId, issuedAt, adjust);
-    return this.postExpenseRow(tx, current, userId, {
-      occurredAt: issuedAt,
-      invalidate: adjust,
+    const by = actor ?? auditActor.user(userId);
+    return this.withLog(tx, async (log) => {
+      await this.lock(tx, [entry.branchId]);
+      const current = await tx.internalFinanceEntry.findUnique({
+        where: { id: entry.id },
+      });
+      if (!current || current.direction !== 'EXPENSE')
+        throw new BadRequestException('Không tìm thấy khoản chi');
+      const existing = await tx.internalFundTransaction.findUnique({
+        where: { sourceKey: `EXPENSE:${current.id}` },
+      });
+      if (existing) return existing;
+      const issuedAt = new Date();
+      await this.assertOpen(tx, current.branchId, issuedAt, adjust);
+      return this.postExpenseRow(tx, current, userId, {
+        occurredAt: issuedAt,
+        invalidate: adjust,
+        actor: by,
+        log,
+      });
     });
   }
 
@@ -261,6 +477,7 @@ export class InternalFundLedgerService {
     entry: { id: number; branchId: number },
     userId: number,
     adjust = false,
+    actor?: AuditActor,
   ) {
     await this.lock(tx, [entry.branchId]);
     const row = await tx.internalFundTransaction.findUnique({
@@ -268,33 +485,180 @@ export class InternalFundLedgerService {
     });
     if (!row || row.status !== 'POSTED') return null;
     await this.assertOpen(tx, row.branchId, row.occurredAt, adjust);
-    return this.releaseCancelled(tx, row, userId, 'Kế toán bỏ duyệt phiếu chi');
+    return this.releaseCancelled(
+      tx,
+      row,
+      userId,
+      'Kế toán bỏ duyệt phiếu chi',
+      actor,
+    );
   }
 
-  // Rút phiếu khỏi batch tuần chưa gửi Approval và tính lại tổng tiền.
+  /**
+   * Rút phiếu khỏi batch tuần chưa gửi Approval và tính lại tổng tiền. Batch
+   * không còn phiếu thì hủy (giữ lại, trạng thái Đã hủy), không xóa. Phiếu
+   * đang "Đã gom tuần" trở về như trước khi gom (đủ hai tick → Đã kiểm tra,
+   * thiếu → Chờ kiểm tra), trừ khi `keepStatus` (bên gọi tự đặt trạng thái).
+   * Trả null khi phiếu không nằm trong batch nào.
+   */
   async detachFromBatch(
     tx: Prisma.TransactionClient,
     entry: { id: number; weeklyBatchId: number | null },
-  ) {
+    opts: DetachFromBatchOptions = {},
+  ): Promise<DetachFromBatchResult | null> {
+    return this.withLog(tx, (log) =>
+      this.detachFromBatchInto(tx, entry, opts, log),
+    );
+  }
+
+  private async detachFromBatchInto(
+    tx: Prisma.TransactionClient,
+    entry: { id: number; weeklyBatchId: number | null },
+    opts: DetachFromBatchOptions,
+    log: AuditLog,
+  ): Promise<DetachFromBatchResult | null> {
     const batchId = entry.weeklyBatchId;
-    if (!batchId) return;
-    await tx.internalFinanceEntry.update({
+    if (!batchId) return null;
+    const batchBefore = this.audit
+      ? await tx.internalFinanceWeeklyBatch.findUnique({
+          where: { id: batchId },
+          select: {
+            code: true,
+            status: true,
+            totalAmount: true,
+            cancelReason: true,
+          },
+        })
+      : null;
+    const detached = await tx.internalFinanceEntry.update({
       where: { id: entry.id },
       data: { weeklyBatchId: null },
     });
+    const statusBefore = detached?.status ?? null;
+    let statusAfter = statusBefore;
+    if (
+      !opts.keepStatus &&
+      statusBefore === INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL
+    ) {
+      statusAfter =
+        detached.managerReviewedAt && detached.accountantReviewedAt
+          ? INTERNAL_FINANCE_STATUS.MANAGER_APPROVED
+          : INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT;
+      await tx.internalFinanceEntry.update({
+        where: { id: entry.id },
+        data: { status: statusAfter },
+      });
+    }
     const rest = await tx.internalFinanceEntry.aggregate({
       where: { weeklyBatchId: batchId },
       _sum: { amount: true },
       _count: { _all: true },
     });
-    if (!rest._count._all) {
-      await tx.internalFinanceWeeklyBatch.delete({ where: { id: batchId } });
-      return;
-    }
-    await tx.internalFinanceWeeklyBatch.update({
-      where: { id: batchId },
-      data: { totalAmount: rest._sum.amount || 0 },
-    });
+    const batchCancelled = !rest._count._all;
+    const cancelReason = opts.reason?.trim() || EMPTY_BATCH_CANCEL_REASON;
+    const batch = batchCancelled
+      ? await tx.internalFinanceWeeklyBatch.update({
+          where: { id: batchId },
+          data: {
+            status: INTERNAL_FINANCE_WEEKLY_STATUS.CANCELLED,
+            cancelledAt: new Date(),
+            cancelledBy: opts.actor?.kind === 'USER' ? opts.actor.userId : null,
+            cancelReason,
+            cancelledEntryIds: [entry.id],
+          },
+        })
+      : await tx.internalFinanceWeeklyBatch.update({
+          where: { id: batchId },
+          data: { totalAmount: rest._sum.amount || 0 },
+        });
+    const result: DetachFromBatchResult = {
+      batchId,
+      batchCode: batch?.code ?? batchBefore?.code ?? null,
+      batchCancelled,
+      remainingTotal: Number(rest._sum.amount || 0),
+    };
+    const by = opts.actor ?? auditActor.system('SYSTEM', SYSTEM_TRIGGER);
+    const entryCode =
+      detached?.code ?? (entry as { code?: string }).code ?? null;
+    this.record(log, () => ({
+      action: 'FIN_ENTRY_BATCH_REMOVE',
+      entityType: FINANCE_AUDIT_ENTITY.ENTRY,
+      entityId: entry.id,
+      entityCode: entryCode,
+      branchId: detached?.branchId ?? batch?.branchId ?? null,
+      actor: by,
+      params: {
+        code: entryCode ?? `#${entry.id}`,
+        batchCode: result.batchCode ?? `#${batchId}`,
+        reasonSuffix: reasonSuffix(opts.reason),
+      },
+      changes: [
+        {
+          field: 'weeklyBatchId',
+          label: 'Approval tuần',
+          from: result.batchCode ?? `#${batchId}`,
+          to: '—',
+          type: 'field_changed',
+          detail: { from: batchId, to: null },
+        },
+        ...this.statusChange(
+          FINANCE_AUDIT_ENTITY.ENTRY,
+          'status',
+          statusBefore,
+          statusAfter,
+        ),
+      ],
+      metadata: {
+        batchId,
+        batchCancelled,
+        remainingTotal: result.remainingTotal,
+        statusBefore,
+      },
+    }));
+    if (batchCancelled)
+      this.record(log, () => ({
+        action: 'FIN_BATCH_CANCEL',
+        entityType: FINANCE_AUDIT_ENTITY.BATCH,
+        entityId: batchId,
+        entityCode: result.batchCode,
+        branchId: batch?.branchId ?? detached?.branchId ?? null,
+        actor: by,
+        params: {
+          batchCode: result.batchCode ?? `#${batchId}`,
+          reasonSuffix: reasonSuffix(cancelReason),
+        },
+        changes: this.audit!.diff(
+          FINANCE_AUDIT_ENTITY.BATCH,
+          {
+            status: batchBefore?.status ?? null,
+            totalAmount: batchBefore?.totalAmount ?? null,
+            cancelReason: batchBefore?.cancelReason ?? null,
+          },
+          {
+            status: INTERNAL_FINANCE_WEEKLY_STATUS.CANCELLED,
+            totalAmount: batchBefore?.totalAmount ?? null,
+            cancelReason,
+          },
+        ),
+        snapshot: {
+          lines: [
+            {
+              label: 'Trạng thái trước khi hủy',
+              value: batchStatusLabel(batchBefore?.status),
+            },
+            {
+              label: 'Tổng tiền',
+              value: formatMoney(batchBefore?.totalAmount),
+            },
+          ],
+        },
+        metadata: {
+          autoCancelled: true,
+          cancelledEntryIds: [entry.id],
+          statusBefore: batchBefore?.status ?? null,
+        },
+      }));
+    return result;
   }
 
   private async postExpenseRow(
@@ -318,6 +682,8 @@ export class InternalFundLedgerService {
        */
       occurredAt: Date;
       invalidate?: boolean;
+      actor: AuditActor;
+      log: AuditLog;
     },
   ) {
     // Phiếu đồng bộ từ Lark đã có dòng trừ quỹ trong sổ quỹ Lark: chỉ tick Đã
@@ -355,6 +721,7 @@ export class InternalFundLedgerService {
         createdBy: userId,
       },
     });
+    this.record(options.log, () => this.fundPostEntry(row, options.actor));
     await tx.internalFinanceEntry.update({
       where: { id: current.id },
       data: {
@@ -366,7 +733,14 @@ export class InternalFundLedgerService {
       },
     });
     if (options.invalidate)
-      await this.invalidateClosings(tx, current.branchId, options.occurredAt);
+      await this.invalidateClosingsInto(
+        tx,
+        current.branchId,
+        options.occurredAt,
+        options.log,
+        `ghi dòng quỹ ${row.code}`,
+        options.actor,
+      );
     return row;
   }
 
@@ -376,26 +750,61 @@ export class InternalFundLedgerService {
     batchId: number,
     approvalRequestId: number,
     userId: number,
+    actor?: AuditActor,
   ) {
-    const entries = await tx.internalFinanceEntry.findMany({
-      where: {
-        weeklyBatchId: batchId,
-        direction: 'EXPENSE',
-        cashIssued: false,
-        cashFlowId: null,
-        fundTransaction: null,
-      },
-      orderBy: { id: 'asc' },
-    });
-    // Ghi quỹ vào ngày chi của từng phiếu, không phải ngày Approval duyệt xong;
-    // chốt sổ từ ngày đó trở đi được đánh dấu cần đối soát lại.
-    for (const entry of entries)
-      await this.postExpenseRow(tx, entry, userId, {
-        approvalRequestId,
-        occurredAt: approvedExpenseDate(entry),
-        invalidate: true,
+    const by = actor ?? auditActor.system('LARK', LARK_TRIGGER, userId);
+    return this.withLog(tx, async (log) => {
+      const entries = await tx.internalFinanceEntry.findMany({
+        where: {
+          weeklyBatchId: batchId,
+          direction: 'EXPENSE',
+          cashIssued: false,
+          cashFlowId: null,
+          fundTransaction: null,
+        },
+        orderBy: { id: 'asc' },
       });
-    return entries.length;
+      // Ghi quỹ vào ngày chi của từng phiếu, không phải ngày Approval duyệt xong;
+      // chốt sổ từ ngày đó trở đi được đánh dấu cần đối soát lại.
+      for (const entry of entries) {
+        const row = await this.postExpenseRow(tx, entry, userId, {
+          approvalRequestId,
+          occurredAt: approvedExpenseDate(entry),
+          invalidate: true,
+          actor: by,
+          log,
+        });
+        const reason = row
+          ? 'Approval tuần đã duyệt'
+          : LARK_LEDGER_RECORDED_REASON;
+        this.record(log, () => ({
+          action: 'FIN_ENTRY_CASH_ISSUE',
+          entityType: FINANCE_AUDIT_ENTITY.ENTRY,
+          entityId: entry.id,
+          entityCode: entry.code,
+          branchId: entry.branchId,
+          actor: by,
+          params: { code: entry.code, reasonSuffix: reasonSuffix(reason) },
+          changes: [
+            {
+              field: 'cashIssued',
+              label: 'Đã chi',
+              from: 'Không',
+              to: 'Có',
+              type: 'field_changed',
+              detail: { from: false, to: true },
+            },
+          ],
+          metadata: {
+            batchId,
+            approvalRequestId,
+            fundTransactionId: row?.id ?? null,
+            fundTransactionCode: row?.code ?? null,
+          },
+        }));
+      }
+      return entries.length;
+    });
   }
 
   // Approval tuần bị thu hồi sau khi duyệt: rút lại các bút toán đã tự ghi.
@@ -404,45 +813,102 @@ export class InternalFundLedgerService {
     batchId: number,
     approvalRequestId: number,
     userId: number,
+    actor?: AuditActor,
   ) {
-    const rows = await tx.internalFundTransaction.findMany({
-      where: {
-        approvalRequestId,
-        status: 'POSTED',
-        sourceType: 'INTERNAL_FINANCE_ENTRY',
-        entry: { weeklyBatchId: batchId },
-      },
+    const by = actor ?? auditActor.system('LARK', LARK_TRIGGER, userId);
+    const reason = 'Approval tuần bị thu hồi trên Lark';
+    return this.withLog(tx, async (log) => {
+      const rows = await tx.internalFundTransaction.findMany({
+        where: {
+          approvalRequestId,
+          status: 'POSTED',
+          sourceType: 'INTERNAL_FINANCE_ENTRY',
+          entry: { weeklyBatchId: batchId },
+        },
+      });
+      for (const row of rows) {
+        const entryId = row.entryId;
+        await this.releaseCancelledInto(tx, row, userId, reason, by, log);
+        if (entryId) {
+          const before = this.audit
+            ? await tx.internalFinanceEntry.findUnique({
+                where: { id: entryId },
+                select: {
+                  code: true,
+                  branchId: true,
+                  cashIssuedAt: true,
+                  cashIssuedBy: true,
+                  cashIssuedReason: true,
+                },
+              })
+            : null;
+          await tx.internalFinanceEntry.update({
+            where: { id: entryId },
+            data: {
+              cashIssued: false,
+              cashIssuedAt: null,
+              cashIssuedBy: null,
+              cashIssuedReason: null,
+            },
+          });
+          this.record(log, () => ({
+            action: 'FIN_ENTRY_CASH_ISSUE_REVERT',
+            entityType: FINANCE_AUDIT_ENTITY.ENTRY,
+            entityId: entryId,
+            entityCode: before?.code ?? null,
+            branchId: before?.branchId ?? row.branchId,
+            actor: by,
+            params: {
+              code: before?.code ?? `#${entryId}`,
+              reasonSuffix: reasonSuffix(reason),
+            },
+            changes: [
+              {
+                field: 'cashIssued',
+                label: 'Đã chi',
+                from: 'Có',
+                to: 'Không',
+                type: 'field_changed',
+                detail: { from: true, to: false },
+              },
+            ],
+            snapshot: {
+              lines: [
+                {
+                  label: 'Đã chi lúc',
+                  value: formatDate(before?.cashIssuedAt),
+                },
+                {
+                  label: 'Lý do Đã chi',
+                  value: before?.cashIssuedReason || '—',
+                },
+              ],
+              cashIssuedAt: before?.cashIssuedAt ?? null,
+              cashIssuedBy: before?.cashIssuedBy ?? null,
+              cashIssuedReason: before?.cashIssuedReason ?? null,
+            },
+            metadata: {
+              batchId,
+              approvalRequestId,
+              fundTransactionId: row.id,
+              fundTransactionCode: row.code,
+            },
+          }));
+        }
+      }
+      return rows.length;
     });
-    for (const row of rows) {
-      const entryId = row.entryId;
-      await this.releaseCancelled(
-        tx,
-        row,
-        userId,
-        'Approval tuần bị thu hồi trên Lark',
-      );
-      if (entryId)
-        await tx.internalFinanceEntry.update({
-          where: { id: entryId },
-          data: {
-            cashIssued: false,
-            cashIssuedAt: null,
-            cashIssuedBy: null,
-            cashIssuedReason: null,
-          },
-        });
-    }
-    return rows.length;
   }
 
   /**
    * `skipBranchIds`: chuyển tiền giữa 2 quỹ mà một bên duyệt trước ngày quỹ đó
    * lên POS (sổ quỹ Lark đã ghi bên đó): chỉ ghi bên còn lại.
+   * `auditActor`: mặc định là hệ thống (Lark Approval) thay người tạo đơn.
    */
   async applyApproval(
     tx: Prisma.TransactionClient,
     request: FundApprovalData,
-    options: { skipBranchIds?: number[] } = {},
+    options: { skipBranchIds?: number[]; auditActor?: AuditActor } = {},
   ) {
     if (
       !['INTERNAL_FUND_RECEIPT', 'INTERNAL_FUND_TRANSFER'].includes(
@@ -450,6 +916,21 @@ export class InternalFundLedgerService {
       )
     )
       return;
+    const by =
+      options.auditActor ??
+      auditActor.system('LARK', LARK_TRIGGER, request.createdById ?? null);
+    return this.withLog(tx, (log) =>
+      this.applyApprovalInto(tx, request, options.skipBranchIds || [], by, log),
+    );
+  }
+
+  private async applyApprovalInto(
+    tx: Prisma.TransactionClient,
+    request: FundApprovalData,
+    skip: number[],
+    by: AuditActor,
+    log: AuditLog,
+  ) {
     const transfer =
       request.sourceType === 'INTERNAL_FUND_TRANSFER'
         ? await tx.internalFundTransfer.findUnique({
@@ -474,12 +955,15 @@ export class InternalFundLedgerService {
         transfer.status !== 'POSTED' &&
         transfer.status !== 'CANCELLED'
       ) {
+        const status = request.status === 'PENDING' ? 'PENDING' : 'REJECTED';
         await tx.internalFundTransfer.update({
           where: { id: transfer.id },
-          data: {
-            status: request.status === 'PENDING' ? 'PENDING' : 'REJECTED',
-          },
+          data: { status },
         });
+        if (transfer.status !== status)
+          this.record(log, () =>
+            this.transferStatusEntry(transfer, status, by, request.id),
+          );
       }
       return;
     }
@@ -492,7 +976,6 @@ export class InternalFundLedgerService {
         where: { id: current.id },
         data: { approvalRequestId: request.id },
       });
-      const skip = options.skipBranchIds || [];
       const legs = (
         [
           [current.sourceBranchId, 'TRANSFER_OUT'],
@@ -500,7 +983,7 @@ export class InternalFundLedgerService {
         ] as const
       ).filter(([branchId]) => !skip.includes(branchId));
       for (const [branchId, type] of legs) {
-        await tx.internalFundTransaction.create({
+        const row = await tx.internalFundTransaction.create({
           data: {
             code: this.code(type),
             sourceKey: `TRANSFER:${current.id}:${type}`,
@@ -517,13 +1000,24 @@ export class InternalFundLedgerService {
             createdBy: current.createdBy,
           },
         });
+        this.record(log, () => this.fundPostEntry(row, by));
       }
       await tx.internalFundTransfer.update({
         where: { id: current.id },
         data: { status: 'POSTED' },
       });
+      this.record(log, () =>
+        this.transferStatusEntry(current, 'POSTED', by, request.id),
+      );
       for (const [branchId] of legs)
-        await this.invalidateClosings(tx, branchId, current.occurredAt);
+        await this.invalidateClosingsInto(
+          tx,
+          branchId,
+          current.occurredAt,
+          log,
+          `chuyển quỹ ${current.code}`,
+          by,
+        );
       return;
     }
     const key = `RECEIPT:${request.id}`;
@@ -551,7 +1045,7 @@ export class InternalFundLedgerService {
       throw new BadRequestException('Approval thiếu tiền hoặc chi nhánh');
     const date = fundDayStart(String(value(RECEIPT_FIELD_IDS.date)));
     const description = value(RECEIPT_FIELD_IDS.description);
-    await tx.internalFundTransaction.create({
+    const row = await tx.internalFundTransaction.create({
       data: {
         code: this.code('THU'),
         sourceKey: key,
@@ -567,14 +1061,69 @@ export class InternalFundLedgerService {
         createdBy: request.createdById,
       },
     });
+    this.record(log, () => this.fundPostEntry(row, by));
     // Late approvals preserve the captured closing and flag it for reconciliation.
-    await this.invalidateClosings(tx, request.branchId, date);
+    await this.invalidateClosingsInto(
+      tx,
+      request.branchId,
+      date,
+      log,
+      `thu quỹ ${row.code}`,
+      by,
+    );
+  }
+
+  private transferStatusEntry(
+    transfer: {
+      id: number;
+      code: string;
+      status: string;
+      sourceBranchId: number;
+      amount: Prisma.Decimal;
+    },
+    status: string,
+    actor: AuditActor,
+    approvalRequestId: number,
+  ): FinanceAuditEntry {
+    return {
+      action: 'FIN_FUND_TRANSFER_STATUS',
+      entityType: FINANCE_AUDIT_ENTITY.FUND_TRANSFER,
+      entityId: transfer.id,
+      entityCode: transfer.code,
+      branchId: transfer.sourceBranchId,
+      actor,
+      params: {
+        code: transfer.code,
+        statusLabel: fundTransferStatusLabel(status),
+      },
+      changes: this.statusChange(
+        FINANCE_AUDIT_ENTITY.FUND_TRANSFER,
+        'status',
+        transfer.status,
+        status,
+      ),
+      metadata: {
+        approvalRequestId,
+        statusBefore: transfer.status,
+        amount: Number(transfer.amount),
+      },
+    };
   }
 
   // Ghi quỹ cho nguồn không qua Approval của POS (tiền mặt kho, Sepay, đơn Lark).
   async postSystemTransaction(
     tx: Prisma.TransactionClient,
     input: SystemFundTransactionInput,
+  ) {
+    return this.withLog(tx, (log) =>
+      this.postSystemTransactionInto(tx, input, log),
+    );
+  }
+
+  private async postSystemTransactionInto(
+    tx: Prisma.TransactionClient,
+    input: SystemFundTransactionInput,
+    log: AuditLog,
   ) {
     await this.lock(tx, [input.branchId]);
     const existing = await tx.internalFundTransaction.findUnique({
@@ -603,28 +1152,55 @@ export class InternalFundLedgerService {
         createdBy: input.userId,
       },
     });
-    await this.invalidateClosings(tx, input.branchId, input.occurredAt);
+    const by = input.auditActor ?? auditActor.user(input.userId);
+    this.record(log, () => this.fundPostEntry(row, by));
+    await this.invalidateClosingsInto(
+      tx,
+      input.branchId,
+      input.occurredAt,
+      log,
+      `ghi dòng quỹ ${row.code}`,
+      by,
+    );
     return row;
   }
 
   // Đơn PHIẾU CHI tạo trên Lark: duyệt thì trừ quỹ, thu hồi sau duyệt thì hủy.
-  applyPaymentVoucher(tx: Prisma.TransactionClient, request: LarkCashRequest) {
-    return this.applyLarkCashExpense(tx, request, {
-      keyPrefix: 'PAYMENT_VOUCHER',
-      sourceType: FUND_SOURCE_TYPE.LARK_PAYMENT_VOUCHER,
-      label: 'PHIẾU CHI',
-      fallbackDescription: 'Phiếu chi Lark',
-    });
+  applyPaymentVoucher(
+    tx: Prisma.TransactionClient,
+    request: LarkCashRequest,
+    actor?: AuditActor,
+  ) {
+    return this.applyLarkCashExpense(
+      tx,
+      request,
+      {
+        keyPrefix: 'PAYMENT_VOUCHER',
+        sourceType: FUND_SOURCE_TYPE.LARK_PAYMENT_VOUCHER,
+        label: 'PHIẾU CHI',
+        fallbackDescription: 'Phiếu chi Lark',
+      },
+      actor,
+    );
   }
 
   // Đơn TẠM ỨNG LƯƠNG chi tiền mặt từ quỹ: duyệt thì trừ quỹ, thu hồi thì hủy.
-  applySalaryAdvance(tx: Prisma.TransactionClient, request: LarkCashRequest) {
-    return this.applyLarkCashExpense(tx, request, {
-      keyPrefix: 'SALARY_ADVANCE',
-      sourceType: FUND_SOURCE_TYPE.LARK_SALARY_ADVANCE,
-      label: 'TẠM ỨNG LƯƠNG',
-      fallbackDescription: 'Tạm ứng lương',
-    });
+  applySalaryAdvance(
+    tx: Prisma.TransactionClient,
+    request: LarkCashRequest,
+    actor?: AuditActor,
+  ) {
+    return this.applyLarkCashExpense(
+      tx,
+      request,
+      {
+        keyPrefix: 'SALARY_ADVANCE',
+        sourceType: FUND_SOURCE_TYPE.LARK_SALARY_ADVANCE,
+        label: 'TẠM ỨNG LƯƠNG',
+        fallbackDescription: 'Tạm ứng lương',
+      },
+      actor,
+    );
   }
 
   private async applyLarkCashExpense(
@@ -636,7 +1212,10 @@ export class InternalFundLedgerService {
       label: string;
       fallbackDescription: string;
     },
+    actor?: AuditActor,
   ) {
+    const by =
+      actor ?? auditActor.system('LARK', LARK_TRIGGER, request.createdById);
     const key = `${kind.keyPrefix}:${request.id}`;
     if (request.status === 'REVERTED') {
       await this.cancelBySource(
@@ -644,6 +1223,7 @@ export class InternalFundLedgerService {
         key,
         request.createdById,
         `Đơn ${kind.label} bị thu hồi trên Lark`,
+        by,
       );
       return;
     }
@@ -665,6 +1245,7 @@ export class InternalFundLedgerService {
       sourceId: String(request.id),
       approvalRequestId: request.id,
       userId: request.createdById,
+      auditActor: by,
     });
   }
 
@@ -674,21 +1255,47 @@ export class InternalFundLedgerService {
     sourceKey: string,
     userId: number,
     reason: string,
+    actor?: AuditActor,
   ) {
     const row = await tx.internalFundTransaction.findUnique({
       where: { sourceKey },
     });
     if (!row) return null;
     await this.lock(tx, [row.branchId]);
-    return this.releaseCancelled(tx, row, userId, reason);
+    return this.releaseCancelled(tx, row, userId, reason, actor);
   }
 
   async releaseCancelled(
     tx: Prisma.TransactionClient,
-    row: { id: number; branchId: number; occurredAt: Date; sourceKey: string },
+    row: FundRowRef,
     userId: number,
     reason: string,
+    actor?: AuditActor,
   ) {
+    const by = actor ?? auditActor.user(userId);
+    return this.withLog(tx, (log) =>
+      this.releaseCancelledInto(tx, row, userId, reason, by, log),
+    );
+  }
+
+  private async releaseCancelledInto(
+    tx: Prisma.TransactionClient,
+    row: FundRowRef,
+    userId: number,
+    reason: string,
+    by: AuditActor,
+    log: AuditLog,
+  ) {
+    // Dòng trước khi hủy (entryId/sourceKey bị nhả ra) để ghi lịch sử: chụp
+    // lại trước khi update.
+    const sourceKeyBefore = row.sourceKey;
+    const before: InternalFundTransaction | null = this.audit
+      ? 'entryId' in row && 'code' in row && 'amount' in row
+        ? { ...(row as InternalFundTransaction) }
+        : await tx.internalFundTransaction.findUnique({
+            where: { id: row.id },
+          })
+      : null;
     const updated = await tx.internalFundTransaction.update({
       where: { id: row.id },
       data: {
@@ -700,7 +1307,52 @@ export class InternalFundLedgerService {
         sourceKey: `${row.sourceKey}:CANCELLED:${row.id}`,
       },
     });
-    await this.invalidateClosings(tx, row.branchId, row.occurredAt);
+    this.record(log, () => {
+      const source = before ?? updated;
+      if (!source) return null;
+      return {
+        action: 'FIN_FUND_TXN_CANCEL',
+        entityType: FINANCE_AUDIT_ENTITY.FUND_TXN,
+        entityId: row.id,
+        entityCode: source.code,
+        branchId: row.branchId,
+        actor: by,
+        params: {
+          code: source.code,
+          amount: Number(source.amount),
+          reasonSuffix: reasonSuffix(reason),
+        },
+        changes: this.statusChange(
+          FINANCE_AUDIT_ENTITY.FUND_TXN,
+          'status',
+          before?.status ?? 'POSTED',
+          'CANCELLED',
+        ),
+        snapshot: {
+          lines: [
+            ...fundRowLines(source),
+            { label: 'Lý do hủy', value: reason || '—' },
+          ],
+          before: before ?? undefined,
+        },
+        metadata: {
+          entryIdBefore: before?.entryId ?? null,
+          sourceKeyBefore,
+          sourceType: source.sourceType,
+          transactionType: source.transactionType,
+          approvalRequestId: source.approvalRequestId ?? null,
+          transferId: source.transferId ?? null,
+        },
+      };
+    });
+    await this.invalidateClosingsInto(
+      tx,
+      row.branchId,
+      row.occurredAt,
+      log,
+      `hủy dòng quỹ ${before?.code ?? updated?.code ?? row.id}`,
+      by,
+    );
     return updated;
   }
 

@@ -1,5 +1,6 @@
 import { Prisma, PrismaClient } from '@prisma/client';
 import { fundClosingDate } from '../internal-fund/internal-fund-ledger.service';
+import { ACTIVE_ROW } from './entry-files';
 import { BRANCHES, fundBalance, readText } from './legacy-fund-reconcile';
 
 /**
@@ -355,7 +356,9 @@ const entrySelect = {
       occurredAt: true,
     },
   },
+  // Chỉ chứng từ còn dùng (bỏ dòng đã gỡ).
   attachments: {
+    where: ACTIVE_ROW,
     select: {
       kind: true,
       fileUrl: true,

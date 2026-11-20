@@ -450,15 +450,20 @@ describe('OrdersService update — chặn xác nhận đơn theo công nợ', ()
       // chính là các lần thanh toán tạo trong lần lưu.
       invoice: {
         aggregate: jest.fn().mockResolvedValue({ _sum: { grandTotal: 0 } }),
+        findMany: jest.fn().mockResolvedValue([]),
       },
       orderPayment: {
         findMany: jest.fn().mockImplementation(() =>
-          Promise.resolve(created.payments.map(({ code }) => ({ code }))),
+          Promise.resolve(
+            created.payments.map(({ code }) => ({ code, orderId: 1 })),
+          ),
         ),
       },
       cashFlow: {
-        aggregate: jest.fn().mockImplementation(() =>
-          Promise.resolve({ _sum: { amount: createdPaid() } }),
+        findMany: jest.fn().mockImplementation(() =>
+          Promise.resolve(
+            created.payments.map(({ code, amount }) => ({ code, amount })),
+          ),
         ),
       },
     };

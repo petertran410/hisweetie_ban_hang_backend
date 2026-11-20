@@ -19,10 +19,23 @@ import {
   LARK_APPROVAL_SOURCE_TYPE,
   VPSG_BRANCH_ID,
 } from './internal-finance.constants';
+import {
+  ENTRY_AUDIT_SELECT,
+  flushScriptLog,
+  pushEntryScriptUpdate,
+  pushFundScriptUpdate,
+  pushScriptRun,
+  scriptRun,
+  type ScriptRun,
+} from './finance-script-audit';
 import type { LarkRecord, LedgerTx } from './legacy-fund-reconcile';
 import {
+  OFFICE_LEDGER_SCRIPT,
   applyLedgerPlan,
   assertApplyUntil,
+  ledgerRunCounts,
+  ledgerRunMetadata,
+  ledgerRunSummary,
   planLedgerImport,
 } from './office-ledger-import';
 
@@ -357,57 +370,71 @@ export type VpsgMergePlan = Awaited<ReturnType<typeof planVpsgMerge>>;
 async function markLedgerRecorded(
   tx: Prisma.TransactionClient,
   entryId: number,
+  run?: ScriptRun,
 ) {
   const entry = await tx.internalFinanceEntry.findUnique({
     where: { id: entryId },
-    select: { sourceSnapshot: true },
+    select: ENTRY_AUDIT_SELECT,
   });
-  await tx.internalFinanceEntry.update({
-    where: { id: entryId },
-    data: {
-      sourceSnapshot: {
-        ...((entry?.sourceSnapshot as object) || {}),
-        larkLedgerRecorded: true,
-      } as Prisma.InputJsonValue,
-      cashIssued: true,
-      cashIssuedReason: LARK_LEDGER_RECORDED_REASON,
-    },
-  });
+  const data = {
+    sourceSnapshot: {
+      ...((entry?.sourceSnapshot as object) || {}),
+      larkLedgerRecorded: true,
+    } as Prisma.InputJsonValue,
+    cashIssued: true,
+    cashIssuedReason: LARK_LEDGER_RECORDED_REASON,
+  };
+  // Lịch sử dựng từ dòng đọc trước khi sửa (ghi cuối transaction).
+  if (run && entry) pushEntryScriptUpdate(run, entry, data);
+  await tx.internalFinanceEntry.update({ where: { id: entryId }, data });
 }
 
-/** Gắn phiếu vào dòng quỹ của đơn; phiếu giờ trừ quỹ trên POS nên bỏ dấu Lark. */
+/**
+ * Gắn phiếu vào dòng quỹ của đơn; phiếu giờ trừ quỹ trên POS nên bỏ dấu Lark.
+ * Có `run` (script --apply): ghi lịch sử dòng quỹ và phiếu vào `run.log`.
+ */
 export async function attachEntry(
   tx: Prisma.TransactionClient,
   fundId: number,
   entryId: number,
+  run?: ScriptRun,
 ) {
   const fund = await tx.internalFundTransaction.findUnique({
     where: { id: fundId },
-    select: { entryId: true },
+    select: { id: true, code: true, branchId: true, entryId: true },
   });
-  if (fund && !fund.entryId)
+  if (fund && !fund.entryId) {
+    // Lịch sử dựng từ dòng đọc trước khi sửa (ghi cuối transaction).
+    if (run)
+      pushFundScriptUpdate(
+        run,
+        fund,
+        { entryId: fund.entryId },
+        { entryId },
+        'Gắn phiếu của đơn PHIẾU CHI vào dòng quỹ',
+      );
     await tx.internalFundTransaction.update({
       where: { id: fundId },
       data: { entryId },
     });
+  }
   const entry = await tx.internalFinanceEntry.findUnique({
     where: { id: entryId },
-    select: { sourceSnapshot: true, cashIssuedReason: true },
+    select: ENTRY_AUDIT_SELECT,
   });
   const snapshot = { ...((entry?.sourceSnapshot as object) || {}) } as {
     larkLedgerRecorded?: boolean;
   };
   delete snapshot.larkLedgerRecorded;
-  await tx.internalFinanceEntry.update({
-    where: { id: entryId },
-    data: {
-      sourceSnapshot: snapshot as Prisma.InputJsonValue,
-      cashIssued: true,
-      ...(entry?.cashIssuedReason === LARK_LEDGER_RECORDED_REASON
-        ? { cashIssuedReason: LARK_APPROVED_REASON }
-        : {}),
-    },
-  });
+  const data = {
+    sourceSnapshot: snapshot as Prisma.InputJsonValue,
+    cashIssued: true,
+    ...(entry?.cashIssuedReason === LARK_LEDGER_RECORDED_REASON
+      ? { cashIssuedReason: LARK_APPROVED_REASON }
+      : {}),
+  };
+  if (run && entry) pushEntryScriptUpdate(run, entry, data);
+  await tx.internalFinanceEntry.update({ where: { id: entryId }, data });
 }
 
 export async function applyVpsgMerge(
@@ -416,9 +443,12 @@ export async function applyVpsgMerge(
   userId: number,
   until = larkLedgerCutoff(VPSG_BRANCH_ID),
   options: VpsgMergeOptions = {},
+  /** Tham số dòng lệnh, ghi vào lịch sử lần chạy. */
+  args: string[] = [],
 ) {
   assertApplyUntil(VPSG_BRANCH_ID, until);
-  const ledger = new InternalFundLedgerService();
+  const run = scriptRun(OFFICE_LEDGER_SCRIPT, userId, args);
+  const ledger = new InternalFundLedgerService(run.service);
   return prisma.$transaction(
     async (tx) => {
       await ledger.lock(tx, [VPSG_BRANCH_ID]);
@@ -427,15 +457,27 @@ export async function applyVpsgMerge(
         throw new Error(
           `--in-ledger có đơn không thuộc nhóm "sổ không ghi": ${plan.unknownConfirm.map((id) => `#${id}`).join(', ')}`,
         );
-      await applyLedgerPlan(tx, plan.ledger, userId, ledger);
+      const applied = await applyLedgerPlan(
+        tx,
+        plan.ledger,
+        userId,
+        ledger,
+        run,
+      );
 
       for (const { approval, reason } of plan.voids)
-        await ledger.releaseCancelled(tx, approval.posted!, userId, reason);
+        await ledger.releaseCancelled(
+          tx,
+          approval.posted!,
+          userId,
+          reason,
+          run.actor,
+        );
       for (const approval of plan.marks)
-        await markLedgerRecorded(tx, approval.entry!.id);
+        await markLedgerRecorded(tx, approval.entry!.id, run);
 
       for (const approval of plan.posts) {
-        await ledger.applyPaymentVoucher(tx, approval.request);
+        await ledger.applyPaymentVoucher(tx, approval.request, run.actor);
         if (!approval.entry) continue;
         const fund = await tx.internalFundTransaction.findUnique({
           where: {
@@ -446,10 +488,74 @@ export async function applyVpsgMerge(
           },
           select: { id: true },
         });
-        if (fund) await attachEntry(tx, fund.id, approval.entry.id);
+        if (fund) await attachEntry(tx, fund.id, approval.entry.id, run);
       }
       for (const approval of plan.attaches)
-        await attachEntry(tx, approval.posted!.id, approval.entry!.id);
+        await attachEntry(tx, approval.posted!.id, approval.entry!.id, run);
+
+      pushScriptRun(
+        run,
+        `${ledgerRunSummary(plan.ledger)}; đơn PHIẾU CHI: khớp sổ ${plan.matched.length}, kế toán xác nhận ${plan.confirmed.length}, hủy dòng quỹ trùng ${plan.voids.length}, ghi quỹ đơn sổ thiếu ${plan.posts.length}, gắn phiếu ${plan.attaches.length}`,
+        [
+          ...ledgerRunCounts(plan.ledger, applied),
+          {
+            key: 'approvals',
+            label: 'Đơn PHIẾU CHI tiền mặt duyệt trước mốc',
+            value: plan.approvals.length,
+          },
+          {
+            key: 'matched',
+            label: 'Đơn khớp dòng sổ',
+            value: plan.matched.length,
+          },
+          {
+            key: 'confirmed',
+            label: 'Đơn kế toán xác nhận đã có trong sổ (--in-ledger)',
+            value: plan.confirmed.length,
+          },
+          {
+            key: 'approvalVoids',
+            label: 'Hủy dòng quỹ riêng của đơn (sổ đã có)',
+            value: plan.voids.length,
+          },
+          {
+            key: 'marks',
+            label: 'Phiếu của đơn mang dấu "Đã trừ quỹ trên Lark"',
+            value: plan.marks.length,
+          },
+          {
+            key: 'posts',
+            label: 'Ghi quỹ đơn sổ không ghi',
+            value: plan.posts.length,
+          },
+          {
+            key: 'attaches',
+            label: 'Gắn phiếu vào dòng quỹ của đơn',
+            value: plan.attaches.length,
+          },
+          {
+            key: 'approvalSkipped',
+            label: 'Đơn bỏ qua',
+            value: plan.skipped.length,
+          },
+          {
+            key: 'posAfter',
+            label: 'Số dư POS tới mốc sau khi kết hợp đơn',
+            value: Number(plan.posAfter).toLocaleString('vi-VN', {
+              maximumFractionDigits: 0,
+            }),
+          },
+        ],
+        {
+          branchId: VPSG_BRANCH_ID,
+          metadata: {
+            ...ledgerRunMetadata(plan.ledger),
+            mergedPosAfter: plan.posAfter,
+            inLedger: options.inLedger ?? [],
+          },
+        },
+      );
+      await flushScriptLog(tx, run);
       return plan;
     },
     { timeout: 600000, maxWait: 60000 },

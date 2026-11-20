@@ -8,6 +8,7 @@ import {
   vpsgAccountClause,
 } from './vpsg-cash.accounts';
 import { VpsgCashService } from './vpsg-cash.service';
+import { FinanceAuditService } from '../finance-audit';
 
 const ACCOUNT = '96460247777';
 const afterStart = new Date(VPSG_FUND_START.getTime() + 86400000);
@@ -78,7 +79,11 @@ describe('VpsgCashService', () => {
           userBranches: [{ branchId: 7 }],
           userRoles: [],
         }),
+        findMany: jest
+          .fn()
+          .mockResolvedValue([{ id: 9, name: 'Kế toán VPSG', email: null }]),
       },
+      auditLog: { createMany: jest.fn() },
       bankAccount: {
         findMany: jest.fn().mockResolvedValue([{ accountNumber: ACCOUNT }]),
       },
@@ -105,6 +110,7 @@ describe('VpsgCashService', () => {
       },
       internalFundDailyClosing: {
         findFirst: jest.fn().mockResolvedValue(null),
+        findMany: jest.fn().mockResolvedValue([]),
         updateMany: jest.fn(),
       },
       $executeRaw: jest.fn(),
@@ -115,12 +121,17 @@ describe('VpsgCashService', () => {
         branchId === 7 ? permissions : [],
       ),
     };
+    const audit = new FinanceAuditService();
     const service = new VpsgCashService(
       prisma,
       new FinanceAccessService(prisma, auth),
-      new InternalFundLedgerService(),
+      new InternalFundLedgerService(audit),
+      audit,
     );
-    return { service, prisma, auth, sepay, fundRows };
+    // Mọi dòng audit_logs đã ghi (theo thứ tự).
+    const logs = (): any[] =>
+      prisma.auditLog.createMany.mock.calls.flatMap(([arg]: any) => arg.data);
+    return { service, prisma, auth, sepay, fundRows, logs };
   }
   const user = { id: 9, roles: [] };
   const all = ['vpsg_cash:view', 'vpsg_cash:record', 'vpsg_cash:cancel'];
@@ -216,5 +227,50 @@ describe('VpsgCashService', () => {
     ]);
     await f.service.record(31, user);
     expect(f.fundRows).toHaveLength(1);
+  });
+
+  it('logs the VPSG record once with the fund row of the same opId', async () => {
+    const f = setup(all);
+    await f.service.record(31, user);
+    await f.service.record(31, user);
+    const rows = f.logs();
+    expect(rows.map((row) => row.actionCode)).toEqual([
+      'FIN_FUND_TXN_POST',
+      'FIN_VPSG_RECORD',
+    ]);
+    expect(rows[1]).toMatchObject({
+      category: 'internal_finance',
+      entityType: 'sepay_transactions',
+      entityId: '31',
+      entityCode: 'FT123',
+      branchId: 7,
+      userId: 9,
+      userName: 'Kế toán VPSG',
+      message: 'Ghi vào quỹ VPSG 5.000.000 đ – Nop tien mat VPSG',
+    });
+    expect(rows[1].metadata).toMatchObject({
+      fundTransactionId: 1,
+      actorKind: 'USER',
+    });
+    expect(rows[1].requestId).toBe(rows[0].requestId);
+  });
+
+  it('logs the VPSG cancel with the fund row cancel of the same opId', async () => {
+    const f = setup(all);
+    await f.service.record(31, user);
+    f.prisma.auditLog.createMany.mockClear();
+    await f.service.cancel(31, ' Ghi nhầm ', user);
+    const rows = f.logs();
+    expect(rows.map((row) => row.actionCode)).toEqual([
+      'FIN_FUND_TXN_CANCEL',
+      'FIN_VPSG_CANCEL',
+    ]);
+    expect(rows[1]).toMatchObject({
+      actionType: 'DELETE',
+      entityType: 'sepay_transactions',
+      entityId: '31',
+      message: 'Hủy ghi quỹ VPSG 5.000.000 đ: Ghi nhầm',
+    });
+    expect(rows[1].requestId).toBe(rows[0].requestId);
   });
 });

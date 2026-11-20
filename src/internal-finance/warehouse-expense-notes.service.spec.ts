@@ -43,6 +43,7 @@ describe('WarehouseExpenseNotesService', () => {
         findMany: jest.fn().mockResolvedValue([]),
       },
       internalFinanceEntryNoteMention: { update: mentionUpdate },
+      $transaction: jest.fn(async (callback: any) => callback(prisma)),
       user: {
         findMany: jest.fn().mockResolvedValue([
           { id: 11, name: 'C', larkUserId: 'ou_c' },
@@ -63,12 +64,14 @@ describe('WarehouseExpenseNotesService', () => {
       ),
     };
     const lark = { send: jest.fn().mockResolvedValue(undefined) };
+    const financeAudit = { write: jest.fn().mockResolvedValue(undefined) };
     const service = new WarehouseExpenseNotesService(
       prisma as any,
       access as any,
       lark as any,
+      financeAudit as any,
     );
-    return { service, prisma, access, lark, mentionUpdate };
+    return { service, prisma, access, lark, mentionUpdate, financeAudit };
   };
   const user = { id: 7, roles: [], branchIds: [6] };
 
@@ -103,6 +106,29 @@ describe('WarehouseExpenseNotesService', () => {
       data: expect.objectContaining({ larkStatus: 'NO_LARK' }),
     });
     expect(result).toMatchObject({ sent: 1, failed: 1 });
+  });
+
+  it('logs the note in the same transaction as the note', async () => {
+    const { service, prisma, financeAudit } = setup();
+    await service.create(
+      9,
+      { content: '  Kiểm lại\n hóa đơn ', mentionUserIds: [11] },
+      user,
+    );
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(financeAudit.write).toHaveBeenCalledWith(prisma, {
+      action: 'FIN_ENTRY_NOTE_ADD',
+      entityType: 'internal_finance_entries',
+      entityId: 9,
+      entityCode: entry.code,
+      branchId: 6,
+      actor: expect.objectContaining({ kind: 'USER', userId: 7 }),
+      params: { code: entry.code, preview: 'Kiểm lại hóa đơn' },
+      snapshot: expect.objectContaining({
+        lines: expect.arrayContaining([{ label: 'Tag', value: 'C, D' }]),
+      }),
+      metadata: { noteId: 1, mentionUserIds: [11] },
+    });
   });
 
   it('keeps the note when Lark fails', async () => {

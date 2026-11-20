@@ -518,10 +518,8 @@ describe('InvoicesService customer invoice debt guard', () => {
       } = {},
     ) => {
       const payments = overrides.payments ?? [];
-      // Phiếu thu của các lần thanh toán đơn (đơn chưa có HĐ).
-      const tiedReceipts = payments
-        .filter((payment) => payment.status !== 2)
-        .reduce((sum, payment) => sum + payment.amount, 0);
+      // Phiếu thu của các lần thanh toán còn hiệu lực trên đơn (đơn chưa có HĐ).
+      const activePayments = payments.filter((payment) => payment.status !== 2);
       const tx = {
         $queryRaw: jest.fn().mockResolvedValue([]),
         order: {
@@ -545,16 +543,21 @@ describe('InvoicesService customer invoice debt guard', () => {
         debtTicketCustomer: { findFirst: jest.fn().mockResolvedValue(null) },
         invoice: {
           aggregate: jest.fn().mockResolvedValue({ _sum: { grandTotal: 0 } }),
+          findMany: jest.fn().mockResolvedValue([]),
         },
         orderPayment: {
           findMany: jest
             .fn()
-            .mockResolvedValue(payments.map(({ code }) => ({ code }))),
+            .mockResolvedValue(
+              activePayments.map(({ code }) => ({ code, orderId: 1 })),
+            ),
         },
         cashFlow: {
-          aggregate: jest
+          findMany: jest
             .fn()
-            .mockResolvedValue({ _sum: { amount: tiedReceipts } }),
+            .mockResolvedValue(
+              activePayments.map(({ code, amount }) => ({ code, amount })),
+            ),
         },
       };
       const prisma = {

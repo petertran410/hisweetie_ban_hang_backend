@@ -101,7 +101,14 @@ export function isKhoHnFuelVoucher(
   );
 }
 
+export const FUEL_ADVANCE_ENTRY_STATUS = {
+  ACTIVE: 'ACTIVE',
+  CANCELLED: 'CANCELLED',
+} as const;
+
 export interface FuelAdvanceIn {
+  /** LARK: đơn PHIẾU CHI đã duyệt; MANUAL: khoản ứng nhập tay (không ghi quỹ). */
+  source: 'LARK' | 'MANUAL';
   id: number;
   at: Date;
   amount: number;
@@ -145,6 +152,7 @@ export function fuelAdvanceFromVoucher(row: {
   if (!(amount > 0)) return null;
   const cash = readPaymentVoucherCash(form);
   return {
+    source: 'LARK',
     id: row.id,
     at: new Date(row.completedAt),
     amount,
@@ -153,6 +161,27 @@ export function fuelAdvanceFromVoucher(row: {
     method: details.method,
     cashSource: cash?.cashSource ?? null,
     cashAmount: cash?.amount ?? null,
+  };
+}
+
+/** Khoản ứng nhập tay thành một dòng tiền ứng (không có phương thức / quỹ). */
+export function fuelAdvanceFromManual(row: {
+  id: number;
+  occurredAt: Date;
+  amount: Prisma.Decimal | number | string;
+  note: string | null;
+  creatorName: string | null;
+}): FuelAdvanceIn {
+  return {
+    source: 'MANUAL',
+    id: row.id,
+    at: new Date(row.occurredAt),
+    amount: Number(row.amount),
+    description: row.note,
+    requesterName: row.creatorName,
+    method: null,
+    cashSource: null,
+    cashAmount: null,
   };
 }
 

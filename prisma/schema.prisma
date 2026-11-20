@@ -2826,6 +2826,27 @@ model ApprovalRequestEvent {
 
 // Bản sao đơn PHIẾU THU / PHIẾU CHI / PHIẾU CHI KHO HN, SG do nhân viên tạo
 // trực tiếp trên Lark Approval (không gồm đơn POS tự gửi), để đối chiếu trên POS.
+/// Tiền ứng xăng xe Kho HN nhập tay: khoản đã ứng ngoài đơn PHIẾU CHI Lark.
+/// Chỉ để tính tiền ứng, không ghi quỹ (tiền đã đi từ trước).
+model FuelAdvanceEntry {
+  id           Int       @id @default(autoincrement())
+  branchId     Int       @map("branch_id")
+  occurredAt   DateTime  @map("occurred_at")
+  amount       Decimal   @db.Decimal(18, 2)
+  note         String?
+  /// ACTIVE | CANCELLED
+  status       String    @default("ACTIVE") @db.VarChar(16)
+  createdBy    Int       @map("created_by")
+  cancelledBy  Int?      @map("cancelled_by")
+  cancelledAt  DateTime? @map("cancelled_at")
+  cancelReason String?   @map("cancel_reason")
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+
+  @@index([branchId, occurredAt])
+  @@map("fuel_advance_entries")
+}
+
 model LarkApprovalInstance {
   id                   Int       @id @default(autoincrement())
   instanceCode         String    @unique @map("instance_code") @db.VarChar(64)
@@ -2999,6 +3020,9 @@ model InternalFinanceAttachment {
   fileSize  Int?
   createdBy Int
   createdAt DateTime             @default(now())
+  // Gỡ chứng từ giữ lại dòng: ai gỡ, lúc nào (null = đang dùng).
+  removedAt DateTime?            @map("removed_at")
+  removedBy Int?                 @map("removed_by")
 
   entry   InternalFinanceEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
   creator User                 @relation(fields: [createdBy], references: [id])
@@ -3013,6 +3037,9 @@ model InternalFinanceInvoiceLink {
   invoiceId Int
   amount    Decimal?             @db.Decimal(18, 2)
   createdAt DateTime             @default(now())
+  // Bỏ liên kết hóa đơn giữ lại dòng: ai bỏ, lúc nào (null = đang dùng).
+  removedAt DateTime?            @map("removed_at")
+  removedBy Int?                 @map("removed_by")
 
   entry   InternalFinanceEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
   invoice Invoice              @relation(fields: [invoiceId], references: [id], onDelete: Cascade)

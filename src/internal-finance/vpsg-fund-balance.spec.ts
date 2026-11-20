@@ -83,12 +83,22 @@ function fakeDb() {
         ),
       ),
     },
-    internalFundDailyClosing: { updateMany: jest.fn() },
+    internalFundDailyClosing: {
+      updateMany: jest.fn(),
+      findMany: jest.fn(async () => []),
+    },
+    auditLog: { createMany: jest.fn() },
+    user: { findMany: jest.fn(async () => []) },
     $executeRaw: jest.fn(),
     $transaction: jest.fn(async (fn: any) => fn(db)),
   };
   return { db, rows };
 }
+
+/** Dòng lịch sử của mỗi lần createMany. */
+const auditCalls = (db: any): any[][] =>
+  db.auditLog.createMany.mock.calls.map(([args]: any) => args.data);
+const codes = (rows: any[]) => rows.map((row) => row.actionCode);
 
 const balanceRows = (rows: any[]) =>
   rows.filter(
@@ -143,6 +153,61 @@ describe('VPSG fund balance by counted cash', () => {
     expect(balanceRows(rows)).toHaveLength(1);
     expect(balanceRows(rows)[0].transactionType).toBe('RECEIPT');
     expect(String(balanceRows(rows)[0].amount)).toBe('200000');
+  });
+
+  it('logs one FIN_SCRIPT_RUN per --apply run, with ledger rows under the same run', async () => {
+    const { db } = fakeDb();
+    const args = ['--actual=3500000', `--date=${COUNT_DATE}`, '--apply'];
+
+    await applyVpsgBalance(db, 3500000, 9, COUNT_DATE, args);
+    let history = auditCalls(db).flat();
+    expect(codes(history)).toEqual(['FIN_FUND_TXN_POST', 'FIN_SCRIPT_RUN']);
+    const run = history[1];
+    expect(run).toMatchObject({
+      entityType: 'finance_scripts',
+      entityCode: 'balance-vpsg-fund',
+      branchId: 7,
+      userId: 9,
+      userName: 'Script balance-vpsg-fund',
+    });
+    expect(run.entityId).toMatch(/^balance-vpsg-fund:/);
+    expect(run.message).toBe(
+      'Chạy script balance-vpsg-fund --apply: Quỹ VPSG ngày 19/11/2026: đếm 3.500.000, sổ 3.800.000, ghi CHI 300.000',
+    );
+    expect(run.metadata).toMatchObject({
+      counts: { replaced: 0, posted: 1 },
+      args,
+    });
+    expect(history[0].requestId).toBe(run.requestId);
+    expect(history[0].metadata.actorKind).toBe('SCRIPT');
+
+    // Không đổi gì: vẫn một dòng chạy script, không có dòng quỹ.
+    db.auditLog.createMany.mockClear();
+    await applyVpsgBalance(db, 3500000, 9, COUNT_DATE);
+    history = auditCalls(db).flat();
+    expect(codes(history)).toEqual(['FIN_SCRIPT_RUN']);
+    expect(history[0].message).toContain('không có gì thay đổi');
+
+    // Đếm lại: hủy dòng cũ + ghi dòng mới, cùng opId với dòng chạy script.
+    db.auditLog.createMany.mockClear();
+    await applyVpsgBalance(db, 4000000, 9, COUNT_DATE);
+    history = auditCalls(db).flat();
+    expect(codes(history)).toEqual([
+      'FIN_FUND_TXN_CANCEL',
+      'FIN_FUND_TXN_POST',
+      'FIN_SCRIPT_RUN',
+    ]);
+    expect(new Set(history.map((row) => row.requestId)).size).toBe(1);
+    expect(history[2].metadata.counts).toMatchObject({
+      replaced: 1,
+      posted: 1,
+    });
+  });
+
+  it('dry runs write no history', async () => {
+    const { db } = fakeDb();
+    await planVpsgBalance(db, 3500000, COUNT_DATE);
+    expect(db.auditLog.createMany).not.toHaveBeenCalled();
   });
 
   it('removes the balance row when the count matches the books', async () => {

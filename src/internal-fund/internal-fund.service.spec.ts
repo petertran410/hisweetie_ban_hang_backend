@@ -8,8 +8,10 @@ import {
 } from './internal-fund-ledger.service';
 import { buildFundReceiptForm } from './internal-fund-template.registry';
 import { RECEIPT_FIELD_IDS } from '../approval-lifecycle/approval-lifecycle.constants';
+import { FinanceAuditService } from '../finance-audit';
 
-function fixture() {
+// `auditLedger`: sổ quỹ cũng ghi lịch sử (kiểm tra dùng chung opId).
+function fixture(options: { auditLedger?: boolean } = {}) {
   const transactions: any[] = [];
   const transfer: any = {
     id: 4,
@@ -44,7 +46,11 @@ function fixture() {
         userBranches: [6, 1, 4, 7].map((branchId) => ({ branchId })),
         userRoles: [],
       }),
+      findMany: jest
+        .fn()
+        .mockResolvedValue([{ id: 7, name: 'Kế toán A', email: null }]),
     },
+    auditLog: { createMany: jest.fn() },
     $executeRaw: jest.fn(),
     $transaction: jest.fn(async (fn: any) => fn(prisma)),
     internalFundTransaction: {
@@ -122,15 +128,23 @@ function fixture() {
   const approval: any = {
     create: jest.fn().mockResolvedValue({ id: 10, status: 'PENDING' }),
   };
-  const ledger = new InternalFundLedgerService();
+  const audit = new FinanceAuditService();
+  const ledger = options.auditLedger
+    ? new InternalFundLedgerService(audit)
+    : new InternalFundLedgerService();
   const service = new InternalFundService(
     prisma,
     new FinanceAccessService(prisma, auth),
     approval,
     ledger,
+    audit,
   );
+  // Mọi dòng audit_logs đã ghi (theo thứ tự).
+  const logs = (): any[] =>
+    prisma.auditLog.createMany.mock.calls.flatMap(([arg]: any) => arg.data);
   return {
     service,
+    logs,
     prisma,
     auth,
     approval,
@@ -938,5 +952,359 @@ describe('Server-side Approval form registry', () => {
         'user',
       ),
     ).toThrow('chứng từ');
+  });
+});
+
+describe('Internal fund audit log (Cài đặt → Lịch sử)', () => {
+  const codes = (rows: any[]) => rows.map((row) => row.actionCode);
+
+  it('logs Đã chi once, sharing the opId with the fund row written by the ledger', async () => {
+    const f = fixture({ auditLedger: true });
+    f.entry.code = 'TCNB-CHI-1';
+    f.entry.category = 'OTHER_EXPENSE';
+    await f.service.postExpenseEntry(12, 7, true);
+    await f.service.postExpenseEntry(12, 7, true);
+    const rows = f.logs();
+    expect(codes(rows)).toEqual(['FIN_FUND_TXN_POST', 'FIN_ENTRY_CASH_ISSUE']);
+    const issue = rows[1];
+    expect(issue).toMatchObject({
+      category: 'internal_finance',
+      entityType: 'internal_finance_entries',
+      entityId: '12',
+      entityCode: 'TCNB-CHI-1',
+      branchId: 6,
+      userId: 7,
+      userName: 'Kế toán A',
+      message: 'Đánh dấu Đã chi TCNB-CHI-1',
+      changes: [expect.objectContaining({ field: 'cashIssued', to: 'Có' })],
+    });
+    expect(issue.metadata).toMatchObject({
+      actorKind: 'USER',
+      fundTransactionCode: f.transactions[0].code,
+    });
+    expect(issue.requestId).toBe(rows[0].requestId);
+  });
+
+  it('uses the caller actor for Đã chi so the page action keeps one opId', async () => {
+    const f = fixture();
+    f.entry.code = 'TCNB-CHI-1';
+    await f.service.postExpenseEntry(12, 7, true, undefined, {
+      userId: 7,
+      userName: 'Kho HN',
+      kind: 'USER',
+      trigger: 'http',
+      opId: 'op-from-page',
+    });
+    expect(f.logs()).toEqual([
+      expect.objectContaining({
+        actionCode: 'FIN_ENTRY_CASH_ISSUE',
+        requestId: 'op-from-page',
+        userName: 'Kho HN',
+      }),
+    ]);
+  });
+
+  it('cancelling a POS expense row logs the fund cancel and the Đã chi revert with the old issue info', async () => {
+    const f = fixture({ auditLedger: true });
+    f.entry.code = 'TCNB-CHI-1';
+    await f.service.postExpenseEntry(12, 7, true);
+    f.prisma.auditLog.createMany.mockClear();
+    const issuedAt = f.entry.cashIssuedAt;
+    await f.service.cancelTransaction(1, { reason: ' Ghi nhầm ' }, 7);
+    const rows = f.logs();
+    // Fund row cancel comes from the ledger, the Đã chi revert from the service.
+    expect(codes(rows)).toEqual([
+      'FIN_FUND_TXN_CANCEL',
+      'FIN_ENTRY_CASH_ISSUE_REVERT',
+    ]);
+    const revert = rows[1];
+    expect(revert).toMatchObject({
+      actionType: 'PUT',
+      entityId: '12',
+      message: 'Bỏ Đã chi TCNB-CHI-1: Ghi nhầm',
+      changes: [expect.objectContaining({ from: 'Có', to: 'Không' })],
+    });
+    expect(revert.snapshot).toMatchObject({
+      cashIssuedAt: issuedAt.toISOString(),
+      cashIssuedBy: 7,
+      cashIssuedReason: null,
+    });
+    expect(revert.requestId).toBe(rows[0].requestId);
+  });
+
+  it('logs a direct fund cancel (Lark-imported row keeps its key) and flags closings with the cause', async () => {
+    const f = fixture();
+    f.entry.sourceType = 'LARK_IMPORT';
+    await f.service.postExpenseEntry(12, 7, true);
+    f.entry.posManagedAt = null;
+    const invalidate = jest.spyOn(f.ledger, 'invalidateClosings');
+    f.prisma.auditLog.createMany.mockClear();
+    await f.service.cancelTransaction(1, { reason: 'Sai' }, 7);
+    const rows = f.logs();
+    expect(codes(rows)).toEqual(['FIN_FUND_TXN_CANCEL']);
+    expect(rows[0]).toMatchObject({
+      actionType: 'DELETE',
+      entityType: 'internal_fund_transactions',
+      entityId: '1',
+      message: `Hủy dòng quỹ ${f.transactions[0].code} 125.000 đ: Sai`,
+    });
+    expect(rows[0].metadata).toMatchObject({
+      keptSourceKey: true,
+      sourceKey: 'EXPENSE:12',
+    });
+    expect(invalidate).toHaveBeenCalledWith(
+      f.prisma,
+      6,
+      expect.any(Date),
+      `hủy dòng quỹ ${f.transactions[0].code}`,
+      expect.objectContaining({ kind: 'USER', userId: 7 }),
+    );
+  });
+
+  it('logs the Lark Approval row cancel alongside its fund row', async () => {
+    const f = fixture();
+    f.entry.code = 'TCNB-LARK-1';
+    f.entry.category = 'CASH_FUND_EXPENSE';
+    await f.service.postExpenseEntry(12, 7, true);
+    f.entry.sourceType = 'LARK_APPROVAL';
+    f.entry.status = 'POSTED';
+    f.prisma.auditLog.createMany.mockClear();
+    await f.service.cancelTransaction(1, { reason: 'Ghi nhầm quỹ' }, 7);
+    expect(f.logs()).toEqual([
+      expect.objectContaining({
+        actionCode: 'FIN_ENTRY_CANCEL',
+        entityId: '12',
+        message:
+          'Hủy phiếu chi quỹ TCNB-LARK-1: Hủy giao dịch quỹ: Ghi nhầm quỹ',
+      }),
+    ]);
+  });
+
+  it('logs a transfer cancel and each cancelled leg in one write', async () => {
+    const f = fixture();
+    f.transfer.code = 'CQ-1';
+    await f.ledger.applyApproval(f.prisma, {
+      id: 10,
+      status: 'APPROVED',
+      sourceType: 'INTERNAL_FUND_TRANSFER',
+      sourceId: 4,
+    });
+    f.prisma.internalFundTransaction.findMany.mockImplementation(
+      async ({ where }: any) =>
+        f.transactions.filter(
+          (row) =>
+            row.transferId === where.transferId && row.status === where.status,
+        ),
+    );
+    await f.service.cancelTransfer(4, { reason: 'Đối soát' }, 7);
+    expect(f.prisma.auditLog.createMany).toHaveBeenCalledTimes(1);
+    const rows = f.logs();
+    expect(codes(rows)).toEqual([
+      'FIN_FUND_TRANSFER_CANCEL',
+      'FIN_FUND_TXN_CANCEL',
+      'FIN_FUND_TXN_CANCEL',
+    ]);
+    expect(rows[0]).toMatchObject({
+      entityId: '4',
+      entityCode: 'CQ-1',
+      message: 'Hủy chuyển quỹ CQ-1: Đối soát',
+      changes: [expect.objectContaining({ from: 'Đã ghi quỹ', to: 'Đã hủy' })],
+    });
+    expect(rows.slice(1).map((row) => row.entityId)).toEqual(['1', '2']);
+    expect(new Set(rows.map((row) => row.requestId)).size).toBe(1);
+  });
+
+  it('logs a description adjustment with its reason', async () => {
+    const f = fixture();
+    f.transactions.push({
+      id: 3,
+      code: 'QF-THU-3',
+      branchId: 6,
+      status: 'POSTED',
+      transactionType: 'RECEIPT',
+      sourceType: 'INTERNAL_FUND_RECEIPT',
+      amount: new Prisma.Decimal(100),
+      description: 'Thu khác',
+    });
+    await f.service.updateTransaction(
+      3,
+      { reason: 'Ghi rõ người nộp', description: 'Thu của anh B' },
+      7,
+    );
+    expect(f.logs()).toEqual([
+      expect.objectContaining({
+        actionCode: 'FIN_FUND_TXN_ADJUST',
+        entityCode: 'QF-THU-3',
+        message: 'Điều chỉnh dòng quỹ QF-THU-3: Ghi rõ người nộp',
+        changes: [
+          expect.objectContaining({
+            field: 'description',
+            from: 'Thu khác',
+            to: 'Thu của anh B\nĐiều chỉnh: Ghi rõ người nộp',
+          }),
+        ],
+      }),
+    ]);
+  });
+
+  it('logs a new transfer request once per clientUuid', async () => {
+    const f = fixture();
+    let saved: any = null;
+    f.prisma.internalFundTransfer.findUnique.mockImplementation(
+      async () => saved,
+    );
+    f.prisma.internalFundTransfer.upsert.mockImplementation(
+      async ({ create }: any) => {
+        saved ??= {
+          ...create,
+          id: 4,
+          amount: new Prisma.Decimal(create.amount),
+        };
+        return saved;
+      },
+    );
+    const dto = {
+      clientUuid: '6297b342-3506-40ee-b7a8-7b5e956fd4c8',
+      branchId: 6,
+      destinationBranchId: 1,
+      amount: 250000,
+      occurredAt: '2026-10-05',
+      classification: 'INTERNAL_TRANSFER',
+      attachmentCodes: ['doc'],
+    };
+    await f.service.createReceiptApproval(dto, 7);
+    await f.service.createReceiptApproval(dto, 7);
+    expect(f.approval.create).toHaveBeenCalledTimes(2);
+    expect(f.logs()).toEqual([
+      expect.objectContaining({
+        actionCode: 'FIN_FUND_TRANSFER_REQUEST',
+        actionType: 'POST',
+        entityType: 'internal_fund_transfers',
+        entityId: '4',
+        message: `Tạo chuyển quỹ ${saved.code} 250.000 đ: Kho HN → Kho SG`,
+      }),
+    ]);
+    // Đơn Approval tạo cùng lần dùng chung opId với dòng chuyển quỹ.
+    expect(f.approval.create.mock.calls[0][2]).toMatchObject({
+      kind: 'USER',
+      userId: 7,
+      opId: f.logs()[0].requestId,
+    });
+  });
+
+  it('posts an approved receipt from POS as the user, logging the approval post once', async () => {
+    const f = fixture({ auditLedger: true });
+    const request = {
+      id: 10,
+      kind: 'RECEIPT',
+      instanceCode: 'INS-10',
+      branchId: 6,
+      status: 'APPROVED',
+      sourceType: 'INTERNAL_FUND_RECEIPT',
+      createdById: 9,
+      // Đã duyệt: Lark trả số đơn → cùng mã với các dòng đơn khác.
+      detailSnapshot: { serial_number: '202610050001' },
+      formSnapshot: {
+        form: [
+          { id: RECEIPT_FIELD_IDS.amount, value: 300000 },
+          { id: RECEIPT_FIELD_IDS.date, value: '2026-10-05' },
+          { id: RECEIPT_FIELD_IDS.description, value: 'Thu khác' },
+        ],
+      },
+    };
+    f.prisma.approvalRequest.findUnique.mockResolvedValue(request);
+    f.prisma.internalFundTransaction.findMany.mockImplementation(
+      async ({ where }: any) =>
+        f.transactions.filter(
+          (row) => row.approvalRequestId === where.approvalRequestId,
+        ),
+    );
+    await f.service.postApprovedApproval(10, 7);
+    await f.service.postApprovedApproval(10, 7);
+    const rows = f.logs();
+    expect(codes(rows)).toEqual(['FIN_FUND_TXN_POST', 'FIN_APPROVAL_POST']);
+    expect(rows[0]).toMatchObject({ userId: 7, userName: 'Kế toán A' });
+    expect(rows[0].metadata.actorKind).toBe('USER');
+    expect(rows[1]).toMatchObject({
+      entityType: 'approval_requests',
+      entityId: '10',
+      entityCode: '202610050001',
+      message: 'Ghi quỹ đơn thu quỹ 202610050001 – 300.000 đ',
+      metadata: expect.objectContaining({ instanceCode: 'INS-10' }),
+    });
+    expect(rows[1].requestId).toBe(rows[0].requestId);
+  });
+
+  it('logs a first closing, skips an unchanged re-close and records a date move', async () => {
+    const f = fixture();
+    f.prisma.internalFundDailyClosing.upsert.mockImplementation(
+      async ({ create }: any) => ({ id: 9, ...create }),
+    );
+    const dto = {
+      branchId: 6,
+      closingDate: '2026-10-05',
+      actualOpeningBalance: 0,
+      actualReceipt: 0,
+      actualExpense: 0,
+    };
+    const first = await f.service.closeDay(dto, 7);
+    expect(f.logs()).toEqual([
+      expect.objectContaining({
+        actionCode: 'FIN_FUND_CLOSING_SAVE',
+        entityType: 'internal_fund_daily_closings',
+        entityId: '9',
+        message: 'Lưu chốt sổ Kho HN ngày 05/10/2026',
+      }),
+    ]);
+
+    f.prisma.auditLog.createMany.mockClear();
+    f.prisma.internalFundDailyClosing.findUnique.mockResolvedValue({
+      ...first,
+      notes: null,
+    });
+    f.prisma.internalFundDailyClosing.upsert.mockImplementation(
+      async ({ update }: any) => ({ ...first, ...update }),
+    );
+    await f.service.closeDay(dto, 7);
+    expect(f.logs()).toEqual([]);
+
+    await f.service.closeDay({ ...dto, actualReceipt: 50 }, 7);
+    expect(f.logs()).toEqual([
+      expect.objectContaining({
+        actionCode: 'FIN_FUND_CLOSING_SAVE',
+        changes: expect.arrayContaining([
+          expect.objectContaining({
+            field: 'actualReceipt',
+            from: '0 đ',
+            to: '50 đ',
+          }),
+        ]),
+      }),
+    ]);
+  });
+
+  it('records the moved date of a closing', async () => {
+    const f = fixture();
+    const saved = {
+      id: 3,
+      branchId: 6,
+      closingDate: new Date('2026-10-04T00:00:00Z'),
+      closedAt: new Date(),
+      log: [],
+    };
+    f.prisma.internalFundDailyClosing.findUnique.mockImplementation(
+      async ({ where }: any) => (where.id === 3 ? saved : null),
+    );
+    await f.service.closeDay(
+      { id: 3, branchId: 6, closingDate: '2026-10-05', notes: 'Nhầm ngày' },
+      7,
+    );
+    expect(f.logs()[0].changes).toEqual([
+      expect.objectContaining({
+        field: 'closingDate',
+        from: '04/10/2026',
+        to: '05/10/2026',
+      }),
+    ]);
   });
 });

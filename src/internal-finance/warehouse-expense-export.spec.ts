@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import {
+  WAREHOUSE_EXPENSE_EXPORT_SELECT,
   exportDate,
   warehouseExpenseExportColumns,
   warehouseExpenseExportRow,
@@ -136,5 +137,13 @@ describe('warehouse-expense-export', () => {
     });
     const keys = warehouseExpenseExportColumns(2).map((column) => column.key);
     expect(keys.slice(-2)).toEqual(['file1', 'file2']);
+  });
+
+  it('only exports attachments that are still on the voucher', () => {
+    expect(WAREHOUSE_EXPENSE_EXPORT_SELECT.attachments).toEqual({
+      where: { removedAt: null },
+      orderBy: { id: 'asc' },
+      select: { fileUrl: true, fileName: true },
+    });
   });
 });

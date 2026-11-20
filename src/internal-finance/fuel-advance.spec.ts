@@ -1,6 +1,7 @@
 import {
   FUEL_ADVANCE_FROM,
   buildFuelAdvanceLedger,
+  fuelAdvanceFromManual,
   fuelAdvanceFromVoucher,
   fuelApprovedAt,
   isFuelAdvanceEntry,
@@ -96,6 +97,28 @@ describe('Kho HN fuel advance', () => {
     ).toBe(null);
   });
 
+  it('turns a manual advance into an advance row without fund details', () => {
+    expect(
+      fuelAdvanceFromManual({
+        id: 3,
+        occurredAt: FUEL_ADVANCE_FROM,
+        amount: '20000000',
+        note: 'Ứng xăng trước khi lên POS',
+        creatorName: 'Kế toán kho',
+      }),
+    ).toEqual({
+      source: 'MANUAL',
+      id: 3,
+      at: FUEL_ADVANCE_FROM,
+      amount: 20000000,
+      description: 'Ứng xăng trước khi lên POS',
+      requesterName: 'Kế toán kho',
+      method: null,
+      cashSource: null,
+      cashAmount: null,
+    });
+  });
+
   it('applies to Kho HN fuel from 14/11/2026 only', () => {
     const at = (iso: string) => new Date(iso);
     expect(
@@ -139,6 +162,7 @@ describe('Kho HN fuel advance', () => {
 
   it('builds the opening balance, running balance, overspend and totals per creator', () => {
     const advance = (id: number, iso: string, amount: number) => ({
+      source: 'LARK' as const,
       id,
       at: new Date(iso),
       amount,

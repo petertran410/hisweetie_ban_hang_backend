@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -54,6 +55,7 @@ import {
   BulkCheckWarehouseExpenseDto,
   AddInternalFinanceAttachmentsDto,
   CreateWarehouseExpenseDto,
+  CreateFuelAdvanceEntryDto,
   FuelAdvanceQueryDto,
   InternalFinanceQueryDto,
   LarkApprovalQueryDto,
@@ -73,10 +75,12 @@ import { InternalFinanceCodeService } from './internal-finance-code.service';
 import {
   FUEL_ADVANCE_BATCH_BLOCK,
   FUEL_ADVANCE_BRANCH_ID,
+  FUEL_ADVANCE_ENTRY_STATUS,
   FUEL_ADVANCE_FROM,
   FUEL_VOUCHER_FORM_HINT,
   buildFuelAdvanceLedger,
   fuelAdvanceEntryWhere,
+  fuelAdvanceFromManual,
   fuelAdvanceFromVoucher,
   fuelAdvanceUsedWhere,
   fuelApprovedAt,
@@ -95,7 +99,37 @@ import {
 } from '../internal-fund/internal-fund-ledger.service';
 import { VehiclesService } from '../vehicles/vehicles.service';
 import { VEHICLE_CHECK } from '../vehicles/vehicles.constants';
-import { cancelWeeklyBatchInTx } from './weekly-batch-cancel';
+import {
+  FINANCE_AUDIT_ENTITY,
+  FinanceAuditService,
+  auditActor,
+  entryKindLabel,
+  entryStatusLabel,
+  formatBoolean,
+  formatDate,
+  formatMoney,
+  newOpId,
+  reasonSuffix,
+  reviewDecisionLabel,
+  reviewRoleLabel,
+  type AuditActor,
+  type FinanceAuditChange,
+  type FinanceAuditEntry,
+  type FinanceAuditSnapshot,
+} from '../finance-audit';
+import {
+  ACTIVE_ROW,
+  activeAttachments,
+  activeInvoiceLinks,
+  syncEntryAttachments,
+  syncEntryInvoiceLinks,
+  type DesiredAttachment,
+} from './entry-files';
+import {
+  cancelWeeklyBatchInTx,
+  entryBatchAddAudit,
+  entryBatchRemoveAudit,
+} from './weekly-batch-cancel';
 import {
   WAREHOUSE_EXPENSE_EXPORT_SELECT,
   warehouseExpenseExportColumns,
@@ -153,6 +187,12 @@ const withCancelledCount = <
     ? { ...batch, _count: { entries: batch.cancelledEntryIds.length } }
     : batch;
 
+/** Lý do mặc định khi hủy phiếu Tiền mặt kho không nhập lý do. */
+const DEFAULT_RECEIPT_CANCEL_REASON = 'Hủy phiếu tiền mặt kho';
+
+/** Batch chưa gửi Lark bị bỏ hết phiếu: tự hủy (giữ lại) với lý do này. */
+const EMPTIED_BATCH_CANCEL_REASON = 'Tự hủy: đã bỏ hết phiếu khỏi batch';
+
 // Đơn Lark kết thúc không duyệt: hiện lý do (bước từ chối / thu hồi cuối).
 const ENDED_APPROVAL_STATUSES = ['REJECTED', 'CANCELED', 'DELETED', 'REVERTED'];
 
@@ -191,6 +231,8 @@ type WarehouseCashAction =
 
 @Injectable()
 export class InternalFinanceService {
+  private readonly logger = new Logger(InternalFinanceService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly cashFlowsService: CashFlowsService,
@@ -201,6 +243,7 @@ export class InternalFinanceService {
     private readonly internalFund: InternalFundService,
     private readonly vehicles: VehiclesService,
     private readonly fundLedger: InternalFundLedgerService,
+    private readonly financeAudit: FinanceAuditService,
   ) {}
 
   async findAll(query: InternalFinanceQueryDto) {
@@ -236,14 +279,14 @@ export class InternalFinanceService {
           cashIssuer: { select: { id: true, name: true } },
           managerReviewer: { select: { id: true, name: true } },
           accountantReviewer: { select: { id: true, name: true } },
-          attachments: true,
-          invoiceLinks: {
+          attachments: activeAttachments,
+          invoiceLinks: activeInvoiceLinks({
             include: {
               invoice: {
                 select: { id: true, code: true, customerId: true },
               },
             },
-          },
+          }),
           reviews: {
             orderBy: { createdAt: 'desc' },
             take: 10,
@@ -349,7 +392,7 @@ export class InternalFinanceService {
         branchId: dto.branchId,
         occurredAt,
       });
-      return tx.internalFinanceEntry.create({
+      const created = await tx.internalFinanceEntry.create({
         data: {
           code,
           direction: INTERNAL_FINANCE_DIRECTION.RECEIPT,
@@ -397,6 +440,13 @@ export class InternalFinanceService {
         },
         include: this.entryInclude(),
       });
+      await this.financeAudit.write(
+        tx,
+        this.entryCreateLog(created, auditActor.user(userId), {
+          invoiceIds,
+        }),
+      );
+      return created;
     });
   }
 
@@ -478,6 +528,7 @@ export class InternalFinanceService {
           {
             invoiceLinks: {
               some: {
+                ...ACTIVE_ROW,
                 invoice: { code: { contains: search, mode: 'insensitive' } },
               },
             },
@@ -666,8 +717,9 @@ export class InternalFinanceService {
         confirmedAt: new Date(),
       };
     }
+    const actor = auditActor.user(userId);
     return this.prisma.$transaction(async (tx) => {
-      await tx.internalFinanceReview.create({
+      const review = await tx.internalFinanceReview.create({
         data: {
           entryId: id,
           role: INTERNAL_FINANCE_REVIEW_ROLE.ACCOUNTANT,
@@ -681,10 +733,32 @@ export class InternalFinanceService {
       });
       await tx.internalFinanceEntry.update({ where: { id }, data });
       // Tiền mặt vào quỹ kho ngay khi kế toán kho xác nhận số thực nhận.
-      await this.syncWarehouseReceiptFund(tx, id, userId);
+      await this.syncWarehouseReceiptFund(tx, id, userId, actor);
       const updated = await tx.internalFinanceEntry.findUnique({
         where: { id },
         include: this.warehouseInclude(),
+      });
+      const code = entry.code ?? `#${id}`;
+      await this.financeAudit.write(tx, {
+        ...(dto.mode === 'CLEAR'
+          ? {
+              action: 'FIN_ENTRY_CONFIRM_CLEAR' as const,
+              params: { code },
+            }
+          : {
+              action: 'FIN_ENTRY_CONFIRM_AMOUNT' as const,
+              params: { code, amount: Number(data.confirmedAmount) },
+            }),
+        ...this.entryAudit(entry, actor),
+        changes: this.financeAudit.diff(
+          FINANCE_AUDIT_ENTITY.ENTRY,
+          { confirmedAmount: entry.confirmedAmount ?? null },
+          {
+            confirmedAmount:
+              updated?.confirmedAmount ?? data.confirmedAmount ?? null,
+          },
+        ),
+        metadata: { mode: dto.mode, reviewId: review?.id ?? null },
       });
       const [decorated] = await this.decorateWarehouseRows([updated]);
       return decorated;
@@ -703,6 +777,7 @@ export class InternalFinanceService {
     tx: Prisma.TransactionClient,
     entryId: number,
     userId: number,
+    actor?: AuditActor,
   ) {
     const entry = await tx.internalFinanceEntry.findUnique({
       where: { id: entryId },
@@ -748,6 +823,7 @@ export class InternalFinanceService {
           : beforeOfficeLedger
             ? 'Ngày thu trước mốc sổ quỹ: đã ghi trên sổ quỹ Lark'
             : 'Bỏ xác nhận số tiền thực nhận',
+        actor,
       );
     if (amount > 0)
       await this.fundLedger.postSystemTransaction(tx, {
@@ -762,6 +838,7 @@ export class InternalFinanceService {
         sourceId: String(entryId),
         entryId,
         userId,
+        ...(actor ? { auditActor: actor } : {}),
       });
   }
 
@@ -1012,7 +1089,7 @@ export class InternalFinanceService {
     const attachmentGroups =
       await this.prisma.internalFinanceAttachment.groupBy({
         by: ['entryId'],
-        where: { entry: where },
+        where: { entry: where, ...ACTIVE_ROW },
         _count: { _all: true },
       });
     const attachmentColumns = attachmentGroups.reduce(
@@ -1151,6 +1228,7 @@ export class InternalFinanceService {
       note: dto.note?.trim() || undefined,
       payerId: dto.payerId ?? user.id,
       userId: user.id,
+      actor: auditActor.user(user),
     });
   }
 
@@ -1202,7 +1280,11 @@ export class InternalFinanceService {
           )
         : null;
       await this.assertPayer(dto.payerId);
-      return tx.internalFinanceEntry.update({
+      // Chứng từ bị bỏ giữ lại dòng (removedAt), không xóa cứng.
+      const files = dto.attachments
+        ? await syncEntryAttachments(tx, id, dto.attachments, user.id)
+        : null;
+      const updated = await tx.internalFinanceEntry.update({
         where: { id },
         data: {
           amount: money?.amount,
@@ -1219,28 +1301,14 @@ export class InternalFinanceService {
               ? INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE
               : INTERNAL_FINANCE_EVIDENCE_STATUS.MISSING
             : undefined,
-          ...(dto.attachments
-            ? {
-                attachments: {
-                  deleteMany: {},
-                  ...(dto.attachments.length
-                    ? {
-                        create: dto.attachments.map((file) => ({
-                          kind: file.kind || 'EVIDENCE',
-                          fileUrl: file.fileUrl,
-                          fileName: file.fileName,
-                          fileType: file.fileType,
-                          fileSize: file.fileSize,
-                          createdBy: user.id,
-                        })),
-                      }
-                    : {}),
-                },
-              }
-            : {}),
         },
         include: this.warehouseExpenseInclude(),
       });
+      await this.financeAudit.write(
+        tx,
+        this.entryUpdateLog(entry, updated, auditActor.user(user), { files }),
+      );
+      return updated;
     });
   }
 
@@ -1258,7 +1326,7 @@ export class InternalFinanceService {
         branchId: dto.branchId,
         occurredAt,
       });
-      return tx.internalFinanceEntry.create({
+      const created = await tx.internalFinanceEntry.create({
         data: {
           code,
           direction: INTERNAL_FINANCE_DIRECTION.RECEIPT,
@@ -1309,6 +1377,15 @@ export class InternalFinanceService {
         },
         include: this.warehouseInclude(),
       });
+      await this.financeAudit.write(
+        tx,
+        this.entryCreateLog(created, auditActor.user(userId), {
+          receiptKind: sale ? 'WAREHOUSE_SALE' : 'CUSTOMER',
+          customerIds: customers.customerIds,
+          invoiceIds: customers.invoiceIds,
+        }),
+      );
+      return created;
     });
   }
 
@@ -1320,6 +1397,22 @@ export class InternalFinanceService {
     const entry = await this.getOpenWarehouseReceipt(id);
     const snapshot = this.snapshotOf(entry);
     const auto = this.isAutoWarehouseReceipt(entry);
+    const actor = auditActor.user(userId);
+    // Ghi chú, danh sách khách hàng và loại phiếu nằm trong sourceSnapshot: so
+    // sánh như trường. Danh sách khách lấy theo customerIdsFromEntry (snapshot +
+    // hóa đơn + customerId) ở cả hai phía để phiếu cũ không sinh thay đổi giả;
+    // giữ thứ tự vì khách đầu tiên là customerId. customerId đã nằm trong
+    // customerIds nên không so sánh riêng (tránh hai dòng cho một thay đổi).
+    const withNote = (row: any): any => {
+      const view: Record<string, unknown> = {
+        ...(row ?? {}),
+        note: this.snapshotOf(row ?? {}).note ?? '',
+        customerIds: this.customerIdsFromEntry(row ?? {}),
+        receiptKind: this.isWarehouseSale(row) ? 'WAREHOUSE_SALE' : 'CUSTOMER',
+      };
+      delete view.customerId;
+      return view;
+    };
     if (auto) {
       if (
         dto.branchId !== undefined ||
@@ -1332,22 +1425,31 @@ export class InternalFinanceService {
           'Dòng từ báo đơn chỉ sửa được nội dung và ghi chú',
         );
       }
-      return this.prisma.internalFinanceEntry.update({
-        where: { id },
-        data: {
-          description:
-            dto.description !== undefined
-              ? dto.description.trim()
-              : entry.description,
-          sourceSnapshot: this.toJson({
-            ...snapshot,
-            note: dto.note !== undefined ? dto.note : snapshot.note || '',
-            contentEdited:
-              dto.description !== undefined || Boolean(snapshot.contentEdited),
-            noteEdited: dto.note !== undefined || Boolean(snapshot.noteEdited),
-          }),
-        },
-        include: this.warehouseInclude(),
+      return this.prisma.$transaction(async (tx) => {
+        const updated = await tx.internalFinanceEntry.update({
+          where: { id },
+          data: {
+            description:
+              dto.description !== undefined
+                ? dto.description.trim()
+                : entry.description,
+            sourceSnapshot: this.toJson({
+              ...snapshot,
+              note: dto.note !== undefined ? dto.note : snapshot.note || '',
+              contentEdited:
+                dto.description !== undefined ||
+                Boolean(snapshot.contentEdited),
+              noteEdited:
+                dto.note !== undefined || Boolean(snapshot.noteEdited),
+            }),
+          },
+          include: this.warehouseInclude(),
+        });
+        await this.financeAudit.write(
+          tx,
+          this.entryUpdateLog(withNote(entry), withNote(updated), actor),
+        );
+        return updated;
       });
     }
 
@@ -1364,6 +1466,19 @@ export class InternalFinanceService {
     const linkedInvoiceIds = customers?.invoiceIds ?? [];
     // Đổi số tiền / ngày / kho: dòng quỹ theo số xác nhận được cập nhật cùng lúc.
     return this.prisma.$transaction(async (tx) => {
+      // Hóa đơn / chứng từ bị bỏ giữ lại dòng (removedAt), không xóa cứng.
+      const links =
+        sale || customers
+          ? await syncEntryInvoiceLinks(
+              tx,
+              id,
+              linkedInvoiceIds.map((invoiceId) => ({ invoiceId })),
+              userId,
+            )
+          : null;
+      const files = dto.attachments
+        ? await syncEntryAttachments(tx, id, dto.attachments, userId)
+        : null;
       const updated = await tx.internalFinanceEntry.update({
         where: { id },
         data: {
@@ -1411,43 +1526,17 @@ export class InternalFinanceService {
             receiptKind: sale ? 'WAREHOUSE_SALE' : 'CUSTOMER',
             manual: true,
           }),
-          ...(sale || customers
-            ? {
-                invoiceLinks: {
-                  deleteMany: {},
-                  ...(linkedInvoiceIds.length
-                    ? {
-                        create: linkedInvoiceIds.map((invoiceId) => ({
-                          invoiceId,
-                        })),
-                      }
-                    : {}),
-                },
-              }
-            : {}),
-          ...(dto.attachments
-            ? {
-                attachments: {
-                  deleteMany: {},
-                  ...(dto.attachments.length
-                    ? {
-                        create: dto.attachments.map((file) => ({
-                          kind: file.kind || 'EVIDENCE',
-                          fileUrl: file.fileUrl,
-                          fileName: file.fileName,
-                          fileType: file.fileType,
-                          fileSize: file.fileSize,
-                          createdBy: userId,
-                        })),
-                      }
-                    : {}),
-                },
-              }
-            : {}),
         },
         include: this.warehouseInclude(),
       });
-      await this.syncWarehouseReceiptFund(tx, id, userId);
+      await this.syncWarehouseReceiptFund(tx, id, userId, actor);
+      await this.financeAudit.write(
+        tx,
+        this.entryUpdateLog(withNote(entry), withNote(updated), actor, {
+          files,
+          links,
+        }),
+      );
       return updated;
     });
   }
@@ -1495,6 +1584,10 @@ export class InternalFinanceService {
       throw new ConflictException('Phiếu thu đã được lập');
     }
 
+    const actor = auditActor.user(userId);
+    // Lần gọi này tự khóa phiếu (→ Đang lập) hay tiếp tục một lần lập dở.
+    const claimedNow = entry.status !== INTERNAL_FINANCE_STATUS.POSTING;
+    const postedBefore = posted.length;
     if (entry.status === INTERNAL_FINANCE_STATUS.POSTING) {
       const updatedAt = new Date(entry.updatedAt || 0).getTime();
       if (Date.now() - updatedAt < 20000) {
@@ -1522,115 +1615,201 @@ export class InternalFinanceService {
       }
     }
 
-    let cashFlowId = entry.cashFlowId || null;
-    if (sale && !entry.cashFlowId) {
-      const created = await this.cashFlowsService.createStandaloneCashReceipt({
-        branchId: entry.branchId,
-        amount: received,
-        transDate: new Date(entry.occurredAt).toISOString(),
-        description: entry.description || `Thu bán đồ kho ${entry.code}`,
-        userId,
-      });
-      if (!created?.cashFlow?.id) {
-        throw new BadRequestException('Không tạo được phiếu thu');
-      }
-      cashFlowId = created.cashFlow.id;
-      posted.push({
-        id: created.cashFlow.id,
-        code: created.cashFlow.code,
-        customerId: 0,
-        amount: received,
-      });
-      await this.prisma.internalFinanceEntry.update({
-        where: { id },
-        data: {
-          status: INTERNAL_FINANCE_STATUS.POSTING,
-          cashFlowId,
-          sourceSnapshot: this.toJson({
-            ...snapshot,
-            method: 'cash',
-            postedCashFlows: posted,
-          }),
-        },
-      });
-    }
-    for (const allocation of sale ? [] : allocations) {
-      if (done.has(allocation.customerId)) continue;
-      const invoiceAllocs = (allocation.invoices || [])
-        .filter((item) => Number(item.amount) > 0)
-        .map((item) => ({
-          invoiceId: item.invoiceId,
-          amount: Number(item.amount),
-        }));
-      let result: { cashFlow?: { id: number; code: string } | null };
-      try {
-        result = await this.cashFlowsService.createCustomerPayment(
+    // Từ đây các bước ghi ngoài transaction (khóa phiếu, tạo phiếu thu, gắn
+    // cashFlowId) đã commit; lỗi giữa chừng thì ghi một dòng lịch sử "thất bại".
+    let stage: 'cashFlows' | 'finalize' = 'cashFlows';
+    try {
+      let cashFlowId = entry.cashFlowId || null;
+      if (sale && !entry.cashFlowId) {
+        const created = await this.cashFlowsService.createStandaloneCashReceipt(
           {
-            customerId: allocation.customerId,
-            totalAmount: Number(allocation.amount),
             branchId: entry.branchId,
+            amount: received,
             transDate: new Date(entry.occurredAt).toISOString(),
-            method: 'cash',
-            collectorUserId: userId,
-            description: entry.description || `Thu tiền mặt ${entry.code}`,
-            ...(invoiceAllocs.length
-              ? { allocateToInvoices: true, invoices: invoiceAllocs }
-              : {}),
-          } as any,
-          userId,
+            description: entry.description || `Thu bán đồ kho ${entry.code}`,
+            userId,
+          },
         );
-      } catch (error) {
-        throw new BadRequestException(
-          error instanceof Error ? error.message : 'Không lập được phiếu thu',
-        );
+        if (!created?.cashFlow?.id) {
+          throw new BadRequestException('Không tạo được phiếu thu');
+        }
+        cashFlowId = created.cashFlow.id;
+        posted.push({
+          id: created.cashFlow.id,
+          code: created.cashFlow.code,
+          customerId: 0,
+          amount: received,
+        });
+        await this.prisma.internalFinanceEntry.update({
+          where: { id },
+          data: {
+            status: INTERNAL_FINANCE_STATUS.POSTING,
+            cashFlowId,
+            sourceSnapshot: this.toJson({
+              ...snapshot,
+              method: 'cash',
+              postedCashFlows: posted,
+            }),
+          },
+        });
       }
-      const cashFlow = result?.cashFlow;
-      if (!cashFlow?.id) {
-        throw new BadRequestException('Không tạo được phiếu thu');
+      for (const allocation of sale ? [] : allocations) {
+        if (done.has(allocation.customerId)) continue;
+        const invoiceAllocs = (allocation.invoices || [])
+          .filter((item) => Number(item.amount) > 0)
+          .map((item) => ({
+            invoiceId: item.invoiceId,
+            amount: Number(item.amount),
+          }));
+        let result: { cashFlow?: { id: number; code: string } | null };
+        try {
+          result = await this.cashFlowsService.createCustomerPayment(
+            {
+              customerId: allocation.customerId,
+              totalAmount: Number(allocation.amount),
+              branchId: entry.branchId,
+              transDate: new Date(entry.occurredAt).toISOString(),
+              method: 'cash',
+              collectorUserId: userId,
+              description: entry.description || `Thu tiền mặt ${entry.code}`,
+              ...(invoiceAllocs.length
+                ? { allocateToInvoices: true, invoices: invoiceAllocs }
+                : {}),
+            } as any,
+            userId,
+          );
+        } catch (error) {
+          throw new BadRequestException(
+            error instanceof Error ? error.message : 'Không lập được phiếu thu',
+          );
+        }
+        const cashFlow = result?.cashFlow;
+        if (!cashFlow?.id) {
+          throw new BadRequestException('Không tạo được phiếu thu');
+        }
+        posted.push({
+          id: cashFlow.id,
+          code: cashFlow.code,
+          customerId: allocation.customerId,
+          amount: Number(allocation.amount),
+        });
+        done.add(allocation.customerId);
+        cashFlowId = cashFlowId || cashFlow.id;
+        await this.prisma.internalFinanceEntry.update({
+          where: { id },
+          data: {
+            status: INTERNAL_FINANCE_STATUS.POSTING,
+            cashFlowId,
+            sourceSnapshot: this.toJson({
+              ...snapshot,
+              method: 'cash',
+              postedCashFlows: posted,
+            }),
+          },
+        });
       }
-      posted.push({
-        id: cashFlow.id,
-        code: cashFlow.code,
-        customerId: allocation.customerId,
-        amount: Number(allocation.amount),
-      });
-      done.add(allocation.customerId);
-      cashFlowId = cashFlowId || cashFlow.id;
-      await this.prisma.internalFinanceEntry.update({
-        where: { id },
-        data: {
-          status: INTERNAL_FINANCE_STATUS.POSTING,
-          cashFlowId,
-          sourceSnapshot: this.toJson({
-            ...snapshot,
-            method: 'cash',
-            postedCashFlows: posted,
-          }),
-        },
-      });
-    }
 
-    // Tiền đã vào quỹ từ lúc kế toán kho xác nhận; phiếu xác nhận trước khi
-    // đổi cách ghi quỹ thì ghi bù tại đây (không ghi lần hai).
-    return this.prisma.$transaction(async (tx) => {
-      await this.syncWarehouseReceiptFund(tx, id, userId);
-      return tx.internalFinanceEntry.update({
-        where: { id },
-        data: {
-          status: INTERNAL_FINANCE_STATUS.POSTED,
-          posManagedAt: new Date(),
-          cashFlowId,
-          accountantReviewedBy: entry.accountantReviewedBy || userId,
-          accountantReviewedAt: entry.accountantReviewedAt || new Date(),
-          sourceSnapshot: this.toJson({
-            ...snapshot,
-            method: 'cash',
+      // Tiền đã vào quỹ từ lúc kế toán kho xác nhận; phiếu xác nhận trước khi
+      // đổi cách ghi quỹ thì ghi bù tại đây (không ghi lần hai).
+      stage = 'finalize';
+      return await this.prisma.$transaction(async (tx) => {
+        await this.syncWarehouseReceiptFund(tx, id, userId, actor);
+        const result = await tx.internalFinanceEntry.update({
+          where: { id },
+          data: {
+            status: INTERNAL_FINANCE_STATUS.POSTED,
+            posManagedAt: new Date(),
+            cashFlowId,
+            accountantReviewedBy: entry.accountantReviewedBy || userId,
+            accountantReviewedAt: entry.accountantReviewedAt || new Date(),
+            sourceSnapshot: this.toJson({
+              ...snapshot,
+              method: 'cash',
+              postedCashFlows: posted,
+            }),
+          },
+          include: this.warehouseInclude(),
+        });
+        await this.financeAudit.write(tx, {
+          action: 'FIN_ENTRY_POST',
+          ...this.entryAudit(entry, actor),
+          params: {
+            code: entry.code ?? `#${id}`,
+            cashFlowCodes:
+              posted
+                .map((item) => item.code)
+                .filter(Boolean)
+                .join(', ') || '—',
+          },
+          changes: this.financeAudit.diff(
+            FINANCE_AUDIT_ENTITY.ENTRY,
+            { status: entry.status },
+            { status: INTERNAL_FINANCE_STATUS.POSTED },
+          ),
+          snapshot: {
+            lines: posted.map((item) => ({
+              label: `Phiếu thu ${item.code || `#${item.id}`}`,
+              value: formatMoney(item.amount),
+            })),
+          },
+          metadata: {
+            receivedAmount: received,
             postedCashFlows: posted,
-          }),
-        },
-        include: this.warehouseInclude(),
+            sale,
+          },
+        });
+        return result;
       });
-    });
+    } catch (error) {
+      const newCashFlows = posted.slice(postedBefore);
+      // Lần gọi này không khóa phiếu và không tạo phiếu thu nào: không có gì
+      // mới để ghi lịch sử.
+      if (claimedNow || newCashFlows.length) {
+        const message =
+          error instanceof Error ? error.message : String(error ?? '');
+        try {
+          await this.financeAudit.write(this.prisma, {
+            action: 'FIN_ENTRY_POST_FAILED',
+            ...this.entryAudit(entry, actor),
+            params: {
+              code: entry.code ?? `#${id}`,
+              error: message.slice(0, 500) || 'Lỗi không xác định',
+            },
+            changes: claimedNow
+              ? this.financeAudit.diff(
+                  FINANCE_AUDIT_ENTITY.ENTRY,
+                  { status: entry.status },
+                  { status: INTERNAL_FINANCE_STATUS.POSTING },
+                )
+              : [],
+            snapshot: {
+              lines: posted.map((item) => ({
+                label: `Phiếu thu ${item.code || `#${item.id}`}`,
+                value: formatMoney(item.amount),
+              })),
+            },
+            metadata: {
+              partialPost: true,
+              stage,
+              receivedAmount: received,
+              postedCashFlows: posted,
+              newCashFlows,
+              sale,
+            },
+          });
+        } catch (auditError) {
+          // Không che lỗi gốc của thao tác lập phiếu thu.
+          this.logger.error(
+            `Không ghi được lịch sử lập phiếu thu dở dang #${id}: ${
+              auditError instanceof Error
+                ? auditError.message
+                : String(auditError)
+            }`,
+          );
+        }
+      }
+      throw error;
+    }
   }
 
   private warehouseReceiptFundKey(entryId: number) {
@@ -1655,21 +1834,27 @@ export class InternalFinanceService {
       );
     }
 
+    const reason = dto.reason?.trim() || DEFAULT_RECEIPT_CANCEL_REASON;
+    const actor = auditActor.user(userId);
     const cancelledCashFlows: Array<{ cashFlow: any; updated: any }> = [];
     const updated = await this.prisma.$transaction(async (tx) => {
+      const log: FinanceAuditEntry[] = [];
       cancelledCashFlows.push(
         ...(await this.cancelWarehouseReceiptCore(
           tx,
           entry,
           dto.cancelCashFlows,
           userId,
+          { reason, actor, log },
         )),
       );
-      return tx.internalFinanceEntry.update({
+      const result = await tx.internalFinanceEntry.update({
         where: { id },
         data: { status: INTERNAL_FINANCE_STATUS.CANCELLED },
         include: this.warehouseInclude(),
       });
+      await this.financeAudit.write(tx, log);
+      return result;
     });
 
     await this.logCancelledCashFlows(cancelledCashFlows, userId);
@@ -1690,11 +1875,16 @@ export class InternalFinanceService {
       .sort((a, b) => a - b);
   }
 
+  /**
+   * Lõi hủy phiếu tiền mặt kho (nút Hủy và hủy báo đơn): ghi người hủy, lúc
+   * hủy, lý do; dòng lịch sử đẩy vào `opts.log` để bên gọi ghi một lần.
+   */
   private async cancelWarehouseReceiptCore(
     tx: Prisma.TransactionClient,
     entry: any,
     cancelCashFlows: boolean,
     userId: number,
+    opts: { reason: string; actor: AuditActor; log: FinanceAuditEntry[] },
   ) {
     const cashFlowIds = this.receiptCashFlowIds(entry);
     const cancelled: Array<{ cashFlow: any; updated: any }> = [];
@@ -1706,19 +1896,34 @@ export class InternalFinanceService {
       }
     }
     // Giữ phiếu thu công nợ thì tiền vẫn ở quỹ; hủy kèm (hoặc chưa có phiếu thu) thì rút khỏi quỹ.
-    if (cancelCashFlows || !cashFlowIds.length) {
+    const fundReleased = cancelCashFlows || !cashFlowIds.length;
+    if (fundReleased) {
       await this.fundLedger.cancelBySource(
         tx,
         this.warehouseReceiptFundKey(entry.id),
         userId,
-        'Hủy phiếu tiền mặt kho',
+        opts.reason,
+        opts.actor,
       );
     }
+    // Dòng lịch sử lấy trạng thái trước khi hủy.
+    opts.log.push(
+      this.entryCancelLog(entry, opts.actor, opts.reason, {
+        cancelCashFlows,
+        cashFlowIds,
+        cancelledCashFlowIds: cancelCashFlows ? cashFlowIds : [],
+        fundReleased,
+      }),
+    );
+    const now = new Date();
     await tx.internalFinanceEntry.update({
       where: { id: entry.id },
       data: {
         status: INTERNAL_FINANCE_STATUS.CANCELLED,
-        posManagedAt: new Date(),
+        posManagedAt: now,
+        cancelReason: opts.reason,
+        cancelledAt: now,
+        cancelledBy: userId,
       },
     });
     return cancelled;
@@ -1798,6 +2003,14 @@ export class InternalFinanceService {
     const blocked = this.packingSlipCancelBlock(entries);
     if (blocked) throw new BadRequestException(blocked);
     const cancelled: Array<{ cashFlow: any; updated: any }> = [];
+    if (!entries.length) return cancelled;
+    const slip = await tx.packingSlip.findUnique({
+      where: { id: packingSlip.id },
+      select: { code: true },
+    });
+    const reason = `Hủy báo đơn ${slip?.code || `#${packingSlip.id}`}`;
+    const actor = auditActor.user(userId, 'packing-slip');
+    const log: FinanceAuditEntry[] = [];
     for (const entry of entries) {
       if (entry.direction === INTERNAL_FINANCE_DIRECTION.RECEIPT) {
         if (
@@ -1814,16 +2027,34 @@ export class InternalFinanceService {
             entry,
             Boolean(cancelCashFlows),
             userId,
+            { reason, actor, log },
           )),
         );
         continue;
       }
-      if (entry.weeklyBatchId) await this.fundLedger.detachFromBatch(tx, entry);
+      if (entry.weeklyBatchId)
+        await this.fundLedger.detachFromBatch(tx, entry, {
+          actor,
+          reason,
+          keepStatus: true,
+        });
+      log.push(
+        this.entryCancelLog(entry, actor, reason, {
+          packingSlipId: packingSlip.id,
+          weeklyBatchId: entry.weeklyBatchId ?? null,
+        }),
+      );
       await tx.internalFinanceEntry.update({
         where: { id: entry.id },
-        data: { status: INTERNAL_FINANCE_STATUS.CANCELLED },
+        data: {
+          status: INTERNAL_FINANCE_STATUS.CANCELLED,
+          cancelReason: reason,
+          cancelledAt: new Date(),
+          cancelledBy: userId,
+        },
       });
     }
+    await this.financeAudit.write(tx, log);
     return cancelled;
   }
 
@@ -1845,6 +2076,7 @@ export class InternalFinanceService {
       sourceSnapshot: dto.sourceSnapshot,
       attachments: dto.attachments,
       userId: user.id,
+      actor: auditActor.user(user),
     });
   }
 
@@ -1884,6 +2116,7 @@ export class InternalFinanceService {
       payerId: dto.payerId ?? user.id,
       attachments: dto.attachments,
       userId: user.id,
+      actor: auditActor.user(user),
       include: this.vehicleEntryInclude(),
     });
   }
@@ -1926,6 +2159,7 @@ export class InternalFinanceService {
       payerId: dto.payerId ?? user.id,
       attachments: dto.attachments,
       userId: user.id,
+      actor: auditActor.user(user),
       include: this.vehicleEntryInclude(),
     });
   }
@@ -2062,9 +2296,27 @@ export class InternalFinanceService {
         AND completed_at >= ${FUEL_ADVANCE_FROM}
         ${to ? Prisma.sql`AND completed_at < ${to}` : Prisma.empty}
         AND detail_snapshot->>'form' ILIKE ${FUEL_VOUCHER_FORM_HINT}`;
-    const advances = vouchers
-      .map((row) => fuelAdvanceFromVoucher(row))
-      .filter((row): row is FuelAdvanceIn => Boolean(row));
+    const manual = await this.prisma.fuelAdvanceEntry.findMany({
+      where: {
+        branchId: FUEL_ADVANCE_BRANCH_ID,
+        status: FUEL_ADVANCE_ENTRY_STATUS.ACTIVE,
+        ...(to ? { occurredAt: { lt: to } } : {}),
+      },
+    });
+    const manualCreators = await this.userNames(
+      manual.map((row) => row.createdBy),
+    );
+    const advances = [
+      ...vouchers
+        .map((row) => fuelAdvanceFromVoucher(row))
+        .filter((row): row is FuelAdvanceIn => Boolean(row)),
+      ...manual.map((row) =>
+        fuelAdvanceFromManual({
+          ...row,
+          creatorName: manualCreators.get(row.createdBy) ?? null,
+        }),
+      ),
+    ];
     const entries = await this.prisma.internalFinanceEntry.findMany({
       where: {
         AND: [
@@ -2094,6 +2346,118 @@ export class InternalFinanceService {
       creatorName: entry.creator?.name ?? null,
     }));
     return buildFuelAdvanceLedger(advances, usages, { from, to });
+  }
+
+  /**
+   * Khoản ứng xăng Kho HN đã đi tiền ngoài đơn PHIẾU CHI Lark (vd ứng trước khi
+   * POS có tính năng này): chỉ cộng vào tiền ứng, không ghi quỹ.
+   */
+  async createFuelAdvanceEntry(dto: CreateFuelAdvanceEntryDto, user: any) {
+    await this.vehicles.assertPermission(
+      user,
+      FUEL_ADVANCE_BRANCH_ID,
+      'manage',
+    );
+    const occurredAt = fundDayStart(dto.occurredAt);
+    if (occurredAt.getTime() < FUEL_ADVANCE_FROM.getTime())
+      throw new BadRequestException(
+        `Tiền ứng xăng tính từ ${fundDateKey(FUEL_ADVANCE_FROM)
+          .split('-')
+          .reverse()
+          .join('/')}: chọn ngày từ mốc này`,
+      );
+    return this.prisma.$transaction(async (tx) => {
+      const created = await tx.fuelAdvanceEntry.create({
+        data: {
+          branchId: FUEL_ADVANCE_BRANCH_ID,
+          occurredAt,
+          amount: dto.amount,
+          note: dto.note?.trim() || null,
+          createdBy: user.id,
+        },
+      });
+      await this.financeAudit.write(tx, {
+        action: 'FIN_FUEL_ADVANCE_CREATE',
+        entityType: FINANCE_AUDIT_ENTITY.FUEL_ADVANCE,
+        entityId: created?.id ?? 0,
+        branchId: FUEL_ADVANCE_BRANCH_ID,
+        actor: auditActor.user(user),
+        params: { amount: Number(dto.amount), date: formatDate(occurredAt) },
+        snapshot: {
+          lines: [
+            { label: 'Số tiền', value: formatMoney(dto.amount) },
+            { label: 'Ngày', value: formatDate(occurredAt) },
+            ...(created?.note
+              ? [{ label: 'Ghi chú', value: String(created.note) }]
+              : []),
+          ],
+        },
+      });
+      return created;
+    });
+  }
+
+  async cancelFuelAdvanceEntry(id: number, reason: string, user: any) {
+    await this.vehicles.assertPermission(
+      user,
+      FUEL_ADVANCE_BRANCH_ID,
+      'manage',
+    );
+    const trimmed = this.requireCancelReason(reason);
+    return this.prisma.$transaction(async (tx) => {
+      const entry = await tx.fuelAdvanceEntry.findUnique({
+        where: { id },
+      });
+      if (!entry) throw new NotFoundException('Không tìm thấy khoản ứng');
+      if (entry.status === FUEL_ADVANCE_ENTRY_STATUS.CANCELLED)
+        throw new BadRequestException('Khoản ứng đã hủy');
+      const updated = await tx.fuelAdvanceEntry.update({
+        where: { id },
+        data: {
+          status: FUEL_ADVANCE_ENTRY_STATUS.CANCELLED,
+          cancelReason: trimmed,
+          cancelledBy: user.id,
+          cancelledAt: new Date(),
+        },
+      });
+      await this.financeAudit.write(tx, {
+        action: 'FIN_FUEL_ADVANCE_CANCEL',
+        entityType: FINANCE_AUDIT_ENTITY.FUEL_ADVANCE,
+        entityId: id,
+        branchId: entry.branchId ?? FUEL_ADVANCE_BRANCH_ID,
+        actor: auditActor.user(user),
+        params: {
+          amount: Number(entry.amount),
+          reasonSuffix: reasonSuffix(trimmed),
+        },
+        changes: this.financeAudit.diff(
+          FINANCE_AUDIT_ENTITY.FUEL_ADVANCE,
+          { status: entry.status },
+          { status: FUEL_ADVANCE_ENTRY_STATUS.CANCELLED },
+        ),
+        snapshot: {
+          lines: [
+            { label: 'Số tiền', value: formatMoney(entry.amount) },
+            { label: 'Ngày', value: formatDate(entry.occurredAt) },
+            ...(entry.note
+              ? [{ label: 'Ghi chú', value: String(entry.note) }]
+              : []),
+          ],
+        },
+      });
+      return updated;
+    });
+  }
+
+  /** Tên user theo id (khoản ứng nhập tay không có quan hệ tới bảng user). */
+  private async userNames(ids: number[]) {
+    const unique = [...new Set(ids)];
+    if (!unique.length) return new Map<number, string>();
+    const users = await this.prisma.user.findMany({
+      where: { id: { in: unique } },
+      select: { id: true, name: true },
+    });
+    return new Map(users.map((row) => [row.id, row.name]));
   }
 
   async updateVehicleEntry(id: number, dto: UpdateVehicleEntryDto, user: any) {
@@ -2137,8 +2501,12 @@ export class InternalFinanceService {
           ? fuelLiters(amount, unitPrice, dto.liters)
           : undefined;
       const snapshot = this.snapshotOf(entry);
+      // Chứng từ bị bỏ giữ lại dòng (removedAt), không xóa cứng.
+      const files = dto.attachments
+        ? await syncEntryAttachments(tx, id, dto.attachments, user.id)
+        : null;
 
-      return tx.internalFinanceEntry.update({
+      const updated = await tx.internalFinanceEntry.update({
         where: { id },
         data: {
           amount: dto.amount,
@@ -2195,26 +2563,16 @@ export class InternalFinanceService {
                 evidenceStatus: dto.attachments.length
                   ? INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE
                   : INTERNAL_FINANCE_EVIDENCE_STATUS.MISSING,
-                attachments: {
-                  deleteMany: {},
-                  ...(dto.attachments.length
-                    ? {
-                        create: dto.attachments.map((file) => ({
-                          kind: file.kind || 'EVIDENCE',
-                          fileUrl: file.fileUrl,
-                          fileName: file.fileName,
-                          fileType: file.fileType,
-                          fileSize: file.fileSize,
-                          createdBy: user.id,
-                        })),
-                      }
-                    : {}),
-                },
               }
             : {}),
         },
         include: this.vehicleEntryInclude(),
       });
+      await this.financeAudit.write(
+        tx,
+        this.entryUpdateLog(entry, updated, auditActor.user(user), { files }),
+      );
+      return updated;
     });
   }
 
@@ -2319,18 +2677,17 @@ export class InternalFinanceService {
     }
 
     return this.prisma.$transaction(async (tx) => {
-      await tx.internalFinanceAttachment.createMany({
-        data: dto.attachments.map((file) => ({
-          entryId: id,
-          kind: file.kind || 'EVIDENCE',
-          fileUrl: file.fileUrl,
-          fileName: file.fileName,
-          fileType: file.fileType,
-          fileSize: file.fileSize,
-          createdBy: userId,
-        })),
-      });
-      return tx.internalFinanceEntry.update({
+      const data = dto.attachments.map((file) => ({
+        entryId: id,
+        kind: file.kind || 'EVIDENCE',
+        fileUrl: file.fileUrl,
+        fileName: file.fileName,
+        fileType: file.fileType,
+        fileSize: file.fileSize,
+        createdBy: userId,
+      }));
+      await tx.internalFinanceAttachment.createMany({ data });
+      const updated = await tx.internalFinanceEntry.update({
         where: { id },
         data: {
           evidenceStatus: INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE,
@@ -2339,6 +2696,24 @@ export class InternalFinanceService {
         },
         include: this.entryInclude(),
       });
+      await this.financeAudit.write(tx, {
+        action: 'FIN_ENTRY_ATTACHMENTS_CHANGE',
+        ...this.entryAudit(entry, auditActor.user(userId)),
+        params: {
+          code: entry.code ?? `#${id}`,
+          added: data.length,
+          removed: 0,
+        },
+        changes: [
+          ...this.fileChanges({ added: data }),
+          ...this.financeAudit.diff(
+            FINANCE_AUDIT_ENTITY.ENTRY,
+            { evidenceStatus: entry.evidenceStatus ?? null },
+            { evidenceStatus: INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE },
+          ),
+        ],
+      });
+      return updated;
     });
   }
 
@@ -2616,10 +2991,10 @@ export class InternalFinanceService {
         cashIssuer: { select: { id: true, name: true } },
         payer: { select: { id: true, name: true } },
         vehicle: { select: { id: true, label: true, plate: true } },
-        attachments: true,
-        invoiceLinks: {
+        attachments: activeAttachments,
+        invoiceLinks: activeInvoiceLinks({
           include: { invoice: { select: { id: true, code: true } } },
-        },
+        }),
       },
     };
     const batch = await this.prisma.internalFinanceWeeklyBatch.findUnique({
@@ -2790,23 +3165,16 @@ export class InternalFinanceService {
               : []),
           ],
         },
-        select: { id: true, amount: true },
+        select: {
+          id: true,
+          code: true,
+          amount: true,
+          status: true,
+          branchId: true,
+        },
       });
       if (entries.length === 0) {
         if (existing && !options.requireBothChecks) return existing;
-        if (existing) {
-          // Không còn phiếu đủ điều kiện: trả các phiếu cũ về trước khi gom.
-          await tx.internalFinanceEntry.updateMany({
-            where: { weeklyBatchId: existing.id },
-            data: {
-              weeklyBatchId: null,
-              status: INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
-            },
-          });
-          await tx.internalFinanceWeeklyBatch.delete({
-            where: { id: existing.id },
-          });
-        }
         const reason = options.requireBothChecks
           ? await this.explainNoEligibleEntries(tx, {
               branchId: dto.branchId,
@@ -2831,13 +3199,17 @@ export class InternalFinanceService {
         INTERNAL_FINANCE_BRANCH_CODES[dto.branchId] || `B${dto.branchId}`
       }-${isoWeek.year}-W${String(isoWeek.week).padStart(2, '0')}-${startKey}-${fundDateKey(weekEnd)}`;
 
+      // Phiếu thêm vào / bỏ ra so với batch đang có (tính trước khi `set`).
+      const keep = new Set(entries.map((entry) => entry.id));
+      const before = new Set((existing?.entries ?? []).map((row) => row.id));
+      const addedEntries = entries.filter((entry) => !before.has(entry.id));
+      const droppedEntries = (existing?.entries ?? []).filter(
+        (entry) => !keep.has(entry.id),
+      );
       if (existing) {
         // Gom lại batch chưa gửi: phiếu bị bỏ ra (vd bỏ tích gộp phiếu sót)
         // trả về trạng thái chờ gom, không kẹt ở "đã gom tuần".
-        const keep = new Set(entries.map((entry) => entry.id));
-        const dropped = existing.entries
-          .filter((entry) => !keep.has(entry.id))
-          .map((entry) => entry.id);
+        const dropped = droppedEntries.map((entry) => entry.id);
         if (dropped.length)
           await tx.internalFinanceEntry.updateMany({
             where: {
@@ -2885,6 +3257,126 @@ export class InternalFinanceService {
           posManagedAt: new Date(),
         },
       });
+
+      const actor = auditActor.user(userId);
+      const batchRef = {
+        id: batch?.id ?? existing?.id ?? 0,
+        code: batch?.code ?? existing?.code ?? code,
+      };
+      const batchBase = {
+        entityType: FINANCE_AUDIT_ENTITY.BATCH,
+        entityId: batchRef.id,
+        entityCode: batchRef.code,
+        branchId: dto.branchId,
+        actor,
+      };
+      const batchChanges = existing
+        ? this.financeAudit.diff(
+            FINANCE_AUDIT_ENTITY.BATCH,
+            { status: existing.status, totalAmount: existing.totalAmount },
+            { status: INTERNAL_FINANCE_WEEKLY_STATUS.READY, totalAmount },
+          )
+        : [];
+      // Phiếu vẫn trong batch nhưng đổi trạng thái về "đã gom tuần" (vd bị bỏ
+      // tick rồi tick lại): ghi riêng từng phiếu.
+      const restatused = entries.filter(
+        (entry) =>
+          before.has(entry.id) &&
+          entry.status !== INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL,
+      );
+      // Gom lại mà không đổi gì (cùng phiếu, cùng tổng, cùng trạng thái): không
+      // ghi dòng "Gom lại tuần".
+      const unchanged =
+        !addedEntries.length &&
+        !droppedEntries.length &&
+        !restatused.length &&
+        !batchChanges.length;
+      const readyLabel = entryStatusLabel(
+        INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL,
+      );
+      await this.financeAudit.write(tx, [
+        ...(existing
+          ? unchanged
+            ? []
+            : [
+                {
+                  action: 'FIN_BATCH_REPREPARE' as const,
+                  ...batchBase,
+                  params: {
+                    batchCode: batchRef.code,
+                    added: addedEntries.length,
+                    dropped: droppedEntries.length,
+                    totalAmount,
+                  },
+                  changes: batchChanges,
+                  metadata: {
+                    addedEntryIds: addedEntries.map((entry) => entry.id),
+                    droppedEntryIds: droppedEntries.map((entry) => entry.id),
+                    restatusedEntryIds: restatused.map((entry) => entry.id),
+                    entryCount: entries.length,
+                  },
+                },
+              ]
+          : [
+              {
+                action: 'FIN_BATCH_PREPARE' as const,
+                ...batchBase,
+                params: {
+                  batchCode: batchRef.code,
+                  count: entries.length,
+                  totalAmount,
+                },
+                snapshot: {
+                  lines: [
+                    {
+                      label: 'Tuần',
+                      value: `${formatDate(weekStart)} – ${formatDate(weekEnd)}`,
+                    },
+                    { label: 'Số phiếu', value: String(entries.length) },
+                    { label: 'Tổng tiền', value: formatMoney(totalAmount) },
+                  ],
+                },
+                metadata: { entryIds: entries.map((entry) => entry.id) },
+              },
+            ]),
+        ...restatused.map((entry) => ({
+          action: 'FIN_ENTRY_WEEKLY_STATUS' as const,
+          ...this.entryAudit(entry, actor),
+          params: {
+            code: entry.code,
+            batchCode: batchRef.code,
+            statusLabel: readyLabel,
+          },
+          changes: this.financeAudit.diff(
+            FINANCE_AUDIT_ENTITY.ENTRY,
+            { status: entry.status },
+            { status: INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL },
+          ),
+          metadata: { batchId: batchRef.id },
+        })),
+        ...addedEntries.map((entry) =>
+          entryBatchAddAudit({
+            entry,
+            batch: batchRef,
+            actor,
+            statusBefore: entry.status,
+            statusAfter: INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL,
+          }),
+        ),
+        ...droppedEntries.map((entry) =>
+          entryBatchRemoveAudit({
+            entry,
+            batch: batchRef,
+            actor,
+            reason: 'Gom lại tuần: phiếu không còn thuộc tuần này',
+            statusBefore: entry.status,
+            statusAfter:
+              entry.status === INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL
+                ? INTERNAL_FINANCE_STATUS.MANAGER_APPROVED
+                : entry.status,
+          }),
+        ),
+      ]);
 
       return batch;
     });
@@ -3092,6 +3584,33 @@ export class InternalFinanceService {
       );
     }
 
+    const actor = auditActor.user(userId);
+    const batchBase = {
+      entityType: FINANCE_AUDIT_ENTITY.BATCH,
+      entityId: batch.id,
+      entityCode: batch.code,
+      branchId: batch.branchId,
+      actor,
+    };
+    // Lịch sử đổi trạng thái entry trong Approval tuần (dùng cho gửi và hoàn tác).
+    const weeklyStatusRows = (
+      entries: Array<{ id: number; code: string; branchId: number }>,
+      from: string,
+      to: string,
+    ) => {
+      const statusLabel = entryStatusLabel(to);
+      return entries.map((entry) => ({
+        action: 'FIN_ENTRY_WEEKLY_STATUS' as const,
+        ...this.entryAudit(entry, actor),
+        params: { code: entry.code, batchCode: batch.code, statusLabel },
+        changes: this.financeAudit.diff(
+          FINANCE_AUDIT_ENTITY.ENTRY,
+          { status: from },
+          { status: to },
+        ),
+        metadata: { batchId: batch.id },
+      }));
+    };
     await this.prisma.$transaction(async (tx) => {
       await this.internalFund.lockBranch(tx, [batch.branchId]);
       // Batch gom trước khi đổi luồng xăng: phải gom lại để phiếu xăng rơi ra.
@@ -3110,10 +3629,45 @@ export class InternalFinanceService {
       });
       if (claimed.count !== 1)
         throw new ConflictException('Batch đã thay đổi hoặc đang gửi Approval');
+      const submitted =
+        (await tx.internalFinanceEntry.findMany({
+          where: {
+            weeklyBatchId: batch.id,
+            status: 'READY_FOR_WEEKLY_APPROVAL',
+          },
+          select: { id: true, code: true, branchId: true },
+        })) ?? [];
       await tx.internalFinanceEntry.updateMany({
         where: { weeklyBatchId: batch.id, status: 'READY_FOR_WEEKLY_APPROVAL' },
         data: { status: 'IN_WEEKLY_APPROVAL' },
       });
+      // Lịch sử gửi duyệt commit cùng lúc đổi trạng thái (trước khi gọi Lark):
+      // sự kiện Lark tới sớm vẫn nằm sau dòng này. Mã Approval chưa có: dòng
+      // FIN_APPROVAL_CREATE cùng opId nối đơn với batch.
+      await this.financeAudit.write(tx, [
+        {
+          action: 'FIN_BATCH_SUBMIT',
+          ...batchBase,
+          params: {
+            batchCode: batch.code,
+            totalAmount: Number(batch.totalAmount),
+          },
+          changes: this.financeAudit.diff(
+            FINANCE_AUDIT_ENTITY.BATCH,
+            { status: batch.status },
+            { status: INTERNAL_FINANCE_WEEKLY_STATUS.IN_APPROVAL },
+          ),
+          metadata: {
+            kind,
+            entryIds: submitted.map((entry) => entry.id),
+          },
+        },
+        ...weeklyStatusRows(
+          submitted,
+          INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL,
+          INTERNAL_FINANCE_STATUS.IN_WEEKLY_APPROVAL,
+        ),
+      ]);
     });
 
     try {
@@ -3129,6 +3683,8 @@ export class InternalFinanceService {
           form,
         },
         userId,
+        // Cùng opId: FIN_APPROVAL_CREATE đi chung nhóm với FIN_BATCH_SUBMIT.
+        actor,
       );
 
       await this.prisma.internalFinanceWeeklyBatch.update({
@@ -3142,6 +3698,12 @@ export class InternalFinanceService {
     } catch (error) {
       await this.prisma.$transaction(async (tx) => {
         await this.internalFund.lockBranch(tx, [batch.branchId]);
+        // Phiếu sắp trả về: đọc mới (trong lúc gọi Lark có thể đã rời batch).
+        const reverting =
+          (await tx.internalFinanceEntry.findMany({
+            where: { weeklyBatchId: batch.id, status: 'IN_WEEKLY_APPROVAL' },
+            select: { id: true, code: true, branchId: true },
+          })) ?? [];
         const reset = await tx.internalFinanceWeeklyBatch.updateMany({
           where: {
             id: batch.id,
@@ -3150,11 +3712,41 @@ export class InternalFinanceService {
           },
           data: { status: 'READY' },
         });
-        if (reset.count === 1)
+        const didReset = reset.count === 1;
+        if (didReset)
           await tx.internalFinanceEntry.updateMany({
             where: { weeklyBatchId: batch.id, status: 'IN_WEEKLY_APPROVAL' },
             data: { status: 'READY_FOR_WEEKLY_APPROVAL' },
           });
+        // Không trả về được (sự kiện Lark / hủy đã đổi batch): dòng của thao tác
+        // đó đã ghi trạng thái, ở đây chỉ ghi lỗi.
+        await this.financeAudit.write(tx, [
+          {
+            action: 'FIN_BATCH_SUBMIT_FAILED',
+            ...batchBase,
+            params: {
+              batchCode: batch.code,
+              error: String(
+                error instanceof Error ? error.message : error || 'Lỗi',
+              ).slice(0, 500),
+            },
+            changes: didReset
+              ? this.financeAudit.diff(
+                  FINANCE_AUDIT_ENTITY.BATCH,
+                  { status: INTERNAL_FINANCE_WEEKLY_STATUS.IN_APPROVAL },
+                  { status: INTERNAL_FINANCE_WEEKLY_STATUS.READY },
+                )
+              : [],
+            metadata: { reset: didReset },
+          },
+          ...(didReset
+            ? weeklyStatusRows(
+                reverting,
+                INTERNAL_FINANCE_STATUS.IN_WEEKLY_APPROVAL,
+                INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL,
+              )
+            : []),
+        ]);
       });
       throw error;
     }
@@ -3261,7 +3853,13 @@ export class InternalFinanceService {
             ],
           },
         },
-        select: { id: true },
+        select: {
+          id: true,
+          code: true,
+          amount: true,
+          status: true,
+          branchId: true,
+        },
       });
       if (!eligible.length) {
         throw new BadRequestException(
@@ -3285,6 +3883,45 @@ export class InternalFinanceService {
         where: { id: batch.id },
         data: { totalAmount: sum._sum.amount || 0 },
       });
+      const actor = auditActor.user(user);
+      const batchRef = { id: batch.id, code: batch.code };
+      await this.financeAudit.write(tx, [
+        {
+          action: 'FIN_BATCH_ADD_ENTRIES',
+          entityType: FINANCE_AUDIT_ENTITY.BATCH,
+          entityId: batch.id,
+          entityCode: batch.code,
+          branchId: batch.branchId,
+          actor,
+          params: {
+            batchCode: batch.code,
+            count: eligible.length,
+            totalAmount: eligible.reduce(
+              (total, row) => total + Number(row.amount ?? 0),
+              0,
+            ),
+          },
+          changes: this.financeAudit.diff(
+            FINANCE_AUDIT_ENTITY.BATCH,
+            { totalAmount: batch.totalAmount ?? null },
+            { totalAmount: sum._sum.amount || 0 },
+          ),
+          metadata: {
+            entryIds: added,
+            skippedIds: ids.filter((id) => !added.includes(id)),
+          },
+        },
+        ...eligible.map((entry) =>
+          entryBatchAddAudit({
+            entry,
+            batch: batchRef,
+            actor,
+            statusBefore: entry.status,
+            statusAfter: INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL,
+            metadata: { carryOver: true },
+          }),
+        ),
+      ]);
       return {
         added: added.length,
         skipped: ids.filter((id) => !added.includes(id)).length,
@@ -3294,7 +3931,8 @@ export class InternalFinanceService {
 
   /**
    * Bỏ phiếu khỏi batch chưa gửi Lark (thêm nhầm): phiếu giữ nguyên hai tick,
-   * trở về chờ gom; batch tính lại tổng tiền, hết phiếu thì xóa batch.
+   * trở về chờ gom; batch tính lại tổng tiền, hết phiếu thì hủy batch (giữ
+   * lại, trạng thái Đã hủy).
    */
   async removeWeeklyBatchEntries(
     batchId: number,
@@ -3323,7 +3961,19 @@ export class InternalFinanceService {
         );
       }
       const where = { id: { in: entryIds }, weeklyBatchId: batch.id };
-      const removed = await tx.internalFinanceEntry.count({ where });
+      const targets = await tx.internalFinanceEntry.findMany({
+        where,
+        select: {
+          id: true,
+          code: true,
+          amount: true,
+          status: true,
+          branchId: true,
+          managerReviewedAt: true,
+          accountantReviewedAt: true,
+        },
+      });
+      const removed = targets.length;
       if (!removed) {
         throw new BadRequestException('Phiếu không nằm trong batch này');
       }
@@ -3350,15 +4000,116 @@ export class InternalFinanceService {
         _sum: { amount: true },
         _count: { _all: true },
       });
-      if (!rest._count._all) {
-        await tx.internalFinanceWeeklyBatch.delete({ where: { id: batch.id } });
-        return { removed, batchDeleted: true };
+      const batchCancelled = !rest._count._all;
+      const remainingTotal = Number(rest._sum.amount || 0);
+      // Hết phiếu: hủy batch (giữ lại, trạng thái Đã hủy), không xóa.
+      if (batchCancelled) {
+        await tx.internalFinanceWeeklyBatch.update({
+          where: { id: batch.id },
+          data: {
+            status: INTERNAL_FINANCE_WEEKLY_STATUS.CANCELLED,
+            cancelledAt: new Date(),
+            cancelledBy: user.id,
+            cancelReason: EMPTIED_BATCH_CANCEL_REASON,
+            cancelledEntryIds: targets.map((entry) => entry.id),
+          },
+        });
+      } else {
+        await tx.internalFinanceWeeklyBatch.update({
+          where: { id: batch.id },
+          data: { totalAmount: rest._sum.amount || 0 },
+        });
       }
-      await tx.internalFinanceWeeklyBatch.update({
-        where: { id: batch.id },
-        data: { totalAmount: rest._sum.amount || 0 },
-      });
-      return { removed, batchDeleted: false };
+
+      const actor = auditActor.user(user);
+      const batchRef = { id: batch.id, code: batch.code };
+      const batchBase = {
+        entityType: FINANCE_AUDIT_ENTITY.BATCH,
+        entityId: batch.id,
+        entityCode: batch.code,
+        branchId: batch.branchId,
+        actor,
+      };
+      await this.financeAudit.write(tx, [
+        {
+          action: 'FIN_BATCH_REMOVE_ENTRIES',
+          ...batchBase,
+          params: {
+            batchCode: batch.code,
+            count: removed,
+            totalAmount: targets.reduce(
+              (total, row) => total + Number(row.amount ?? 0),
+              0,
+            ),
+          },
+          changes: batchCancelled
+            ? []
+            : this.financeAudit.diff(
+                FINANCE_AUDIT_ENTITY.BATCH,
+                { totalAmount: batch.totalAmount ?? null },
+                { totalAmount: remainingTotal },
+              ),
+          metadata: {
+            entryIds: targets.map((entry) => entry.id),
+            remainingTotal,
+            batchCancelled,
+          },
+        },
+        ...(batchCancelled
+          ? [
+              {
+                action: 'FIN_BATCH_CANCEL' as const,
+                ...batchBase,
+                params: {
+                  batchCode: batch.code,
+                  reasonSuffix: reasonSuffix(EMPTIED_BATCH_CANCEL_REASON),
+                },
+                changes: this.financeAudit.diff(
+                  FINANCE_AUDIT_ENTITY.BATCH,
+                  {
+                    status: batch.status,
+                    cancelReason: batch.cancelReason ?? null,
+                  },
+                  {
+                    status: INTERNAL_FINANCE_WEEKLY_STATUS.CANCELLED,
+                    cancelReason: EMPTIED_BATCH_CANCEL_REASON,
+                  },
+                ),
+                snapshot: {
+                  lines: [
+                    { label: 'Số phiếu lúc hủy', value: String(removed) },
+                    {
+                      label: 'Tổng tiền',
+                      value: formatMoney(batch.totalAmount),
+                    },
+                  ],
+                },
+                metadata: {
+                  cancelledEntryIds: targets.map((entry) => entry.id),
+                },
+              },
+            ]
+          : []),
+        ...targets.map((entry) =>
+          entryBatchRemoveAudit({
+            entry,
+            batch: batchRef,
+            actor,
+            statusBefore: entry.status,
+            statusAfter:
+              entry.managerReviewedAt && entry.accountantReviewedAt
+                ? INTERNAL_FINANCE_STATUS.MANAGER_APPROVED
+                : INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
+            metadata: { batchCancelled },
+          }),
+        ),
+      ]);
+      // batchDeleted giữ cho giao diện cũ (cùng giá trị batchCancelled).
+      return {
+        removed,
+        batchCancelled,
+        batchDeleted: batchCancelled,
+      };
     });
   }
 
@@ -3403,10 +4154,16 @@ export class InternalFinanceService {
         );
       }
 
-      const released = await cancelWeeklyBatchInTx(tx, batch.id, {
-        cancelledBy: user.id,
-        reason: trimmed,
-      });
+      const released = await cancelWeeklyBatchInTx(
+        tx,
+        batch.id,
+        {
+          cancelledBy: user.id,
+          reason: trimmed,
+          actor: auditActor.user(user),
+        },
+        this.financeAudit,
+      );
       return { id: batch.id, code: batch.code, released };
     });
   }
@@ -3556,19 +4313,8 @@ export class InternalFinanceService {
           'Phiếu đang nằm trong Approval tuần đã gửi duyệt, không sửa được',
         );
       const files = dto.attachments || [];
-      await tx.internalFinanceAttachment.deleteMany({ where: { entryId: id } });
-      if (files.length)
-        await tx.internalFinanceAttachment.createMany({
-          data: files.map((file) => ({
-            entryId: id,
-            kind: file.kind || 'EVIDENCE',
-            fileUrl: file.fileUrl,
-            fileName: file.fileName,
-            fileType: file.fileType,
-            fileSize: file.fileSize,
-            createdBy: user.id,
-          })),
-        });
+      // File bị bỏ giữ lại dòng (removedAt), không xóa cứng.
+      const synced = await syncEntryAttachments(tx, id, files, user.id);
       await tx.internalFinanceReview.create({
         data: {
           entryId: id,
@@ -3578,15 +4324,37 @@ export class InternalFinanceService {
           reviewerId: user.id,
         },
       });
-      return tx.internalFinanceEntry.update({
+      const evidenceStatus = files.length
+        ? INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE
+        : INTERNAL_FINANCE_EVIDENCE_STATUS.MISSING;
+      const updated = await tx.internalFinanceEntry.update({
         where: { id },
-        data: {
-          evidenceStatus: files.length
-            ? INTERNAL_FINANCE_EVIDENCE_STATUS.COMPLETE
-            : INTERNAL_FINANCE_EVIDENCE_STATUS.MISSING,
-        },
+        data: { evidenceStatus },
         include: this.warehouseExpenseInclude(),
       });
+      // Ghi lịch sử khi có file thêm / gỡ HOẶC trạng thái chứng từ đổi (lưu
+      // lại cùng danh sách vẫn có thể đổi Thiếu ↔ Đủ chứng từ).
+      const changes = [
+        ...this.fileChanges(synced),
+        ...this.financeAudit.diff(
+          FINANCE_AUDIT_ENTITY.ENTRY,
+          { evidenceStatus: entry.evidenceStatus ?? null },
+          { evidenceStatus },
+        ),
+      ];
+      if (changes.length)
+        await this.financeAudit.write(tx, {
+          action: 'FIN_ENTRY_ATTACHMENTS_CHANGE',
+          ...this.entryAudit(entry, auditActor.user(user)),
+          params: {
+            code: entry.code ?? `#${id}`,
+            added: synced.added.length,
+            removed: synced.removed.length,
+          },
+          changes,
+          metadata: this.removedFilesMeta(synced.removed),
+        });
+      return updated;
     });
   }
 
@@ -3601,6 +4369,9 @@ export class InternalFinanceService {
     tx: Prisma.TransactionClient,
     entry: {
       id: number;
+      code?: string | null;
+      category?: string | null;
+      branchId?: number | null;
       status: string;
       cashIssued: boolean;
       cashFlowId: number | null;
@@ -3624,11 +4395,17 @@ export class InternalFinanceService {
         'Phiếu đang nằm trong Approval tuần đã gửi duyệt, không thể hủy',
       );
     }
+    const actor = auditActor.user(user);
     if (entry.weeklyBatchId) {
-      await this.fundLedger.detachFromBatch(tx, entry);
+      // Trạng thái phiếu đặt ngay bên dưới: không để sổ quỹ đổi trạng thái.
+      await this.fundLedger.detachFromBatch(tx, entry, {
+        actor,
+        reason: `Hủy phiếu ${entry.code || `#${entry.id}`}${reasonSuffix(reason)}`,
+        keepStatus: true,
+      });
     }
     const now = new Date();
-    await tx.internalFinanceReview.create({
+    const review = await tx.internalFinanceReview.create({
       data: {
         entryId: entry.id,
         role: INTERNAL_FINANCE_REVIEW_ROLE.MANAGER,
@@ -3637,7 +4414,11 @@ export class InternalFinanceService {
         reviewerId: user.id,
       },
     });
-    return tx.internalFinanceEntry.update({
+    const log = this.entryCancelLog(entry, actor, reason, {
+      reviewId: review?.id ?? null,
+      weeklyBatchId: entry.weeklyBatchId ?? null,
+    });
+    const updated = await tx.internalFinanceEntry.update({
       where: { id: entry.id },
       data: {
         status: INTERNAL_FINANCE_STATUS.CANCELLED,
@@ -3648,6 +4429,8 @@ export class InternalFinanceService {
       },
       include,
     });
+    await this.financeAudit.write(tx, log);
+    return updated;
   }
 
   async updateCashIssued(entryId: number, cashIssued: boolean, userId: number) {
@@ -3677,6 +4460,8 @@ export class InternalFinanceService {
     const updated: any[] = [];
     const skipped: Array<{ id: number; code: string; reason: string }> = [];
     let alreadyChecked = 0;
+    // Mỗi phiếu một dòng lịch sử, chung mã thao tác.
+    const opId = newOpId();
     for (const id of ids) {
       const entry = byId.get(id);
       if (!entry) {
@@ -3694,10 +4479,15 @@ export class InternalFinanceService {
       }
       try {
         updated.push(
-          await this.checkWarehouseExpense(id, user, {
-            role: dto.role,
-            checked: true,
-          }),
+          await this.checkWarehouseExpense(
+            id,
+            user,
+            {
+              role: dto.role,
+              checked: true,
+            },
+            opId,
+          ),
         );
       } catch (error: any) {
         skipped.push({
@@ -3710,18 +4500,21 @@ export class InternalFinanceService {
     return { updated, skipped, alreadyChecked };
   }
 
+  /** `opId`: tick hàng loạt dùng chung một mã thao tác cho lịch sử. */
   async checkWarehouseExpense(
     entryId: number,
     user: any,
     dto: CheckWarehouseExpenseDto,
+    opId?: string,
   ) {
     const hint = await this.prisma.internalFinanceEntry.findUnique({
       where: { id: entryId },
       select: { branchId: true },
     });
     if (!hint) throw new NotFoundException('Không tìm thấy khoản chi');
+    const actor = auditActor.user(user, 'http', opId);
     if (hint.branchId === VPSG_BRANCH_ID)
-      return this.reviewVpsgExpense(entryId, user, dto);
+      return this.reviewVpsgExpense(entryId, user, dto, actor);
     if (!this.isWarehouseBranch(hint.branchId)) {
       throw new BadRequestException(
         'Tick kiểm tra chỉ áp dụng cho phiếu chi kho',
@@ -3778,9 +4571,15 @@ export class InternalFinanceService {
           ? now
           : null;
       const both = Boolean(managerAt && accountantAt);
+      const roleLabel = reviewRoleLabel(dto.role);
+      const code = entry.code || `#${entryId}`;
       // Bỏ tick khi phiếu đã nằm trong batch chưa gửi: rút khỏi batch.
       if (!both && entry.weeklyBatchId) {
-        await this.fundLedger.detachFromBatch(tx, entry);
+        await this.fundLedger.detachFromBatch(tx, entry, {
+          actor,
+          reason: `Bỏ tick ${roleLabel} phiếu ${code}`,
+          keepStatus: true,
+        });
       }
       await tx.internalFinanceReview.create({
         data: {
@@ -3794,7 +4593,16 @@ export class InternalFinanceService {
           reviewerId: user.id,
         },
       });
-      return tx.internalFinanceEntry.update({
+      const status = both
+        ? entry.weeklyBatchId
+          ? INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL
+          : INTERNAL_FINANCE_STATUS.MANAGER_APPROVED
+        : INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT;
+      const tickBefore = manager
+        ? entry.managerReviewedAt
+        : entry.accountantReviewedAt;
+      const statusBefore = entry.status;
+      const updated = await tx.internalFinanceEntry.update({
         where: { id: entryId },
         data: {
           posManagedAt: now,
@@ -3807,14 +4615,22 @@ export class InternalFinanceService {
                 accountantReviewedBy: dto.checked ? user.id : null,
                 accountantReviewedAt: accountantAt,
               }),
-          status: both
-            ? entry.weeklyBatchId
-              ? INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL
-              : INTERNAL_FINANCE_STATUS.MANAGER_APPROVED
-            : INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
+          status,
         },
         include: this.warehouseExpenseInclude(),
       });
+      await this.financeAudit.write(
+        tx,
+        this.entryTickLog(
+          entry,
+          actor,
+          dto,
+          { before: tickBefore, after: manager ? managerAt : accountantAt },
+          { before: statusBefore, after: status },
+          { bulk: Boolean(opId) },
+        ),
+      );
+      return updated;
     });
   }
 
@@ -3826,6 +4642,7 @@ export class InternalFinanceService {
     entryId: number,
     user: any,
     dto: CheckWarehouseExpenseDto,
+    actor: AuditActor,
   ) {
     if (dto.role === 'manager')
       throw new BadRequestException('Phiếu chi VPSG chỉ cần Kế toán duyệt');
@@ -3863,10 +4680,24 @@ export class InternalFinanceService {
           where: { id: entryId },
           include: this.warehouseExpenseInclude(),
         });
+      const tickBefore = entry.accountantReviewedAt;
+      const statusBefore = entry.status;
       if (dto.checked) {
-        await this.fundLedger.issueReviewedExpense(tx, entry, user.id, adjust);
+        await this.fundLedger.issueReviewedExpense(
+          tx,
+          entry,
+          user.id,
+          adjust,
+          actor,
+        );
       } else {
-        await this.fundLedger.revertReviewedExpense(tx, entry, user.id, adjust);
+        await this.fundLedger.revertReviewedExpense(
+          tx,
+          entry,
+          user.id,
+          adjust,
+          actor,
+        );
       }
       await tx.internalFinanceReview.create({
         data: {
@@ -3879,15 +4710,16 @@ export class InternalFinanceService {
         },
       });
       const now = new Date();
-      return tx.internalFinanceEntry.update({
+      const status = dto.checked
+        ? INTERNAL_FINANCE_STATUS.APPROVED
+        : INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT;
+      const updated = await tx.internalFinanceEntry.update({
         where: { id: entryId },
         data: {
           posManagedAt: now,
           accountantReviewedBy: dto.checked ? user.id : null,
           accountantReviewedAt: dto.checked ? now : null,
-          status: dto.checked
-            ? INTERNAL_FINANCE_STATUS.APPROVED
-            : INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT,
+          status,
           ...(dto.checked
             ? {}
             : {
@@ -3899,6 +4731,19 @@ export class InternalFinanceService {
         },
         include: this.warehouseExpenseInclude(),
       });
+      // Dòng quỹ (trừ / hoàn quỹ VPSG) do sổ quỹ ghi, cùng mã thao tác.
+      await this.financeAudit.write(
+        tx,
+        this.entryTickLog(
+          entry,
+          actor,
+          dto,
+          { before: tickBefore, after: dto.checked ? now : null },
+          { before: statusBefore, after: status },
+          { vpsg: true, cashIssued: Boolean(dto.checked) },
+        ),
+      );
+      return updated;
     });
   }
 
@@ -3908,7 +4753,10 @@ export class InternalFinanceService {
     );
   }
 
-  async normalizeLegacyCodes() {
+  async normalizeLegacyCodes(user?: any) {
+    const actor = user?.id
+      ? auditActor.user(user)
+      : auditActor.system('SYSTEM', 'maintenance:normalize-codes');
     return this.prisma.$transaction(async (tx) => {
       const entries = await tx.internalFinanceEntry.findMany({
         where: {
@@ -3938,6 +4786,29 @@ export class InternalFinanceService {
         });
         updated.push({ id: entry.id, from: entry.code, to: code });
       }
+      await this.financeAudit.write(
+        tx,
+        updated.map((row) => ({
+          action: 'FIN_ENTRY_CODE_NORMALIZE' as const,
+          entityType: FINANCE_AUDIT_ENTITY.ENTRY,
+          entityId: row.id,
+          entityCode: row.to,
+          branchId: entries.find((entry) => entry.id === row.id)?.branchId,
+          actor,
+          params: { from: row.from, to: row.to },
+          changes: [
+            {
+              field: 'code',
+              label: 'Mã phiếu',
+              from: row.from,
+              to: row.to,
+              type: 'field_changed' as const,
+              detail: { from: row.from, to: row.to },
+            },
+          ],
+          metadata: { codeBefore: row.from },
+        })),
+      );
       return { updated: updated.length, entries: updated };
     });
   }
@@ -3999,6 +4870,8 @@ export class InternalFinanceService {
     note?: string;
     include?: Record<string, unknown>;
     userId: number;
+    /** Người tạo cho lịch sử; mặc định theo `userId`. */
+    actor?: AuditActor;
   }) {
     return this.prisma.$transaction(async (tx) => {
       const occurredAt = new Date(input.occurredAt);
@@ -4008,7 +4881,7 @@ export class InternalFinanceService {
         branchId: input.branchId,
         occurredAt,
       });
-      return tx.internalFinanceEntry.create({
+      const created = await tx.internalFinanceEntry.create({
         data: {
           code,
           direction: input.direction,
@@ -4056,6 +4929,15 @@ export class InternalFinanceService {
         },
         include: input.include || this.entryInclude(),
       });
+      await this.financeAudit.write(
+        tx,
+        this.entryCreateLog(
+          created,
+          input.actor ?? auditActor.user(input.userId),
+          { sourceType: input.sourceType },
+        ),
+      );
+      return created;
     });
   }
 
@@ -4138,7 +5020,7 @@ export class InternalFinanceService {
       },
       weeklyBatch: { select: { id: true, code: true, status: true } },
       canceller: { select: { id: true, name: true } },
-      attachments: true,
+      attachments: activeAttachments,
     };
   }
 
@@ -4294,6 +5176,30 @@ export class InternalFinanceService {
         data: updateData,
         include: this.entryInclude(),
       });
+      const reject = dto.decision === INTERNAL_FINANCE_REVIEW_DECISION.REJECT;
+      await this.financeAudit.write(tx, {
+        ...(reject
+          ? { action: 'FIN_ENTRY_REJECT' as const }
+          : { action: 'FIN_ENTRY_REVIEW' as const }),
+        ...this.entryAudit(entry, auditActor.user(userId)),
+        params: {
+          roleLabel: reviewRoleLabel(role),
+          decisionLabel: reviewDecisionLabel(dto.decision),
+          code: entry.code ?? `#${entry.id}`,
+          reasonSuffix: reasonSuffix(dto.reason),
+        },
+        changes: this.financeAudit.diff(FINANCE_AUDIT_ENTITY.ENTRY, entry, {
+          ...entry,
+          ...data,
+        }),
+        metadata: {
+          reviewId: review?.id ?? null,
+          role,
+          decision: dto.decision,
+          ...(dto.note ? { note: dto.note } : {}),
+          ...(dto.dueAt ? { dueAt: dto.dueAt } : {}),
+        },
+      });
       return { entry: updated, review };
     });
   }
@@ -4331,6 +5237,10 @@ export class InternalFinanceService {
       return { locked };
     }
     await this.internalFund.lockBranch(db, [Number(packingSlip.branchId)]);
+    // Đồng bộ chạy trong transaction của báo đơn: lịch sử ghi cùng tx đó,
+    // một mã thao tác cho cả lần lưu báo đơn.
+    const actor = auditActor.user(userId, 'packing-slip');
+    const auditLog: FinanceAuditEntry[] = [];
     const files = packingSlip.expenseFiles || [];
     const images = packingSlip.images || [];
     const attachmentData = [
@@ -4433,6 +5343,8 @@ export class InternalFinanceService {
         attachments: attachmentData,
         userId,
         locked,
+        actor,
+        auditLog,
       });
       // Phiếu đồng bộ từ Lark đứng thay phiếu phí này: giữ, không hủy.
       if (fee?.sourceKey) activeKeys.push(fee.sourceKey);
@@ -4479,9 +5391,11 @@ export class InternalFinanceService {
         userId,
         preserveUserText: true,
         reopenIfCancelled: true,
+        actor,
+        auditLog,
       });
       // Báo đơn đổi số tiền / kho: số xác nhận bị bỏ thì dòng quỹ cũng rút ra.
-      await this.syncWarehouseReceiptFund(db, receipt.id, userId);
+      await this.syncWarehouseReceiptFund(db, receipt.id, userId, actor);
     }
 
     const feeCodes = Object.keys(PACKING_FEE_LABELS);
@@ -4515,17 +5429,46 @@ export class InternalFinanceService {
         ],
       },
     };
-    const droppedReceipts = await db.internalFinanceEntry.findMany({
-      where: { ...dropWhere, direction: INTERNAL_FINANCE_DIRECTION.RECEIPT },
-      select: { id: true },
-    });
-    await db.internalFinanceEntry.updateMany({
+    // Lấy phiếu bị bỏ trước để ghi người hủy, lý do và lịch sử từng phiếu.
+    const dropped: any[] = await db.internalFinanceEntry.findMany({
       where: dropWhere,
-      data: { status: INTERNAL_FINANCE_STATUS.CANCELLED },
+      select: {
+        id: true,
+        code: true,
+        branchId: true,
+        direction: true,
+        category: true,
+        status: true,
+        amount: true,
+        occurredAt: true,
+        description: true,
+        cancelReason: true,
+      },
     });
+    if (dropped.length) {
+      const cancelReason = `Báo đơn ${packingSlip.code} bỏ khoản này`;
+      for (const row of dropped)
+        auditLog.push(
+          this.entryCancelLog(row, actor, cancelReason, {
+            packingSlipId: packingSlip.id,
+          }),
+        );
+      await db.internalFinanceEntry.updateMany({
+        where: { ...dropWhere, id: { in: dropped.map((row) => row.id) } },
+        data: {
+          status: INTERNAL_FINANCE_STATUS.CANCELLED,
+          cancelReason,
+          cancelledBy: userId,
+          cancelledAt: new Date(),
+        },
+      });
+    }
     // Báo đơn bỏ thu tiền mặt: phiếu đã xác nhận phải rút tiền khỏi quỹ.
-    for (const receipt of droppedReceipts)
-      await this.syncWarehouseReceiptFund(db, receipt.id, userId);
+    for (const receipt of dropped.filter(
+      (row) => row.direction === INTERNAL_FINANCE_DIRECTION.RECEIPT,
+    ))
+      await this.syncWarehouseReceiptFund(db, receipt.id, userId, actor);
+    await this.financeAudit.write(db, auditLog);
     return { locked };
   }
 
@@ -4583,7 +5526,7 @@ export class InternalFinanceService {
       description: string;
       sourceSnapshot: Record<string, unknown>;
       invoiceIds: number[];
-      attachments: Array<Record<string, unknown>>;
+      attachments: DesiredAttachment[];
       userId: number;
       payerId?: number | null;
       expenseItem?: string;
@@ -4591,12 +5534,19 @@ export class InternalFinanceService {
       reopenIfCancelled?: boolean;
       /** Gom phiếu chi đang khóa mà báo đơn đổi số tiền/chứng từ để báo lại. */
       locked?: PackingFinanceLock[];
+      /** Người lưu báo đơn; dòng lịch sử đẩy vào `auditLog` (bên gọi ghi). */
+      actor?: AuditActor;
+      auditLog?: FinanceAuditEntry[];
     },
   ) {
     const include = {
-      attachments: { select: { fileUrl: true } },
+      attachments: { where: ACTIVE_ROW, select: { fileUrl: true } },
       weeklyBatch: { select: { code: true, status: true } },
     };
+    const actor = data.actor ?? auditActor.user(data.userId, 'packing-slip');
+    const packingCode = String(
+      data.sourceSnapshot.packingSlipCode ?? `#${data.packingSlipId}`,
+    );
     const direction = data.direction || INTERNAL_FINANCE_DIRECTION.EXPENSE;
     // Báo đơn chưa có phiếu phí POS nhưng đã có phiếu đồng bộ từ Lark cùng
     // loại phí: cập nhật phiếu Lark đó, không tạo phiếu thứ hai.
@@ -4687,7 +5637,22 @@ export class InternalFinanceService {
             occurredAt: data.occurredAt || new Date(),
           })
         : undefined;
-      return db.internalFinanceEntry.update({
+      const before = { ...existing };
+      const reopened = existing.status === INTERNAL_FINANCE_STATUS.CANCELLED;
+      // Hóa đơn / chứng từ bị bỏ giữ lại dòng (removedAt), không xóa cứng.
+      const links = await syncEntryInvoiceLinks(
+        db,
+        existing.id,
+        data.invoiceIds.map((invoiceId) => ({ invoiceId })),
+        data.userId,
+      );
+      const files = await syncEntryAttachments(
+        db,
+        existing.id,
+        data.attachments,
+        data.userId,
+      );
+      const updated = await db.internalFinanceEntry.update({
         where: { id: existing.id },
         data: {
           ...(nextCode ? { code: nextCode } : {}),
@@ -4707,6 +5672,10 @@ export class InternalFinanceService {
             existing.status === INTERNAL_FINANCE_STATUS.CANCELLED || recheck
               ? INTERNAL_FINANCE_STATUS.PENDING_ACCOUNTANT
               : existing.status,
+          // Mở lại phiếu đã hủy: bỏ thông tin hủy cũ (giữ trong lịch sử).
+          ...(reopened
+            ? { cancelReason: null, cancelledAt: null, cancelledBy: null }
+            : {}),
           ...(recheck
             ? {
                 managerReviewedBy: null,
@@ -4742,29 +5711,73 @@ export class InternalFinanceService {
               ? { note: previousSnapshot.note, noteEdited: true }
               : {}),
           },
-          invoiceLinks: {
-            deleteMany: {},
-            ...(data.invoiceIds.length
-              ? {
-                  create: data.invoiceIds.map((invoiceId) => ({
-                    invoiceId,
-                  })),
-                }
-              : {}),
-          },
-          attachments: {
-            deleteMany: {},
-            ...(data.attachments.length
-              ? {
-                  create: data.attachments.map((file: any) => ({
-                    ...file,
-                    createdBy: data.userId,
-                  })),
-                }
-              : {}),
-          },
         },
       });
+      const extraChanges: FinanceAuditChange[] = nextCode
+        ? [
+            {
+              field: 'code',
+              label: 'Mã phiếu',
+              from: String(before.code ?? ''),
+              to: nextCode,
+              type: 'field_changed',
+              detail: { from: before.code ?? null, to: nextCode },
+            },
+          ]
+        : [];
+      if (reopened) {
+        data.auditLog?.push({
+          action: 'FIN_ENTRY_REOPEN',
+          ...this.entryAudit(updated ?? before, actor),
+          params: {
+            kindLabel: entryKindLabel(before.category),
+            code: updated?.code ?? before.code ?? `#${before.id}`,
+            reasonSuffix: reasonSuffix(`theo báo đơn ${packingCode}`),
+          },
+          changes: [
+            ...this.financeAudit.diff(
+              FINANCE_AUDIT_ENTITY.ENTRY,
+              before,
+              updated ?? {},
+            ),
+            ...extraChanges,
+            ...this.fileChanges(files),
+            ...this.invoiceLinkChanges(links),
+          ],
+          snapshot: {
+            lines: [
+              {
+                label: 'Lý do hủy trước đó',
+                value: String(before.cancelReason || '—'),
+              },
+              {
+                label: 'Hủy lúc',
+                value: formatDate(before.cancelledAt),
+              },
+            ],
+            cancelledBefore: {
+              cancelReason: before.cancelReason ?? null,
+              cancelledAt: before.cancelledAt ?? null,
+              cancelledBy: before.cancelledBy ?? null,
+            },
+          },
+          metadata: {
+            packingSlipId: data.packingSlipId,
+            ...this.removedFilesMeta(files.removed),
+          },
+        });
+      } else {
+        data.auditLog?.push(
+          ...this.entryUpdateLog(before, updated ?? {}, actor, {
+            files,
+            links,
+            extraChanges,
+            sourceSuffix: ` theo báo đơn ${packingCode}`,
+            metadata: { packingSlipId: data.packingSlipId },
+          }),
+        );
+      }
+      return updated;
     }
     const nextCode = await this.codeService.nextCode(db, {
       direction,
@@ -4772,7 +5785,7 @@ export class InternalFinanceService {
       branchId: data.branchId,
       occurredAt: data.occurredAt || new Date(),
     });
-    return db.internalFinanceEntry.create({
+    const created = await db.internalFinanceEntry.create({
       data: {
         code: nextCode!,
         direction,
@@ -4809,6 +5822,13 @@ export class InternalFinanceService {
           : undefined,
       },
     });
+    data.auditLog?.push(
+      ...this.entryCreateLog(created, actor, {
+        packingSlipId: data.packingSlipId,
+        sourceKey: data.sourceKey,
+      }),
+    );
+    return created;
   }
 
   private packingCustomerIds(packingSlip: any): number[] {
@@ -5539,8 +6559,8 @@ export class InternalFinanceService {
       packingSlip: { select: { id: true, code: true } },
       cashFlow: { select: { id: true, code: true, status: true } },
       confirmer: { select: { id: true, name: true } },
-      attachments: true,
-      invoiceLinks: {
+      attachments: activeAttachments,
+      invoiceLinks: activeInvoiceLinks({
         include: {
           invoice: {
             select: {
@@ -5553,8 +6573,251 @@ export class InternalFinanceService {
             },
           },
         },
-      },
+      }),
     };
+  }
+
+  // ---- Lịch sử tài chính nội bộ (audit_logs, category internal_finance) ----
+
+  /** Phần chung của dòng lịch sử một phiếu. */
+  private entryAudit(
+    entry: { id: number; code?: string | null; branchId?: number | null },
+    actor: AuditActor,
+  ) {
+    return {
+      entityType: FINANCE_AUDIT_ENTITY.ENTRY,
+      entityId: entry.id,
+      entityCode: entry.code ?? null,
+      branchId: entry.branchId ?? null,
+      actor,
+    };
+  }
+
+  /** Vài dòng tóm tắt phiếu (số tiền, ngày, nội dung, trạng thái). */
+  private entrySnapshot(entry: AuditEntryRow): FinanceAuditSnapshot {
+    return {
+      lines: [
+        { label: 'Số tiền', value: formatMoney(entry.amount) },
+        { label: 'Ngày', value: formatDate(entry.occurredAt) },
+        ...(entry.description
+          ? [{ label: 'Nội dung', value: String(entry.description) }]
+          : []),
+        ...(entry.status
+          ? [{ label: 'Trạng thái', value: entryStatusLabel(entry.status) }]
+          : []),
+      ],
+    };
+  }
+
+  private entryCreateLog(
+    entry: AuditEntryRow | null | undefined,
+    actor: AuditActor,
+    metadata?: Record<string, unknown>,
+  ): FinanceAuditEntry[] {
+    if (!entry) return [];
+    return [
+      {
+        action: 'FIN_ENTRY_CREATE',
+        ...this.entryAudit(entry, actor),
+        params: {
+          kindLabel: entryKindLabel(entry.category),
+          code: entry.code ?? `#${entry.id}`,
+          amount:
+            entry.amount === undefined || entry.amount === null
+              ? null
+              : Number(entry.amount),
+        },
+        snapshot: this.entrySnapshot(entry),
+        metadata,
+      },
+    ];
+  }
+
+  /**
+   * Dòng "Sửa phiếu": so sánh trước/sau theo whitelist + chứng từ / hóa đơn
+   * thêm, gỡ. Không đổi gì thì không ghi ([]).
+   */
+  private entryUpdateLog(
+    before: AuditEntryRow,
+    after: AuditEntryRow | Record<string, unknown> | null | undefined,
+    actor: AuditActor,
+    extra: {
+      files?: { added?: AuditFileRow[]; removed?: AuditFileRow[] } | null;
+      links?: {
+        added?: AuditLinkRow[];
+        revived?: AuditLinkRow[];
+        removed?: AuditLinkRow[];
+      } | null;
+      extraChanges?: FinanceAuditChange[];
+      sourceSuffix?: string;
+      metadata?: Record<string, unknown>;
+    } = {},
+  ): FinanceAuditEntry[] {
+    const next = (after ?? {}) as Record<string, unknown>;
+    const changes = [
+      ...this.financeAudit.diff(
+        FINANCE_AUDIT_ENTITY.ENTRY,
+        before as Record<string, unknown>,
+        next,
+      ),
+      ...(extra.extraChanges ?? []),
+      ...this.fileChanges(extra.files ?? {}),
+      ...this.invoiceLinkChanges(extra.links ?? {}),
+    ];
+    if (!changes.length) return [];
+    const row = { ...before, ...next } as AuditEntryRow;
+    return [
+      {
+        action: 'FIN_ENTRY_UPDATE',
+        ...this.entryAudit(row, actor),
+        params: {
+          kindLabel: entryKindLabel(row.category),
+          code: row.code ?? `#${row.id}`,
+          sourceSuffix: extra.sourceSuffix ?? '',
+        },
+        changes,
+        metadata: {
+          ...(extra.metadata ?? {}),
+          ...this.removedFilesMeta(extra.files?.removed),
+        },
+      },
+    ];
+  }
+
+  /** Dòng "Hủy phiếu": trạng thái + lý do; `entry` là dòng trước khi hủy. */
+  private entryCancelLog(
+    entry: AuditEntryRow,
+    actor: AuditActor,
+    reason: string,
+    metadata?: Record<string, unknown>,
+  ): FinanceAuditEntry {
+    return {
+      action: 'FIN_ENTRY_CANCEL',
+      ...this.entryAudit(entry, actor),
+      params: {
+        kindLabel: entryKindLabel(entry.category),
+        code: entry.code ?? `#${entry.id}`,
+        reasonSuffix: reasonSuffix(reason),
+      },
+      changes: this.financeAudit.diff(
+        FINANCE_AUDIT_ENTITY.ENTRY,
+        {
+          status: entry.status ?? null,
+          cancelReason: entry.cancelReason ?? null,
+        },
+        { status: INTERNAL_FINANCE_STATUS.CANCELLED, cancelReason: reason },
+      ),
+      snapshot: this.entrySnapshot(entry),
+      metadata: { statusBefore: entry.status ?? null, ...(metadata ?? {}) },
+    };
+  }
+
+  /** Dòng tick / bỏ tick kiểm tra (Quản lý kho / Kế toán kho). */
+  private entryTickLog(
+    entry: AuditEntryRow,
+    actor: AuditActor,
+    dto: CheckWarehouseExpenseDto,
+    tick: { before: unknown; after: unknown },
+    status: { before: string | null; after: string },
+    metadata?: Record<string, unknown>,
+  ): FinanceAuditEntry {
+    const roleLabel = reviewRoleLabel(dto.role);
+    const field =
+      dto.role === 'manager' ? 'managerReviewedAt' : 'accountantReviewedAt';
+    const changes: FinanceAuditChange[] = [];
+    if (Boolean(tick.before) !== Boolean(tick.after))
+      changes.push({
+        field,
+        label: `Tick ${roleLabel}`,
+        from: formatBoolean(Boolean(tick.before)),
+        to: formatBoolean(Boolean(tick.after)),
+        type: 'field_changed',
+        detail: { from: tick.before ?? null, to: tick.after ?? null },
+      });
+    changes.push(
+      ...this.financeAudit.diff(
+        FINANCE_AUDIT_ENTITY.ENTRY,
+        { status: status.before },
+        { status: status.after },
+      ),
+    );
+    return {
+      ...(dto.checked
+        ? { action: 'FIN_ENTRY_CHECK' as const }
+        : { action: 'FIN_ENTRY_UNCHECK' as const }),
+      ...this.entryAudit(entry, actor),
+      params: { roleLabel, code: entry.code ?? `#${entry.id}` },
+      changes,
+      metadata: { role: dto.role, ...(metadata ?? {}) },
+    };
+  }
+
+  /** Chứng từ thêm / gỡ dạng item_added / item_removed. */
+  private fileChanges(files: {
+    added?: AuditFileRow[];
+    removed?: AuditFileRow[];
+  }): FinanceAuditChange[] {
+    const name = (file: AuditFileRow) =>
+      String(file.fileName || file.fileUrl || '');
+    return [
+      ...(files.removed ?? []).map(
+        (file): FinanceAuditChange => ({
+          field: 'attachments',
+          label: 'Chứng từ',
+          from: name(file),
+          to: '—',
+          type: 'item_removed',
+          detail: fileRef(file),
+        }),
+      ),
+      ...(files.added ?? []).map(
+        (file): FinanceAuditChange => ({
+          field: 'attachments',
+          label: 'Chứng từ',
+          from: '—',
+          to: name(file),
+          type: 'item_added',
+          detail: fileRef(file),
+        }),
+      ),
+    ];
+  }
+
+  /** metadata.removedAttachments: file đã gỡ (trang Lịch sử hiện tên + link). */
+  private removedFilesMeta(removed?: AuditFileRow[] | null) {
+    return removed?.length
+      ? { removedAttachments: removed.map((file) => fileRef(file)) }
+      : undefined;
+  }
+
+  /** Hóa đơn liên kết thêm / khôi phục / gỡ. */
+  private invoiceLinkChanges(links: {
+    added?: AuditLinkRow[];
+    revived?: AuditLinkRow[];
+    removed?: AuditLinkRow[];
+  }): FinanceAuditChange[] {
+    return [
+      ...(links.removed ?? []).map(
+        (link): FinanceAuditChange => ({
+          field: 'invoiceLinks',
+          label: 'Hóa đơn',
+          from: `#${link.invoiceId}`,
+          to: '—',
+          type: 'item_removed',
+          detail: { invoiceId: link.invoiceId },
+        }),
+      ),
+      ...[...(links.added ?? []), ...(links.revived ?? [])].map(
+        (link): FinanceAuditChange => ({
+          field: 'invoiceLinks',
+          label: 'Hóa đơn',
+          from: '—',
+          to: `#${link.invoiceId}`,
+          type: 'item_added',
+          detail: { invoiceId: link.invoiceId },
+        }),
+      ),
+    ];
   }
 
   private snapshotOf(entry: {
@@ -5574,10 +6837,10 @@ export class InternalFinanceService {
       cashIssuer: { select: { id: true, name: true } },
       payer: { select: { id: true, name: true } },
       vehicle: { select: { id: true, label: true, plate: true } },
-      attachments: true,
-      invoiceLinks: {
+      attachments: activeAttachments,
+      invoiceLinks: activeInvoiceLinks({
         include: { invoice: { select: { id: true, code: true } } },
-      },
+      }),
       reviews: {
         orderBy: { createdAt: 'desc' as const },
         take: 10,
@@ -5652,6 +6915,38 @@ export class InternalFinanceService {
     ).replace(/\/$/, '');
     return `${base}/tai-chinh/approval-tuan?batchId=${batchId}`;
   }
+}
+
+/** Các trường của phiếu mà dòng lịch sử cần (dòng DB đầy đủ cũng hợp). */
+type AuditEntryRow = {
+  id: number;
+  code?: string | null;
+  branchId?: number | null;
+  category?: string | null;
+  status?: string | null;
+  amount?: unknown;
+  occurredAt?: unknown;
+  description?: string | null;
+  cancelReason?: string | null;
+};
+
+type AuditFileRow = {
+  id?: number | null;
+  kind?: string | null;
+  fileUrl?: string | null;
+  fileName?: string | null;
+};
+
+type AuditLinkRow = { invoiceId: number };
+
+/** Tham chiếu gọn của một chứng từ cho changes / metadata lịch sử. */
+function fileRef(file: AuditFileRow) {
+  return {
+    id: file.id ?? null,
+    kind: file.kind ?? null,
+    fileUrl: file.fileUrl ?? null,
+    fileName: file.fileName ?? null,
+  };
 }
 
 function numberOrNull(value: unknown): number | null {

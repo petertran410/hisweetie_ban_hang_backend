@@ -156,6 +156,13 @@ export function assertPrepaidPolicySatisfied(input: PrepaidPolicyInput): void {
 /** Trạng thái "đã hủy" của hóa đơn, phiếu thanh toán đơn và phiếu thu. */
 const CANCELLED_DOCUMENT_STATUS = 2;
 
+/** Đơn còn đang xử lý (còn hàng chưa ra hóa đơn) → có thể đang giữ tiền. */
+const OPEN_ORDER_STATUSES: number[] = [
+  ORDER_STATUS.PENDING,
+  ORDER_STATUS.CONFIRMED,
+  ORDER_STATUS.PARTIALLY_INVOICED,
+];
+
 /**
  * Công nợ dùng cho kiểm tra "khách không công nợ phải trả đủ" của MỘT ĐƠN
  * (xác nhận đơn, tạo hóa đơn từ đơn), để truyền vào currentCustomerDebt.
@@ -168,8 +175,11 @@ const CANCELLED_DOCUMENT_STATUS = 2;
  * Trả về công nợ đã:
  * - bỏ toàn bộ phần của chính đơn này: HĐ còn hiệu lực của đơn và phiếu thu
  *   các lần thanh toán đơn (đã được tính riêng qua paidAmount);
- * - bỏ phiếu thu đang gắn với ĐƠN KHÁC chưa hủy, chưa có HĐ còn hiệu lực:
- *   tiền đó để dành cho đơn kia, không tính là trả trước cho đơn này.
+ * - bỏ tiền đang gắn với ĐƠN KHÁC còn đang xử lý (Phiếu tạm / Đã xác nhận /
+ *   Đã ra 1 phần HĐ): phần đã trả vượt quá số đã ra HĐ của đơn đó,
+ *   max(0, phiếu thu − HĐ). Tiền đó để dành cho hàng chưa giao của đơn kia,
+ *   không tính là trả trước cho đơn này. Đơn đã hủy / hoàn thành không giữ
+ *   tiền: phần dư (nếu có) là tiền trả trước tự do.
  * Phần âm còn lại mới là tiền trả trước tự do của khách. Phiếu thu được ghép
  * với lần thanh toán đơn theo mã (orderPayment.code = cashFlow.code).
  */
@@ -187,8 +197,10 @@ export async function customerDebtForOrderPrepaidCheck(
     },
     _sum: { grandTotal: true },
   });
+  const debtWithoutThisOrderInvoices =
+    input.totalDebt - Number(thisOrderInvoices._sum.grandTotal || 0);
 
-  const tiedPayments = await db.orderPayment.findMany({
+  const payments = await db.orderPayment.findMany({
     where: {
       status: { not: CANCELLED_DOCUMENT_STATUS },
       OR: [
@@ -196,38 +208,68 @@ export async function customerDebtForOrderPrepaidCheck(
         {
           order: {
             customerId,
-            status: { not: ORDER_STATUS.CANCELLED },
-            invoices: {
-              none: { status: { not: CANCELLED_DOCUMENT_STATUS } },
-            },
+            status: { in: OPEN_ORDER_STATUSES },
           },
         },
       ],
     },
-    select: { code: true },
+    select: { code: true, orderId: true },
   });
+  if (payments.length === 0) return debtWithoutThisOrderInvoices;
 
-  let tiedReceipts = 0;
-  if (tiedPayments.length > 0) {
-    // Cùng điều kiện phiếu thu của Formula A để chỉ cộng lại đúng phần đã trừ.
-    const receipts = await db.cashFlow.aggregate({
-      where: {
-        code: { in: tiedPayments.map((payment) => payment.code) },
-        partnerType: 'C',
-        partnerId: customerId,
-        isReceipt: true,
-        status: { not: CANCELLED_DOCUMENT_STATUS },
-      },
-      _sum: { amount: true },
-    });
-    tiedReceipts = Number(receipts._sum.amount || 0);
+  // Cùng điều kiện phiếu thu của Formula A để chỉ cộng lại đúng phần đã trừ.
+  const receipts = await db.cashFlow.findMany({
+    where: {
+      code: { in: payments.map((payment) => payment.code) },
+      partnerType: 'C',
+      partnerId: customerId,
+      isReceipt: true,
+      status: { not: CANCELLED_DOCUMENT_STATUS },
+    },
+    select: { code: true, amount: true },
+  });
+  const orderIdByCode = new Map(payments.map((p) => [p.code, p.orderId]));
+  const receivedByOrder = new Map<number, number>();
+  for (const receipt of receipts) {
+    const id = orderIdByCode.get(receipt.code);
+    if (id == null) continue;
+    receivedByOrder.set(
+      id,
+      (receivedByOrder.get(id) ?? 0) + Number(receipt.amount),
+    );
   }
 
-  return (
-    input.totalDebt -
-    Number(thisOrderInvoices._sum.grandTotal || 0) +
-    tiedReceipts
+  const otherOrderIds = [...receivedByOrder.keys()].filter(
+    (id) => id !== orderId,
   );
+  const otherInvoices = otherOrderIds.length
+    ? await db.invoice.findMany({
+        where: {
+          orderId: { in: otherOrderIds },
+          customerId,
+          status: { not: CANCELLED_DOCUMENT_STATUS },
+        },
+        select: { orderId: true, grandTotal: true },
+      })
+    : [];
+  const invoicedByOrder = new Map<number, number>();
+  for (const invoice of otherInvoices) {
+    if (invoice.orderId == null) continue;
+    invoicedByOrder.set(
+      invoice.orderId,
+      (invoicedByOrder.get(invoice.orderId) ?? 0) + Number(invoice.grandTotal),
+    );
+  }
+
+  let adjusted =
+    debtWithoutThisOrderInvoices + (receivedByOrder.get(orderId) ?? 0);
+  for (const id of otherOrderIds) {
+    adjusted += Math.max(
+      0,
+      (receivedByOrder.get(id) ?? 0) - (invoicedByOrder.get(id) ?? 0),
+    );
+  }
+  return adjusted;
 }
 
 /** Dữ liệu đơn mà assertCanConfirmOrder đọc (đúng phần `select` bên dưới). */

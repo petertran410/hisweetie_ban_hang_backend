@@ -9,6 +9,7 @@ import { finished } from 'stream/promises';
 import { InternalFundExportQueryDto } from './dto/internal-fund.dto';
 import { InternalFundService } from './internal-fund.service';
 import { fundExportColumns } from './internal-fund-export';
+import { FinanceAuditService } from '../finance-audit';
 
 function fixture() {
   const prisma: any = {
@@ -21,7 +22,13 @@ function fixture() {
   const access: any = {
     can: jest.fn(async (_userId: number, branchId: number) => branchId === 6),
   };
-  const service = new InternalFundService(prisma, access, {} as any, {} as any);
+  const service = new InternalFundService(
+    prisma,
+    access,
+    {} as any,
+    {} as any,
+    new FinanceAuditService(),
+  );
   const stream = Object.assign(new PassThrough(), { setHeader: jest.fn() });
   const chunks: Buffer[] = [];
   stream.on('data', (chunk: Buffer) => chunks.push(chunk));

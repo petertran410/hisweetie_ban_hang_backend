@@ -44,6 +44,7 @@ import {
   UpdateWarehouseReceiptDto,
   UpdateWarehouseExpenseDto,
   UpdateVehicleEntryDto,
+  CreateFuelAdvanceEntryDto,
   FuelAdvanceQueryDto,
   VehicleEntryQueryDto,
 } from './dto';
@@ -474,6 +475,27 @@ export class InternalFinanceController {
     return this.service.fuelAdvanceLedger(query, user);
   }
 
+  @Post('fuel-advance/entries')
+  @ApiOperation({
+    summary: 'Add a manual Kho HN fuel advance (no fund posting)',
+  })
+  createFuelAdvanceEntry(
+    @Body() dto: CreateFuelAdvanceEntryDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.createFuelAdvanceEntry(dto, user);
+  }
+
+  @Put('fuel-advance/entries/:id/cancel')
+  @ApiOperation({ summary: 'Cancel a manual Kho HN fuel advance' })
+  cancelFuelAdvanceEntry(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: CancelWarehouseExpenseDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.cancelFuelAdvanceEntry(id, dto.reason, user);
+  }
+
   @Patch('vehicle-entries/:id')
   @ApiOperation({ summary: 'Update an open fuel or vehicle care entry' })
   updateVehicleEntry(
@@ -559,8 +581,8 @@ export class InternalFinanceController {
   @Post('maintenance/normalize-codes')
   @RequirePermissions('cash_flows:update')
   @ApiOperation({ summary: 'Normalize legacy internal finance codes' })
-  normalizeLegacyCodes() {
-    return this.service.normalizeLegacyCodes();
+  normalizeLegacyCodes(@CurrentUser() user: any) {
+    return this.service.normalizeLegacyCodes(user);
   }
 
   @Get('weekly-batches')
