@@ -77,6 +77,17 @@ const isDate = (v: unknown) =>
 const posInt = (v: unknown) =>
   typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : null;
 
+/** Link gắn vào nút trên trang public: chỉ nhận https:// (chặn javascript:, data:, http:…), sai → rỗng. */
+export function httpsUrl(v: unknown, max = 300): string {
+  const s = str(v, max);
+  if (!s) return '';
+  try {
+    return new URL(s).protocol === 'https:' ? s : '';
+  } catch {
+    return '';
+  }
+}
+
 export const DEFAULT_REGIONS: PriceRegionConfig[] = [
   {
     key: 'N',
@@ -176,7 +187,7 @@ export function normalizeConfig(raw: unknown): PricePageConfig {
 
   return {
     regions,
-    zaloUrl: str(r.zaloUrl, 300),
+    zaloUrl: httpsUrl(r.zaloUrl),
     banner: {
       enabled: !!banner.enabled,
       tag: str(banner.tag, 40),

@@ -1,6 +1,8 @@
+import { BadRequestException } from '@nestjs/common';
 import { PublicPriceService } from './public-price.service';
 import {
   guessGroup,
+  httpsUrl,
   normalizeConfig,
   splitProductName,
   stripBrandPrefix,
@@ -86,6 +88,29 @@ describe('public-price util', () => {
     ]);
     expect([c.validFrom, c.validTo]).toEqual(['2026-11-01', '']);
   });
+
+  it('link Zalo: chỉ nhận https://, còn lại thành rỗng', () => {
+    expect(httpsUrl('https://zalo.me/0973123230')).toBe(
+      'https://zalo.me/0973123230',
+    );
+    expect(httpsUrl('  https://oa.zalo.me/abc  ')).toBe(
+      'https://oa.zalo.me/abc',
+    );
+    for (const bad of [
+      'javascript:alert(1)',
+      'JAVASCRIPT:alert(1)',
+      'data:text/html,<b>x</b>',
+      'http://zalo.me/1',
+      'zalo.me/1',
+      '//zalo.me/1',
+      42,
+      null,
+    ])
+      expect(httpsUrl(bad)).toBe('');
+    expect(normalizeConfig({ zaloUrl: 'javascript:alert(1)' }).zaloUrl).toBe(
+      '',
+    );
+  });
 });
 
 describe('PublicPriceService.build', () => {
@@ -101,19 +126,38 @@ describe('PublicPriceService.build', () => {
     images: [{ image: `https://img/${id}.jpg` }],
     ...over,
   });
-  const make = (products: unknown[], details: unknown[] = []) => {
+  const make = (
+    products: unknown[],
+    details: unknown[] = [],
+    activeBookIds: number[] = [22],
+    draft: unknown = {},
+  ) => {
     const prisma = {
       product: { findMany: jest.fn().mockResolvedValue(products) },
+      priceBook: {
+        findMany: jest.fn(({ where }: { where: { id: { in: number[] } } }) =>
+          Promise.resolve(
+            where.id.in
+              .filter((id) => activeBookIds.includes(id))
+              .map((id) => ({ id })),
+          ),
+        ),
+      },
       priceBookDetail: { findMany: jest.fn().mockResolvedValue(details) },
+      publicPricePage: {
+        findUnique: jest.fn().mockResolvedValue({ draft }),
+        upsert: jest.fn(),
+      },
     };
-    return new PublicPriceService(
+    const svc = new PublicPriceService(
       prisma as never,
       { create: jest.fn() } as never,
     );
+    return { svc, prisma };
   };
 
   it('giá Bắc = giá gốc, giá Nam = bảng giá nguồn; thiếu giá hoặc ẩn giá → Liên hệ', async () => {
-    const svc = make(
+    const { svc } = make(
       [product(1), product(2), product(3)],
       [
         { priceBookId: 22, productId: 1, price: 150000 },
@@ -144,7 +188,7 @@ describe('PublicPriceService.build', () => {
   });
 
   it('bỏ sản phẩm ẩn, ngừng kinh doanh, nhóm ẩn, thương hiệu ẩn; xếp theo nhóm rồi thứ tự cấu hình', async () => {
-    const svc = make([
+    const { svc } = make([
       product(1),
       product(2, { isActive: false }),
       product(3),
@@ -172,5 +216,33 @@ describe('PublicPriceService.build', () => {
     expect(data.groups.map((g) => g.key)).toEqual(['tea', 'jam', 'froz']);
     expect(data.publishedAt).toBe('2026-11-20T02:00:00.000Z');
     expect(catalog).toHaveLength(6);
+  });
+
+  it('bảng giá nguồn không tồn tại / đã ngừng → không đọc giá của bảng giá đó, giá thành Liên hệ', async () => {
+    const { svc, prisma } = make(
+      [product(1)],
+      [{ priceBookId: 99, productId: 1, price: 50000 }],
+      [],
+    );
+    const config = normalizeConfig({
+      regions: [{ key: 'S', priceBookId: 99 }],
+      items: [{ productId: 1, group: 'jam' }],
+    });
+    const { data, inactiveRegions } = await svc.build(config, null);
+    // Không truy vấn giá chi tiết khi không còn bảng giá nào đang hoạt động
+    expect(prisma.priceBookDetail.findMany).not.toHaveBeenCalled();
+    expect(data.products[0].price).toEqual({ N: 100001, S: null });
+    expect(inactiveRegions.map((r) => r.key)).toEqual(['S']);
+  });
+
+  it('không cho xuất bản khi bảng giá nguồn đã ngừng hoạt động', async () => {
+    const { svc, prisma } = make([product(1)], [], [], {
+      regions: [{ key: 'S', priceBookId: 99 }],
+      items: [{ productId: 1, group: 'jam' }],
+    });
+    await expect(svc.publish({ id: 1, name: 'A' })).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
+    expect(prisma.publicPricePage.upsert).not.toHaveBeenCalled();
   });
 });

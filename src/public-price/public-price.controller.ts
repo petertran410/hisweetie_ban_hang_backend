@@ -39,20 +39,22 @@ export class PublicPriceAdminController {
     return this.service.getAdmin();
   }
 
+  // Lưu / xem trước / xuất bản đều đọc hoặc chọn giá theo bảng giá nguồn
+  // → cần thêm price_books:view (giống các API /price-books), không chỉ quyền mẫu báo giá.
   @Put()
-  @RequirePermissions('quote_templates:update')
+  @RequirePermissions('quote_templates:update', 'price_books:view')
   save(@Body() dto: PublicPriceConfigDto, @Req() req: AuthReq) {
     return this.service.saveDraft(dto.config, this.actor(req));
   }
 
   @Post('preview')
-  @RequirePermissions('quote_templates:view')
+  @RequirePermissions('quote_templates:view', 'price_books:view')
   preview(@Body() dto: PublicPriceConfigDto) {
     return this.service.preview(dto.config);
   }
 
   @Post('publish')
-  @RequirePermissions('quote_templates:update')
+  @RequirePermissions('quote_templates:update', 'price_books:view')
   publish(@Req() req: AuthReq) {
     return this.service.publish(this.actor(req));
   }

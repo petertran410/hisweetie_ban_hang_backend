@@ -1,4 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
@@ -79,7 +83,11 @@ export class PublicPriceService {
       ? normalizeConfig(row.draft)
       : await this.defaultConfig();
     const now = new Date();
-    const { data } = await this.build(config, now);
+    const { data, inactiveRegions } = await this.build(config, now);
+    if (inactiveRegions.length)
+      throw new BadRequestException(
+        `Bảng giá nguồn của ${inactiveRegions.map((r) => r.name).join(', ')} không tồn tại hoặc đã ngừng hoạt động — chọn bảng giá khác rồi xuất bản lại`,
+      );
     const published = { config, data } as unknown as Prisma.InputJsonValue;
     await this.prisma.publicPricePage.upsert({
       where: { id: ROW_ID },
@@ -171,14 +179,29 @@ export class PublicPriceService {
           },
         })
       : [];
+    // Chỉ lấy giá từ bảng giá đang hoạt động: id lạ / bảng giá đã ngừng → giá "Liên hệ".
     const bookIds = config.regions
       .map((r) => r.priceBookId)
       .filter((id): id is number => id != null);
+    const activeBookIds = bookIds.length
+      ? (
+          await this.prisma.priceBook.findMany({
+            where: { id: { in: bookIds }, isActive: true },
+            select: { id: true },
+          })
+        ).map((b) => b.id)
+      : [];
+    const inactiveRegions = config.regions.filter(
+      (r) =>
+        r.enabled &&
+        r.priceBookId != null &&
+        !activeBookIds.includes(r.priceBookId),
+    );
     const details =
-      ids.length && bookIds.length
+      ids.length && activeBookIds.length
         ? await this.prisma.priceBookDetail.findMany({
             where: {
-              priceBookId: { in: bookIds },
+              priceBookId: { in: activeBookIds },
               productId: { in: ids },
               isActive: true,
             },
@@ -279,7 +302,7 @@ export class PublicPriceService {
       brands,
       products: shown,
     };
-    return { data, catalog };
+    return { data, catalog, inactiveRegions };
   }
 
   private audit(actor: PriceActor, actionCode: string, message: string) {
