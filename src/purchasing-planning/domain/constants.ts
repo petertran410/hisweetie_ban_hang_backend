@@ -42,10 +42,14 @@ export const INCLUDED_DEMAND_TYPES = new Set([
   'INTERNAL_USE',
   'PRODUCTION_OUT',
   'CONSIGNMENT_OUT',
+  // Gửi nguyên liệu trước cho NSX dùng dần: tiêu hao như PRODUCTION_OUT
+  // (phiếu sản xuất lấy từ tồn NSX không ghi log nên không đếm hai lần).
+  'MANUFACTURER_STOCK_OUT',
 ]);
 
 export const RETURN_DEMAND_TYPES = new Set([
   'RETURN_IN',
   'CONSIGNMENT_RETURN_IN',
   'INTERNAL_USE_RETURN_IN',
+  'MANUFACTURER_STOCK_IN',
 ]);

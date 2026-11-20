@@ -90,12 +90,51 @@ describe('công nợ NCC của phiếu gửi sản xuất', () => {
       },
     ]);
     await expect(
-      getHeldMaterialValue({ production: { findMany } }, 3),
+      getHeldMaterialValue(
+        {
+          production: { findMany },
+          manufacturer: { findMany: jest.fn().mockResolvedValue([]) },
+        },
+        3,
+      ),
     ).resolves.toBe(24_000_000);
     expect(findMany.mock.calls[0][0].where).toEqual({
       supplierId: 3,
       isExternal: true,
       status: { in: [4, 5] },
+    });
+  });
+
+  it('cộng thêm nguyên liệu gửi trước còn nằm ở NSX (phần chưa dùng, theo giá BQ)', async () => {
+    const db = {
+      production: { findMany: jest.fn().mockResolvedValue([]) },
+      manufacturer: { findMany: jest.fn().mockResolvedValue([{ id: 5 }]) },
+      // Gửi 10 đơn vị @100.000, phiếu SX đã dùng 4 @100.000 → còn 6 × 100.000.
+      manufacturerStockSlipLine: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            {
+              productId: 1,
+              units: '10',
+              unitCost: '100000',
+              amount: '1000000',
+              slip: { id: 1, type: 'SEND', date: new Date('2026-11-01') },
+            },
+          ]),
+      },
+      productionComponent: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            { componentProductId: 1, unitsDeducted: '4', unitCost: '100000' },
+          ]),
+      },
+    };
+    await expect(getHeldMaterialValue(db, 3)).resolves.toBe(600_000);
+    expect(db.manufacturer.findMany).toHaveBeenCalledWith({
+      where: { supplierId: 3 },
+      select: { id: true },
     });
   });
 });

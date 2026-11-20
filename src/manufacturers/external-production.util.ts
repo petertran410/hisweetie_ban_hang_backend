@@ -57,6 +57,44 @@ export function externalCosts(
   };
 }
 
+/**
+ * Ngày chứng từ ghi tồn (ngày gửi, ngày trả…). Cho chọn lùi (hàng đi trước khi
+ * làm phiếu) nhưng không được sau hiện tại (lệch vài phút đồng hồ vẫn nhận).
+ */
+export function documentDate(value: string | Date, label = 'Ngày gửi'): Date {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) throw new BadRequestException(`${label} không hợp lệ`);
+  if (date.getTime() > Date.now() + 10 * 60 * 1000) throw new BadRequestException(`${label} không được sau thời điểm hiện tại`);
+  return date;
+}
+
+export const amount4 = (value: Prisma.Decimal.Value) =>
+  Number(value).toLocaleString('en-US', { maximumFractionDigits: 4 });
+
+/**
+ * Tồn kho có thể còn số lẻ dư (2.5999999…) do cộng trừ số thực trước đây: so
+ * sánh ở 4 số lẻ như lượng trừ kho, tránh báo thiếu khi cần vừa đúng bằng tồn.
+ */
+export const stockOf = (onHand: Prisma.Decimal.Value | null | undefined) =>
+  new Prisma.Decimal(onHand ?? 0).toDecimalPlaces(4);
+
+/** "cần 12.5 Thùng (= 250,000 g), còn 2.6 Thùng" — để biết thiếu thật hay nhập sai đơn vị. */
+export function shortage(
+  name: string, needed: Prisma.Decimal.Value, available: Prisma.Decimal.Value,
+  stockUnit: string | null | undefined, sent?: { quantity: Prisma.Decimal.Value; unit?: string | null },
+  place = 'kho gửi',
+) {
+  const unit = stockUnit || 'đơn vị kho';
+  const asSent = sent?.unit && sent.unit !== stockUnit && sent.unit !== 'unit' ? ` (= ${amount4(sent.quantity)} ${sent.unit})` : '';
+  const what = place.startsWith('kho') ? 'tồn kho' : 'tồn';
+  return `Không đủ ${what} "${name}" tại ${place}: cần ${amount4(needed)} ${unit}${asSent}, còn ${amount4(available)} ${unit}`;
+}
+
+/** Gram của 1 đơn vị kho (0 = sản phẩm chưa khai khối lượng). */
+export function gramsPerStockUnit(product: { weight?: any; weightUnit?: string | null }): number {
+  return Number(product.weight ?? 0) * (product.weightUnit === 'kg' ? 1000 : 1);
+}
+
 export function ownConversion(product: { unit?: string | null; weight?: any; weightUnit?: string | null }, unit: string): number {
   if (unit === product.unit || unit === 'unit') return 1;
   const grams = Number(product.weight ?? 0) * (product.weightUnit === 'kg' ? 1000 : 1);

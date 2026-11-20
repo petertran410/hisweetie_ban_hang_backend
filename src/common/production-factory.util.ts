@@ -1,4 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
+import { manufacturerStockValue } from '../manufacturers/manufacturer-stock.util';
 
 // ====================================================================
 // Gửi sản xuất ở nhà máy ngoài (Production.isExternal = true) — hàm dùng chung.
@@ -44,20 +45,30 @@ export function heldMaterialValueOf(row: {
   return Math.round(value * remaining * 100) / 100;
 }
 
-/** Tổng giá vốn nguyên liệu NCC đang giữ (phiếu Đã gửi / Nhận một phần). */
+/**
+ * Tổng giá vốn nguyên liệu NCC đang giữ: phiếu Đã gửi / Nhận một phần, cộng tồn
+ * nguyên liệu gửi trước (chưa dùng) tại các NSX gắn NCC này.
+ */
 export async function getHeldMaterialValue(
   tx: any,
   supplierId: number,
 ): Promise<number> {
-  const rows = await tx.production.findMany({
-    where: {
-      supplierId,
-      isExternal: true,
-      status: { in: [PRODUCTION_STATUS.SENT, PRODUCTION_STATUS.RECEIVING] },
-    },
-    select: { status: true, materialValue: true, quantity: true, receivedQuantity: true },
-  });
-  return Math.round(rows.reduce((sum: number, row: any) => sum + heldMaterialValueOf(row), 0) * 100) / 100;
+  const [rows, manufacturers] = await Promise.all([
+    tx.production.findMany({
+      where: {
+        supplierId,
+        isExternal: true,
+        status: { in: [PRODUCTION_STATUS.SENT, PRODUCTION_STATUS.RECEIVING] },
+      },
+      select: { status: true, materialValue: true, quantity: true, receivedQuantity: true },
+    }),
+    tx.manufacturer.findMany({ where: { supplierId }, select: { id: true } }),
+  ]);
+  const slips = rows.reduce((sum: number, row: any) => sum + heldMaterialValueOf(row), 0);
+  const stock = manufacturers.length
+    ? await manufacturerStockValue(tx, manufacturers.map((row: { id: number }) => row.id))
+    : 0;
+  return Math.round((slips + stock) * 100) / 100;
 }
 
 /** Phí sản xuất quy VND: VND giữ nguyên; ngoại tệ × tỷ giá, làm tròn đồng. */

@@ -52,6 +52,7 @@ export const PRODUCTION_EXTERNAL_VARIABLES: BuiltinPrintVariable[] = [
   { key: 'STT', label: 'STT', group: GROUP_ITEMS, sortOrder: 1, isItemVariable: true },
   { key: 'Ma_Hang', label: 'Mã hàng', group: GROUP_ITEMS, sortOrder: 2, isItemVariable: true },
   { key: 'Ten_Hang_Hoa', label: 'Tên hàng', group: GROUP_ITEMS, sortOrder: 3, isItemVariable: true },
+  { key: 'Lay_Tu', label: 'Lấy từ (Kho gửi / Tồn tại NSX)', group: GROUP_ITEMS, sortOrder: 4, isItemVariable: true },
   { key: 'Luong_Gui', label: 'Lượng gửi', group: GROUP_ITEMS, sortOrder: 4, isItemVariable: true },
   { key: 'Don_Vi_Gui', label: 'Đơn vị lượng gửi (g, kg, …)', group: GROUP_ITEMS, sortOrder: 5, isItemVariable: true },
   { key: 'So_Luong_Tru_Kho', label: 'Số lượng trừ kho', group: GROUP_ITEMS, sortOrder: 6, isItemVariable: true },
@@ -84,10 +85,11 @@ export const PRODUCTION_EXTERNAL_DEFAULT_TEMPLATE = `<div style="font-family: Ar
 <thead>
 <tr>
 <th style="${cell} width: 6%;">STT</th>
-<th style="${cell} width: 16%; text-align: left;">Mã hàng</th>
+<th style="${cell} width: 14%; text-align: left;">Mã hàng</th>
 <th style="${cell} text-align: left;">Tên hàng</th>
-<th style="${cell} width: 20%;">Lượng gửi</th>
-<th style="${cell} width: 20%;">Trừ kho</th>
+<th style="${cell} width: 14%;">Lấy từ</th>
+<th style="${cell} width: 17%;">Lượng gửi</th>
+<th style="${cell} width: 17%;">Trừ kho</th>
 </tr>
 </thead>
 <tbody>
@@ -95,6 +97,7 @@ export const PRODUCTION_EXTERNAL_DEFAULT_TEMPLATE = `<div style="font-family: Ar
 <td style="${cell} text-align: center;">{STT}</td>
 <td style="${cell}">{Ma_Hang}</td>
 <td style="${cell}">{Ten_Hang_Hoa}</td>
+<td style="${cell} text-align: center;">{Lay_Tu}</td>
 <td style="${cell} text-align: center;">{Luong_Gui} {Don_Vi_Gui}</td>
 <td style="${cell} text-align: center;">{So_Luong_Tru_Kho} {Don_Vi_Tinh}</td>
 </tr>
@@ -190,6 +193,8 @@ export function mapProductionExternal(p: any) {
       STT: String(index + 1),
       Ma_Hang: escapeHtml(line.componentCode),
       Ten_Hang_Hoa: escapeHtml(line.componentName),
+      // Dòng lấy từ tồn nguyên liệu gửi trước tại NSX: không đi kèm chuyến hàng này.
+      Lay_Tu: line.source === 'manufacturer' ? 'Tồn tại NSX' : 'Kho gửi',
       Luong_Gui: qty(line.actualGrams),
       Don_Vi_Gui: escapeHtml(line.unit === 'unit' ? line.componentProduct?.unit : line.unit),
       // Phiếu tạm chưa trừ kho: để trống thay vì 0.
