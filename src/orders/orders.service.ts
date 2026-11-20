@@ -33,7 +33,11 @@ import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 import {
   assertCanConfirmOrder,
   isDebtRuleUnset,
+  PREPAID_PAYMENT_EPSILON,
 } from '../common/debt-delivery.util';
+import { isSameOrderLines } from './order-lines.util';
+import { createOrderPaymentInTx } from './order-payments.service';
+import { createOrderPaymentNoteInTx } from '../payment-notes/payment-notes.service';
 import { RealtimeService } from 'src/realtime/realtime.service';
 import { searchCustomerIds } from '../common/customer-search.util';
 import { PromotionsService } from '../promotions/promotions.service';
@@ -866,6 +870,20 @@ export class OrdersService {
         );
       }
 
+      // Chỉ đơn Phiếu tạm mới được thêm/sửa/xóa sản phẩm. FE luôn gửi lại đủ
+      // dòng hàng khi lưu, nên chỉ chặn khi dòng hàng thật sự khác đã lưu.
+      if (
+        dto.items &&
+        existingOrder.status !== ORDER_STATUS.PENDING &&
+        !isSameOrderLines(existingOrder.items, dto.items)
+      ) {
+        const statusLabel =
+          existingOrder.statusValue || getStatusLabel(existingOrder.status);
+        throw new BadRequestException(
+          `Đơn hàng đang ở trạng thái "${statusLabel}", không thể thêm hoặc sửa sản phẩm. Vui lòng chuyển đơn về Phiếu tạm ở trang Đặt hàng rồi chỉnh sửa.`,
+        );
+      }
+
       // extraDiscount KM cấp đơn (chỉ tính lại khi items thay đổi)
       let promoExtraDiscount: number | null = null;
       // Tổng tiền hàng sau cập nhật — dùng quy đổi % → tiền cho giảm giá cấp đơn.
@@ -1075,6 +1093,38 @@ export class OrdersService {
         }
       }
 
+      // Tiền khách trả + phương thức thanh toán (CK/TM) của lần lưu này (Bán
+      // hàng → Sửa ĐH). Ghi TRONG transaction và TRƯỚC calculateTotals / kiểm
+      // tra công nợ bên dưới:
+      // - bước nào lỗi thì rollback hết, không còn phiếu thu lẻ → lưu lại
+      //   không tạo phiếu trùng;
+      // - assertCanConfirmOrder đọc đúng tiền vừa trả và TM/CK vừa chọn
+      //   (miễn kiểm tra "thu tiền mặt khi giao" theo ghi chú mới nhất).
+      const actor = user as { id: number; name?: string; email?: string };
+      for (const payment of dto.payments ?? []) {
+        const { auditLog } = await createOrderPaymentInTx(
+          tx,
+          {
+            orderId: id,
+            amount: payment.amount,
+            paymentMethod: payment.paymentMethod,
+            accountId: payment.accountId,
+          },
+          actor.id,
+        );
+        pendingAuditLogs.push(auditLog);
+      }
+      if (dto.paymentNote) {
+        const { auditLog } = await createOrderPaymentNoteInTx(
+          tx,
+          id,
+          dto.paymentNote,
+          actor.id,
+          actor.name || actor.email,
+        );
+        if (auditLog) pendingAuditLogs.push(auditLog);
+      }
+
       await this.calculateTotals(id, tx);
 
       // Phiếu tạm → Đã xác nhận: khách phải đủ điều kiện ra hóa đơn (không
@@ -1101,6 +1151,18 @@ export class OrdersService {
 
       if (!updatedOrderBeforeCalc) {
         throw new Error('Updated order not found');
+      }
+
+      // Đơn đã xác nhận mà bị đổi khách hoặc tăng tổng tiền (giảm giá, phí
+      // giao...) → khách phải vẫn đủ điều kiện như lúc xác nhận.
+      if (
+        existingOrder.status === ORDER_STATUS.CONFIRMED &&
+        updatedOrderBeforeCalc.status === ORDER_STATUS.CONFIRMED &&
+        (updatedOrderBeforeCalc.customerId !== existingOrder.customerId ||
+          Number(updatedOrderBeforeCalc.grandTotal) >
+            Number(existingOrder.grandTotal) + PREPAID_PAYMENT_EPSILON)
+      ) {
+        await assertCanConfirmOrder(tx, id);
       }
 
       const changes: string[] = [];

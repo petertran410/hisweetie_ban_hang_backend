@@ -14,6 +14,10 @@ import {
   LARK_APPROVAL_SOURCE_TYPE,
 } from '../internal-finance/internal-finance.constants';
 import {
+  FUEL_ADVANCE_ISSUE_BLOCK,
+  isFuelAdvanceEntry,
+} from '../internal-finance/fuel-advance';
+import {
   INTERNAL_FUND_SCOPE_BRANCHES,
   type InternalFundActor,
   type InternalFundPermissionAction,
@@ -638,6 +642,9 @@ export class InternalFundService {
     });
     if (!entry || entry.direction !== 'EXPENSE')
       throw new NotFoundException('Không tìm thấy khoản chi');
+    // Phiếu xăng Kho HN trừ vào tiền ứng xăng: quỹ đã trừ lúc chi đơn ứng.
+    if (isFuelAdvanceEntry(entry))
+      throw new BadRequestException(FUEL_ADVANCE_ISSUE_BLOCK);
     // Đã chi: quyền của trang Phiếu chi kho, hoặc quyền xác nhận chi của quỹ.
     if (
       !(await this.access_.can(

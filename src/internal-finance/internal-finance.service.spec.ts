@@ -1,6 +1,11 @@
 import { BadRequestException } from '@nestjs/common';
 import { FinanceAccessService } from '../auth/finance-access.service';
 import { InternalFinanceService } from './internal-finance.service';
+import {
+  FUEL_ADVANCE_BATCH_BLOCK,
+  fuelAdvanceEntryWhere,
+  fuelAdvanceUsedWhere,
+} from './fuel-advance';
 
 describe('InternalFinanceService', () => {
   const makeService = (overrides: any = {}) => {
@@ -28,6 +33,8 @@ describe('InternalFinanceService', () => {
     // Mặc định cho bước đồng bộ dòng quỹ của phiếu Tiền mặt kho.
     prisma.internalFinanceEntry = {
       findMany: jest.fn().mockResolvedValue([]),
+      // Gửi Approval tuần đếm phiếu xăng Kho HN còn trong batch.
+      count: jest.fn().mockResolvedValue(0),
       ...prisma.internalFinanceEntry,
     };
     prisma.internalFundTransaction = {
@@ -125,6 +132,104 @@ describe('InternalFinanceService', () => {
       }),
       7,
     );
+  });
+
+  it('refuses to send a batch still holding Kho HN fuel paid from the fuel advance', async () => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const { service, approvalLifecycle, prisma } = makeService({
+      internalFinanceWeeklyBatch: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 4,
+          branchId: 6,
+          status: 'READY',
+          approvalRequestId: null,
+          totalAmount: 100,
+          weekStart: new Date('2026-11-15T17:00:00Z'),
+          weekEnd: new Date('2026-11-22T16:59:59Z'),
+          updatedAt: new Date(),
+        }),
+        updateMany,
+      },
+    });
+    prisma.internalFinanceEntry.count.mockResolvedValue(2);
+    await expect(service.createWeeklyApproval(4, 7)).rejects.toThrow(
+      FUEL_ADVANCE_BATCH_BLOCK,
+    );
+    expect(updateMany).not.toHaveBeenCalled();
+    expect(approvalLifecycle.create).not.toHaveBeenCalled();
+  });
+
+  it('reads the Kho HN fuel advance: Lark vouchers in, ticked fuel out', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([
+      {
+        id: 1,
+        completedAt: new Date('2026-11-15T03:00:00.000Z'),
+        amount: 20000000,
+        description: 'Ứng xăng',
+        requesterName: 'Kế toán',
+        form: JSON.stringify([
+          { id: 'widget17321752802850001', name: 'Số tiền', value: 20000000 },
+          { id: 'a', name: 'Chi phí thuộc phòng ban', value: 'Kho Hà Nội' },
+          { id: 'b', name: 'Loại chi phí', value: 'Chi phí kho' },
+          {
+            id: 'c',
+            name: 'Khoản mục chi phí',
+            value: 'Xăng xe: oto, xe tại kho',
+          },
+        ]),
+      },
+      // Khớp chữ lọc thô nhưng khác khoản mục: bỏ.
+      {
+        id: 2,
+        completedAt: new Date('2026-11-16T03:00:00.000Z'),
+        amount: 900000,
+        description: null,
+        requesterName: null,
+        form: JSON.stringify([
+          { id: 'a', name: 'Chi phí thuộc phòng ban', value: 'Kho Hà Nội' },
+          { id: 'b', name: 'Loại chi phí', value: 'Chi phí kho' },
+          {
+            id: 'c',
+            name: 'Khoản mục chi phí',
+            value: 'Sửa chữa, bảo dưỡng; oto xe máy tại kho',
+          },
+        ]),
+      },
+    ]);
+    const findMany = jest.fn().mockResolvedValue([
+      {
+        id: 30,
+        code: 'TCNB-XD-HN-1',
+        amount: 500000,
+        occurredAt: new Date('2026-11-16T01:00:00.000Z'),
+        vehicleName: '29D',
+        managerReviewedAt: new Date('2026-11-16T02:00:00.000Z'),
+        accountantReviewedAt: new Date('2026-11-17T02:00:00.000Z'),
+        creator: { id: 8, name: 'Lái xe' },
+      },
+    ]);
+    const { service, vehicles } = makeService({
+      $queryRaw: queryRaw,
+      internalFinanceEntry: { findMany },
+    });
+
+    const ledger = await service.fuelAdvanceLedger({}, { id: 7 });
+
+    expect(vehicles.assertPermission).toHaveBeenCalledWith(
+      { id: 7 },
+      6,
+      'view',
+    );
+    expect(findMany.mock.calls[0][0].where.AND[0]).toBe(fuelAdvanceUsedWhere);
+    expect(ledger).toMatchObject({
+      opening: 0,
+      advanced: 20000000,
+      used: 500000,
+      closing: 19500000,
+    });
+    expect(ledger.byCreator).toEqual([
+      { creatorId: 8, creatorName: 'Lái xe', count: 1, amount: 500000 },
+    ]);
   });
 
   it('releases a claimed weekly batch when Approval submission fails', async () => {
@@ -822,6 +927,19 @@ describe('InternalFinanceService', () => {
       );
       expect(create.mock.calls[0][0].data.code).toBe(
         'TCNB-TUAN-HN-2026-W40-2026-09-28-2026-10-04',
+      );
+    });
+
+    it('leaves Kho HN fuel from 14/11 out of the week and the carry-over list', async () => {
+      const prepared = setup();
+      await prepared.service.prepareWarehouseExpenseBatch(week, user);
+      expect(prepared.findMany.mock.calls[0][0].where.NOT).toEqual(
+        fuelAdvanceEntryWhere,
+      );
+      const carry = setup();
+      await carry.service.warehouseCarryOver(user, 6, '2026-11-23');
+      expect(carry.findMany.mock.calls[0][0].where.NOT).toEqual(
+        fuelAdvanceEntryWhere,
       );
     });
 

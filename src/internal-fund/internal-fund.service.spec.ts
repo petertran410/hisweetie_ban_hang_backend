@@ -196,6 +196,16 @@ describe('Internal fund ledger', () => {
     },
   );
 
+  it('refuses Đã chi for Kho HN fuel paid from the fuel advance', async () => {
+    const f = fixture();
+    f.entry.category = 'FUEL';
+    f.entry.occurredAt = new Date('2026-11-20T03:00:00.000Z');
+    await expect(f.service.postExpenseEntry(12, 7, true)).rejects.toThrow(
+      'trừ vào tiền ứng xăng',
+    );
+    expect(f.transactions).toHaveLength(0);
+  });
+
   it('ticks Đã chi without a second fund posting when Lark already deducted it', async () => {
     const f = fixture();
     f.entry.sourceSnapshot = { larkLedgerRecorded: true };

@@ -12,13 +12,11 @@ import {
 } from '../vpsg-cash/vpsg-cash.accounts';
 import { NotificationFanoutService } from '../notifications/notification-fanout.service';
 import { SepayWebhookDto } from './dto/sepay-webhook.dto';
+import { extractDocumentCodeCandidates } from './utils/document-code';
 
 @Injectable()
 export class SepayService {
   private readonly logger = new Logger(SepayService.name);
-  // Regex bắt cả HD049170 lẫn HD049170.01 (suffix sau khi sửa hóa đơn).
-  // Case insensitive. Lấy match đầu tiên trong content.
-  private readonly CODE_REGEX = /(HD|DH)\d+(?:\.\d+)?/i;
 
   constructor(
     private prisma: PrismaService,
@@ -82,10 +80,11 @@ export class SepayService {
       };
     }
 
-    // 3. Regex tìm mã đơn trong content
+    // 3. Tìm mã đơn/hóa đơn trong content: thử lần lượt mọi mã ứng viên,
+    //    dùng mã đầu tiên có trong hệ thống.
     const content = payload.content || '';
-    const match = content.match(this.CODE_REGEX);
-    if (!match) {
+    const candidates = extractDocumentCodeCandidates(content);
+    if (candidates.length === 0) {
       this.logger.warn(
         `Sepay webhook: no order/invoice code in content "${content}" (tx ${sepayTxId})`,
       );
@@ -96,8 +95,30 @@ export class SepayService {
       };
     }
 
-    const code = match[0].toUpperCase();
-    const isInvoice = code.startsWith('HD');
+    let invoice: { id: number; soldById: number | null } | null = null;
+    let order: { id: number; soldById: number | null } | null = null;
+    for (const code of candidates) {
+      if (code.startsWith('HD')) {
+        invoice = await this.prisma.invoice.findUnique({
+          where: { code },
+          select: { id: true, soldById: true },
+        });
+      } else {
+        order = await this.prisma.order.findUnique({
+          where: { code },
+          select: { id: true, soldById: true },
+        });
+      }
+      if (invoice || order) break;
+    }
+
+    if (!invoice && !order) {
+      const tried = candidates.join(', ');
+      this.logger.warn(
+        `Sepay webhook: order/invoice ${tried} not found (tx ${sepayTxId})`,
+      );
+      return { success: true, message: `Order/invoice ${tried} not found` };
+    }
 
     // 5. System user (cho field createdBy + audit log)
     const userId = Number(
@@ -107,18 +128,7 @@ export class SepayService {
     // 6. Dispatch tới đúng service — reuse logic có sẵn
     //    (Payment + CashFlow + update paidAmount/debtAmount + customer.totalDebt
     //     đều được service xử lý cascade)
-    if (isInvoice) {
-      const invoice = await this.prisma.invoice.findUnique({
-        where: { code },
-        select: { id: true, soldById: true },
-      });
-      if (!invoice) {
-        this.logger.warn(
-          `Sepay webhook: invoice ${code} not found (tx ${sepayTxId})`,
-        );
-        return { success: true, message: `Invoice ${code} not found` };
-      }
-
+    if (invoice) {
       const accountId = await this.resolveAccountId(
         invoice.soldById,
         payload.accountNumber,
@@ -147,19 +157,8 @@ export class SepayService {
     }
 
     // Order branch
-    const order = await this.prisma.order.findUnique({
-      where: { code },
-      select: { id: true, soldById: true },
-    });
-    if (!order) {
-      this.logger.warn(
-        `Sepay webhook: order ${code} not found (tx ${sepayTxId})`,
-      );
-      return { success: true, message: `Order ${code} not found` };
-    }
-
     const accountId = await this.resolveAccountId(
-      order.soldById,
+      order!.soldById,
       payload.accountNumber,
       payload.subAccount ?? null,
       sepayTxId,
@@ -167,7 +166,7 @@ export class SepayService {
 
     const result = await this.orderPaymentsService.create(
       {
-        orderId: order.id,
+        orderId: order!.id,
         amount: payload.transferAmount,
         paymentMethod: 'transfer',
         accountId,

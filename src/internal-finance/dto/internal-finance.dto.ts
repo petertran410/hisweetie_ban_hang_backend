@@ -460,6 +460,17 @@ export class VehicleEntryQueryDto {
   limit = 50;
 }
 
+/** Trang Tiền ứng xăng xe Kho HN: khoảng ngày xem sổ. */
+export class FuelAdvanceQueryDto {
+  @IsOptional()
+  @IsDateString()
+  fromDate?: string;
+
+  @IsOptional()
+  @IsDateString()
+  toDate?: string;
+}
+
 export class ReviewInternalFinanceDto {
   @IsIn(Object.values(INTERNAL_FINANCE_REVIEW_DECISION))
   decision: string;

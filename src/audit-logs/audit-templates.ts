@@ -80,6 +80,12 @@ export const AUDIT_TEMPLATES: Record<
     category: 'payment',
     severity: 'warning',
   },
+  ORDER_PAYMENT_NOTE_CHANGE: {
+    template:
+      'Đổi phương thức thanh toán đơn đặt hàng {orderCode}: {from} → {to}',
+    category: 'order',
+    severity: 'info',
+  },
 
   PRODUCT_CREATE: {
     template: 'Thêm sản phẩm {productName} ({productCode}), giá {basePrice}',

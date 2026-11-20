@@ -245,7 +245,7 @@ export interface PaymentVoucherDetails {
   transferAmount: number | null;
 }
 
-const normalizeLabel = (value: unknown) =>
+export const normalizeLabel = (value: unknown) =>
   String(value ?? '')
     .normalize('NFD')
     .replace(/[̀-ͯ]/g, '')

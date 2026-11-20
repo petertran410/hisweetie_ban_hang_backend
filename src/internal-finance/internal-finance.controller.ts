@@ -44,6 +44,7 @@ import {
   UpdateWarehouseReceiptDto,
   UpdateWarehouseExpenseDto,
   UpdateVehicleEntryDto,
+  FuelAdvanceQueryDto,
   VehicleEntryQueryDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -463,6 +464,14 @@ export class InternalFinanceController {
     @CurrentUser() user: any,
   ) {
     return this.service.listVehicleEntries(query, user);
+  }
+
+  @Get('fuel-advance')
+  @ApiOperation({
+    summary: 'Kho HN fuel advance ledger (Lark vouchers in, fuel out)',
+  })
+  fuelAdvance(@Query() query: FuelAdvanceQueryDto, @CurrentUser() user: any) {
+    return this.service.fuelAdvanceLedger(query, user);
   }
 
   @Patch('vehicle-entries/:id')

@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateOrderPaymentDto } from './dto';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
@@ -9,6 +10,171 @@ import {
 } from '../audit-logs/audit-templates';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 
+type PendingAuditLog = Parameters<AuditLogsService['create']>[0];
+
+/**
+ * Tạo 1 phiếu thanh toán đơn hàng (+ phiếu thu sổ quỹ, tính lại công nợ khách)
+ * trong transaction `tx` của caller. Không ghi audit log ở đây mà trả về để
+ * caller ghi SAU KHI commit (transaction lỗi thì không có log thừa).
+ * Dùng chung cho POST /order-payments và lưu đơn ở Bán hàng (PUT /orders/:id).
+ */
+export async function createOrderPaymentInTx(
+  tx: Prisma.TransactionClient,
+  dto: CreateOrderPaymentDto,
+  userId: number,
+) {
+  const order = await tx.order.findUnique({
+    where: { id: dto.orderId },
+    include: {
+      customer: {
+        select: {
+          id: true,
+          code: true,
+          name: true,
+          contactNumber: true,
+          totalDebt: true,
+          addresses: {
+            where: { isDefault: true },
+            take: 1,
+            select: { address: true },
+          },
+        },
+      },
+    },
+  });
+
+  if (!order) {
+    throw new Error('Không tìm thấy đơn hàng');
+  }
+
+  const existingPayments = await tx.orderPayment.findMany({
+    where: { orderId: dto.orderId },
+  });
+  const paymentSequence = existingPayments.length + 1;
+  const code = `TT${order.code}-${paymentSequence}`;
+
+  const payment = await tx.orderPayment.create({
+    data: {
+      code,
+      orderId: dto.orderId,
+      paymentDate: dto.paymentDate ? new Date(dto.paymentDate) : new Date(),
+      amount: dto.amount,
+      paymentMethod: dto.paymentMethod || 'cash',
+      accountId: dto.accountId,
+      description:
+        dto.description ||
+        `Thu tiền đơn hàng ${order.code} - Lần ${paymentSequence}`,
+      sepayTransactionId: dto.sepayTransactionId,
+      sepayReferenceCode: dto.sepayReferenceCode,
+      createdBy: userId,
+    },
+  });
+
+  const allPayments = await tx.orderPayment.findMany({
+    where: { orderId: dto.orderId, status: { not: 2 } },
+  });
+  const paidAmount = allPayments.reduce((sum, p) => sum + Number(p.amount), 0);
+  const depositAmount = paidAmount;
+
+  await tx.order.update({
+    where: { id: dto.orderId },
+    data: {
+      paidAmount,
+      depositAmount,
+      debtAmount: Number(order.grandTotal) - paidAmount,
+    },
+  });
+
+  // [Reorder fix] Tạo CashFlow TRƯỚC khi recalculate
+  // để Formula A query thấy cả payment vừa tạo.
+  // Snapshot tạm null, sẽ update sau ở bước cuối.
+  const cashFlow = await tx.cashFlow.create({
+    data: {
+      code,
+      branchId: order.branchId ?? 1,
+      cashFlowGroupId: 3,
+      isReceipt: true,
+      amount: dto.amount,
+      transDate: dto.paymentDate ? new Date(dto.paymentDate) : new Date(),
+      method: dto.paymentMethod || 'cash',
+      accountId: dto.accountId,
+      partnerType: 'C',
+      partnerId: order.customerId,
+      partnerName: order.customer?.name,
+      contactNumber: order.customer?.contactNumber,
+      address: order.customer?.addresses?.[0]?.address || null,
+      description:
+        dto.description ||
+        `Thu tiền đơn hàng ${order.code} - Lần ${paymentSequence}`,
+      status: 0,
+      statusValue: 'Đã thanh toán',
+      createdBy: userId,
+      usedForFinancialReporting: 1,
+      customerDebtSnapshot: null,
+      sepayReferenceCode: dto.sepayReferenceCode,
+    },
+  });
+
+  if (order.customerId) {
+    await recalcCustomerDebt(tx, order.customerId);
+
+    // Sau khi recalculate, đọc lại totalDebt và update snapshot cho CashFlow vừa tạo
+    const updatedCustomer = await tx.customer.findUnique({
+      where: { id: order.customerId },
+      select: { totalDebt: true },
+    });
+    if (updatedCustomer) {
+      await tx.cashFlow.update({
+        where: { id: cashFlow.id },
+        data: { customerDebtSnapshot: Number(updatedCustomer.totalDebt) },
+      });
+    }
+  }
+
+  const user = await tx.user.findUnique({
+    where: { id: userId },
+    select: { name: true, email: true },
+  });
+
+  const auditLog: PendingAuditLog = {
+    actionType: 'POST',
+    actionCode: 'ORDER_PAYMENT_CREATE',
+    entityType: 'order_payment',
+    entityId: payment.id.toString(),
+    entityCode: payment.code,
+    category: getCategoryFromActionCode('ORDER_PAYMENT_CREATE'),
+    severity: getSeverityFromActionCode('ORDER_PAYMENT_CREATE'),
+    snapshot: {
+      code: payment.code,
+      amount: Number(payment.amount),
+      paymentMethod: payment.paymentMethod,
+      paymentDate: payment.paymentDate,
+      order: {
+        code: order.code,
+        customer: order.customer
+          ? { code: order.customer.code, name: order.customer.name }
+          : null,
+      },
+      accountId: payment.accountId,
+    },
+    message: renderAuditMessage('ORDER_PAYMENT_CREATE', {
+      paymentCode: payment.code,
+      orderCode: order.code,
+      amount: Number(payment.amount),
+    }),
+    messageTemplate: 'ORDER_PAYMENT_CREATE',
+    userId,
+    userName: user?.name || user?.email || 'System',
+    branchId: order.branchId || undefined,
+  };
+
+  return {
+    payment,
+    cashFlow,
+    auditLog,
+  };
+}
+
 @Injectable()
 export class OrderPaymentsService {
   constructor(
@@ -17,160 +183,11 @@ export class OrderPaymentsService {
   ) {}
 
   async create(dto: CreateOrderPaymentDto, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
-      const order = await tx.order.findUnique({
-        where: { id: dto.orderId },
-        include: {
-          customer: {
-            select: {
-              id: true,
-              code: true,
-              name: true,
-              contactNumber: true,
-              totalDebt: true,
-              addresses: {
-                where: { isDefault: true },
-                take: 1,
-                select: { address: true },
-              },
-            },
-          },
-        },
-      });
-
-      if (!order) {
-        throw new Error('Không tìm thấy đơn hàng');
-      }
-
-      const existingPayments = await tx.orderPayment.findMany({
-        where: { orderId: dto.orderId },
-      });
-      const paymentSequence = existingPayments.length + 1;
-      const code = `TT${order.code}-${paymentSequence}`;
-
-      const payment = await tx.orderPayment.create({
-        data: {
-          code,
-          orderId: dto.orderId,
-          paymentDate: dto.paymentDate ? new Date(dto.paymentDate) : new Date(),
-          amount: dto.amount,
-          paymentMethod: dto.paymentMethod || 'cash',
-          accountId: dto.accountId,
-          description:
-            dto.description ||
-            `Thu tiền đơn hàng ${order.code} - Lần ${paymentSequence}`,
-          sepayTransactionId: dto.sepayTransactionId,
-          sepayReferenceCode: dto.sepayReferenceCode,
-          createdBy: userId,
-        },
-      });
-
-      const allPayments = await tx.orderPayment.findMany({
-        where: { orderId: dto.orderId, status: { not: 2 } },
-      });
-      const paidAmount = allPayments.reduce(
-        (sum, p) => sum + Number(p.amount),
-        0,
-      );
-      const depositAmount = paidAmount;
-
-      await tx.order.update({
-        where: { id: dto.orderId },
-        data: {
-          paidAmount,
-          depositAmount,
-          debtAmount: Number(order.grandTotal) - paidAmount,
-        },
-      });
-
-      // [Reorder fix] Tạo CashFlow TRƯỚC khi recalculate
-      // để Formula A query thấy cả payment vừa tạo.
-      // Snapshot tạm null, sẽ update sau ở bước cuối.
-      const cashFlow = await tx.cashFlow.create({
-        data: {
-          code,
-          branchId: order.branchId ?? 1,
-          cashFlowGroupId: 3,
-          isReceipt: true,
-          amount: dto.amount,
-          transDate: dto.paymentDate ? new Date(dto.paymentDate) : new Date(),
-          method: dto.paymentMethod || 'cash',
-          accountId: dto.accountId,
-          partnerType: 'C',
-          partnerId: order.customerId,
-          partnerName: order.customer?.name,
-          contactNumber: order.customer?.contactNumber,
-          address: order.customer?.addresses?.[0]?.address || null,
-          description:
-            dto.description ||
-            `Thu tiền đơn hàng ${order.code} - Lần ${paymentSequence}`,
-          status: 0,
-          statusValue: 'Đã thanh toán',
-          createdBy: userId,
-          usedForFinancialReporting: 1,
-          customerDebtSnapshot: null,
-          sepayReferenceCode: dto.sepayReferenceCode,
-        },
-      });
-
-      if (order.customerId) {
-        await this.recalculateCustomerDebt(order.customerId, tx);
-
-        // Sau khi recalculate, đọc lại totalDebt và update snapshot cho CashFlow vừa tạo
-        const updatedCustomer = await tx.customer.findUnique({
-          where: { id: order.customerId },
-          select: { totalDebt: true },
-        });
-        if (updatedCustomer) {
-          await tx.cashFlow.update({
-            where: { id: cashFlow.id },
-            data: { customerDebtSnapshot: Number(updatedCustomer.totalDebt) },
-          });
-        }
-      }
-
-      const user = await tx.user.findUnique({
-        where: { id: userId },
-        select: { name: true, email: true },
-      });
-
-      await this.auditLogsService.create({
-        actionType: 'POST',
-        actionCode: 'ORDER_PAYMENT_CREATE',
-        entityType: 'order_payment',
-        entityId: payment.id.toString(),
-        entityCode: payment.code,
-        category: getCategoryFromActionCode('ORDER_PAYMENT_CREATE'),
-        severity: getSeverityFromActionCode('ORDER_PAYMENT_CREATE'),
-        snapshot: {
-          code: payment.code,
-          amount: Number(payment.amount),
-          paymentMethod: payment.paymentMethod,
-          paymentDate: payment.paymentDate,
-          order: {
-            code: order.code,
-            customer: order.customer
-              ? { code: order.customer.code, name: order.customer.name }
-              : null,
-          },
-          accountId: payment.accountId,
-        },
-        message: renderAuditMessage('ORDER_PAYMENT_CREATE', {
-          paymentCode: payment.code,
-          orderCode: order.code,
-          amount: Number(payment.amount),
-        }),
-        messageTemplate: 'ORDER_PAYMENT_CREATE',
-        userId,
-        userName: user?.name || user?.email || 'System',
-        branchId: order.branchId || undefined,
-      });
-
-      return {
-        payment,
-        cashFlow,
-      };
-    });
+    const { payment, cashFlow, auditLog } = await this.prisma.$transaction(
+      (tx) => createOrderPaymentInTx(tx, dto, userId),
+    );
+    await this.auditLogsService.create(auditLog);
+    return { payment, cashFlow };
   }
 
   async findAllByOrder(orderId: number) {

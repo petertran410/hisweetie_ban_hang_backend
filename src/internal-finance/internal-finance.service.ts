@@ -54,6 +54,7 @@ import {
   BulkCheckWarehouseExpenseDto,
   AddInternalFinanceAttachmentsDto,
   CreateWarehouseExpenseDto,
+  FuelAdvanceQueryDto,
   InternalFinanceQueryDto,
   LarkApprovalQueryDto,
   SalaryAdvanceQueryDto,
@@ -69,6 +70,19 @@ import {
   WarehouseExpenseQueryDto,
 } from './dto';
 import { InternalFinanceCodeService } from './internal-finance-code.service';
+import {
+  FUEL_ADVANCE_BATCH_BLOCK,
+  FUEL_ADVANCE_BRANCH_ID,
+  FUEL_ADVANCE_FROM,
+  FUEL_VOUCHER_FORM_HINT,
+  buildFuelAdvanceLedger,
+  fuelAdvanceEntryWhere,
+  fuelAdvanceFromVoucher,
+  fuelAdvanceUsedWhere,
+  fuelApprovedAt,
+  isFuelAdvanceEntry,
+  type FuelAdvanceIn,
+} from './fuel-advance';
 import { INVOICE_STATUS } from '../invoices/dto/invoice-status.constants';
 import { InternalFundService } from '../internal-fund/internal-fund.service';
 import {
@@ -954,7 +968,17 @@ export class InternalFinanceService {
       amount: Number(sums._sum.amount || 0),
       issuedAmount: Number(issued._sum.amount || 0),
     };
-    return { data, total, page, limit, totals };
+    return {
+      // Phiếu xăng Kho HN từ mốc: trừ vào tiền ứng xăng, không có "Đã chi".
+      data: data.map((row) => ({
+        ...row,
+        fuelAdvance: isFuelAdvanceEntry(row),
+      })),
+      total,
+      page,
+      limit,
+      totals,
+    };
   }
 
   /** Sắp xếp theo cột (Ngày chi / Số tiền); cùng giá trị thì phiếu mới trước. */
@@ -2000,11 +2024,76 @@ export class InternalFinanceService {
       data: rows.map((row: any) => ({
         ...row,
         metrics: metrics.get(row.id) || null,
+        // Phiếu xăng Kho HN từ mốc: trừ vào tiền ứng xăng, không vào Approval tuần.
+        fuelAdvance: isFuelAdvanceEntry(row),
       })),
       total,
       page,
       limit,
     };
+  }
+
+  /**
+   * Trang Tiền ứng xăng xe Kho HN: đơn PHIẾU CHI ứng xăng đã duyệt cộng vào,
+   * phiếu xăng đủ 2 tick trừ ra. Chỉ đọc, không ghi quỹ (đơn PHIẾU CHI đã trừ
+   * quỹ theo nguồn tiền mặt như mọi đơn khác).
+   */
+  async fuelAdvanceLedger(query: FuelAdvanceQueryDto, user: any) {
+    await this.vehicles.assertPermission(user, FUEL_ADVANCE_BRANCH_ID, 'view');
+    const from = query.fromDate ? fundDayStart(query.fromDate) : undefined;
+    const to = query.toDate ? this.nextFundDayStart(query.toDate) : undefined;
+    // Lọc thô theo chữ khoản mục trong form; khớp đủ 3 ô ở fuelAdvanceFromVoucher.
+    const vouchers = await this.prisma.$queryRaw<
+      Array<{
+        id: number;
+        completedAt: Date | null;
+        amount: Prisma.Decimal | null;
+        description: string | null;
+        requesterName: string | null;
+        form: string | null;
+      }>
+    >`
+      SELECT id, completed_at AS "completedAt", amount, description,
+             requester_name AS "requesterName",
+             detail_snapshot->>'form' AS form
+      FROM lark_approval_instances
+      WHERE form_kind = 'PHIEU_CHI'
+        AND status = 'APPROVED'
+        AND completed_at >= ${FUEL_ADVANCE_FROM}
+        ${to ? Prisma.sql`AND completed_at < ${to}` : Prisma.empty}
+        AND detail_snapshot->>'form' ILIKE ${FUEL_VOUCHER_FORM_HINT}`;
+    const advances = vouchers
+      .map((row) => fuelAdvanceFromVoucher(row))
+      .filter((row): row is FuelAdvanceIn => Boolean(row));
+    const entries = await this.prisma.internalFinanceEntry.findMany({
+      where: {
+        AND: [
+          fuelAdvanceUsedWhere,
+          ...(to ? [{ occurredAt: { lt: to } }] : []),
+        ],
+      },
+      select: {
+        id: true,
+        code: true,
+        amount: true,
+        occurredAt: true,
+        vehicleName: true,
+        managerReviewedAt: true,
+        accountantReviewedAt: true,
+        creator: { select: { id: true, name: true } },
+      },
+    });
+    const usages = entries.map((entry) => ({
+      id: entry.id,
+      code: entry.code,
+      at: fuelApprovedAt(entry),
+      occurredAt: entry.occurredAt,
+      amount: Number(entry.amount),
+      vehicle: entry.vehicleName,
+      creatorId: entry.creator?.id ?? null,
+      creatorName: entry.creator?.name ?? null,
+    }));
+    return buildFuelAdvanceLedger(advances, usages, { from, to });
   }
 
   async updateVehicleEntry(id: number, dto: UpdateVehicleEntryDto, user: any) {
@@ -2673,6 +2762,8 @@ export class InternalFinanceService {
             : {}),
           cashFlowId: null,
           cashIssued: false,
+          // Phiếu xăng Kho HN từ mốc trừ vào tiền ứng xăng, không gom tuần.
+          NOT: fuelAdvanceEntryWhere,
           // Kho: dòng đồng bộ về cũng gom được khi đã đủ hai tick. Chi nhánh
           // khác giữ nguyên: khoản nhập lịch sử chỉ để hiển thị.
           ...(options.requireBothChecks
@@ -2828,7 +2919,7 @@ export class InternalFinanceService {
       carryOverIgnored?: boolean;
     },
   ) {
-    const base: Prisma.InternalFinanceEntryWhereInput = {
+    const inWeek: Prisma.InternalFinanceEntryWhereInput = {
       branchId: scope.branchId,
       direction: INTERNAL_FINANCE_DIRECTION.EXPENSE,
       occurredAt: { gte: scope.weekStart, lte: scope.weekEnd },
@@ -2836,6 +2927,10 @@ export class InternalFinanceService {
       ...(scope.categories?.length
         ? { category: { in: scope.categories } }
         : {}),
+    };
+    // Phiếu xăng Kho HN từ mốc không gom tuần: đếm riêng để báo lý do.
+    const base: Prisma.InternalFinanceEntryWhereInput = {
+      AND: [inWeek, { NOT: fuelAdvanceEntryWhere }],
     };
     const free: Prisma.InternalFinanceEntryWhereInput = scope.excludeBatchId
       ? {
@@ -2845,14 +2940,16 @@ export class InternalFinanceService {
           ],
         }
       : { weeklyBatchId: null };
-    const [inOtherBatch, issued, unchecked] = await Promise.all([
+    const [inOtherBatch, issued, unchecked, fuelAdvance] = await Promise.all([
       tx.internalFinanceEntry.count({
         where: {
-          ...base,
-          weeklyBatchId: { not: null },
-          ...(scope.excludeBatchId
-            ? { NOT: { weeklyBatchId: scope.excludeBatchId } }
-            : {}),
+          AND: [
+            base,
+            { weeklyBatchId: { not: null } },
+            ...(scope.excludeBatchId
+              ? [{ NOT: { weeklyBatchId: scope.excludeBatchId } }]
+              : []),
+          ],
         },
       }),
       tx.internalFinanceEntry.count({
@@ -2875,6 +2972,9 @@ export class InternalFinanceService {
             },
           ],
         },
+      }),
+      tx.internalFinanceEntry.count({
+        where: { AND: [inWeek, fuelAdvanceEntryWhere] },
       }),
     ]);
     const range = [scope.weekStart, scope.weekEnd]
@@ -2902,6 +3002,7 @@ export class InternalFinanceService {
             ...(scope.categories?.length
               ? { category: { in: scope.categories } }
               : {}),
+            NOT: fuelAdvanceEntryWhere,
           },
         })
       : 0;
@@ -2909,6 +3010,7 @@ export class InternalFinanceService {
       unchecked && `${unchecked} phiếu chưa đủ tick Quản lý kho/Kế toán kho`,
       issued && `${issued} phiếu đã chi`,
       inOtherBatch && `${inOtherBatch} phiếu đã thuộc batch tuần khác`,
+      fuelAdvance && `${fuelAdvance} phiếu xăng trừ vào tiền ứng xăng`,
       leftover &&
         `${leftover} phiếu sót tuần trước (thêm vào approval sau khi đã có batch tuần này)`,
     ].filter(Boolean);
@@ -2992,6 +3094,11 @@ export class InternalFinanceService {
 
     await this.prisma.$transaction(async (tx) => {
       await this.internalFund.lockBranch(tx, [batch.branchId]);
+      // Batch gom trước khi đổi luồng xăng: phải gom lại để phiếu xăng rơi ra.
+      const fuelAdvance = await tx.internalFinanceEntry.count({
+        where: { AND: [{ weeklyBatchId: batch.id }, fuelAdvanceEntryWhere] },
+      });
+      if (fuelAdvance) throw new BadRequestException(FUEL_ADVANCE_BATCH_BLOCK);
       const claimed = await tx.internalFinanceWeeklyBatch.updateMany({
         where: {
           id: batch.id,
@@ -3082,6 +3189,7 @@ export class InternalFinanceService {
         weeklyBatchId: null,
         cashIssued: false,
         cashFlowId: null,
+        NOT: fuelAdvanceEntryWhere,
         managerReviewedAt: { not: null },
         accountantReviewedAt: { not: null },
         status: {
@@ -3143,6 +3251,7 @@ export class InternalFinanceService {
           weeklyBatchId: null,
           cashIssued: false,
           cashFlowId: null,
+          NOT: fuelAdvanceEntryWhere,
           managerReviewedAt: { not: null },
           accountantReviewedAt: { not: null },
           status: {
