@@ -48,6 +48,7 @@ describe('public-price util', () => {
     expect(guessGroup('Gấu Lermao - Siro Nho Xanh 1kg')).toBe('jam');
     expect(guessGroup('TRÀ PHƯỢNG HOÀNG - Olong Nhài 500gr')).toBe('tea');
     expect(guessGroup('Gấu Lermao - Thạch Nổ Dừa 900gr')).toBe('top');
+    expect(guessGroup('Gấu Lermao - Bột Matcha 500gr')).toBe('pow');
   });
 
   it('chuẩn hoá cấu hình: bỏ trùng, giá trị sai thành mặc định', () => {
@@ -75,18 +76,58 @@ describe('public-price util', () => {
         hidePrice: ['S'],
         name: '',
         desc: '',
+        imageId: null,
+        brandId: null,
+        size: '',
+        spec: '',
+        unit: '',
       },
       {
         productId: 2,
-        group: 'top',
+        group: 'tea',
         visible: true,
         tag: null,
         hidePrice: [],
         name: '',
         desc: '',
+        imageId: null,
+        brandId: null,
+        size: '',
+        spec: '',
+        unit: '',
       },
     ]);
     expect([c.validFrom, c.validTo]).toEqual(['2026-11-01', '']);
+  });
+
+  it('nhóm tuỳ chỉnh: giữ thứ tự, bỏ mã sai/trùng; sản phẩm thuộc nhóm đã xoá về nhóm đầu', () => {
+    const c = normalizeConfig({
+      groups: [
+        { key: 'g1abc', name: ' Bột pha chế ', icon: 'jam' },
+        { key: 'tea', name: 'Trà', icon: 'tea', visible: false },
+        { key: 'tea', name: 'Trùng' },
+        { key: 'Bad Key', name: 'Sai mã' },
+        { key: 'g2', name: '', icon: 'lạ' },
+      ],
+      items: [
+        { productId: 1, group: 'tea' },
+        { productId: 2, group: 'jam' },
+      ],
+    });
+    expect(c.groups).toEqual([
+      { key: 'g1abc', name: 'Bột pha chế', icon: 'jam', visible: true },
+      { key: 'tea', name: 'Trà', icon: 'tea', visible: false },
+      { key: 'g2', name: 'Nhóm sản phẩm', icon: 'top', visible: true },
+    ]);
+    expect(c.items.map((it) => it.group)).toEqual(['tea', 'g1abc']);
+    // Danh sách rỗng → các nhóm mặc định
+    expect(normalizeConfig({ groups: [] }).groups.map((g) => g.key)).toEqual([
+      'tea',
+      'jam',
+      'top',
+      'froz',
+      'pow',
+    ]);
   });
 
   it('link Zalo: chỉ nhận https://, còn lại thành rỗng', () => {
@@ -123,7 +164,7 @@ describe('PublicPriceService.build', () => {
     isActive: true,
     tradeMarkId: 86,
     tradeMark: { name: 'Lermao' },
-    images: [{ image: `https://img/${id}.jpg` }],
+    images: [{ id: id * 10, image: `https://img/${id}.jpg` }],
     ...over,
   });
   const make = (
@@ -213,9 +254,108 @@ describe('PublicPriceService.build', () => {
       new Date('2026-11-20T02:00:00Z'),
     );
     expect(data.products.map((p) => p.id)).toEqual([6, 1]);
-    expect(data.groups.map((g) => g.key)).toEqual(['tea', 'jam', 'froz']);
+    expect(data.groups.map((g) => g.key)).toEqual([
+      'tea',
+      'jam',
+      'froz',
+      'pow',
+    ]);
     expect(data.publishedAt).toBe('2026-11-20T02:00:00.000Z');
     expect(catalog).toHaveLength(6);
+  });
+
+  it('trang public xếp nhóm theo thứ tự cấu hình, kèm tên và kiểu hiển thị', async () => {
+    const { svc } = make([product(1), product(2), product(3)]);
+    const config = normalizeConfig({
+      groups: [
+        { key: 'g9', name: 'Bột', icon: 'jam' },
+        { key: 'tea', name: 'Trà Lá', icon: 'tea' },
+        { key: 'top', name: 'Topping', icon: 'top', visible: false },
+      ],
+      items: [
+        { productId: 1, group: 'tea' },
+        { productId: 2, group: 'g9' },
+        { productId: 3, group: 'top' },
+      ],
+    });
+    const { data } = await svc.build(config, null);
+    expect(data.groups).toEqual([
+      { key: 'g9', name: 'Bột', icon: 'jam' },
+      { key: 'tea', name: 'Trà Lá', icon: 'tea' },
+    ]);
+    expect(data.products.map((p) => [p.id, p.group])).toEqual([
+      [2, 'g9'],
+      [1, 'tea'],
+    ]);
+  });
+
+  it('ảnh trang public: dùng ảnh đã chọn của chính sản phẩm, ảnh lạ/đã xoá → ảnh chính', async () => {
+    const withImages = (id: number) =>
+      product(id, {
+        images: [
+          { id: id * 10, image: `https://img/${id}-chinh.jpg` },
+          { id: id * 10 + 1, image: `https://img/${id}-phu.jpg` },
+        ],
+      });
+    const { svc } = make([withImages(1), withImages(2), withImages(3)]);
+    const config = normalizeConfig({
+      items: [
+        { productId: 1, group: 'tea', imageId: 11 },
+        // Ảnh 21 thuộc sản phẩm 2, không phải sản phẩm 3
+        { productId: 3, group: 'tea', imageId: 21 },
+        { productId: 2, group: 'tea', imageId: 999 },
+      ],
+    });
+    const { data, catalog } = await svc.build(config, null);
+    expect(data.products.map((p) => [p.id, p.image])).toEqual([
+      [1, 'https://img/1-phu.jpg'],
+      [3, 'https://img/3-chinh.jpg'],
+      [2, 'https://img/2-chinh.jpg'],
+    ]);
+    expect(catalog.find((c) => c.id === 1)?.images.map((i) => i.id)).toEqual([
+      10, 11,
+    ]);
+  });
+
+  it('ghi đè thương hiệu (chỉ thương hiệu đã cấu hình), khối lượng, quy cách, đơn vị tính', async () => {
+    const { svc } = make([
+      product(1),
+      product(2),
+      product(3, { tradeMarkId: 7, tradeMark: { name: 'Amo' } }),
+    ]);
+    const config = normalizeConfig({
+      brands: [
+        { tradeMarkId: 86, label: 'LerMao' },
+        { tradeMarkId: 5, label: 'Trà Phượng Hoàng' },
+        { tradeMarkId: 7, label: 'Amo Pastel', visible: false },
+      ],
+      items: [
+        {
+          productId: 1,
+          group: 'tea',
+          brandId: 5,
+          size: '1,2kg',
+          spec: '10 Túi/Thùng',
+          unit: 'Túi lớn',
+        },
+        // Thương hiệu 99 chưa cấu hình → giữ thương hiệu của sản phẩm
+        { productId: 2, group: 'tea', brandId: 99 },
+        // Sản phẩm của thương hiệu đang ẩn vẫn hiện khi chọn thương hiệu khác
+        { productId: 3, group: 'tea', brandId: 86 },
+      ],
+    });
+    const { data } = await svc.build(config, null);
+    expect(
+      data.products.map((p) => [p.id, p.brandId, p.size, p.spec, p.unit]),
+    ).toEqual([
+      [1, 5, '1,2kg', '10 Túi/Thùng', 'Túi lớn'],
+      [2, 86, '1kg', '12 Túi/Thùng', 'Túi'],
+      [3, 86, '1kg', '12 Túi/Thùng', 'Túi'],
+    ]);
+    expect(data.brands).toEqual([
+      { id: 86, name: 'LerMao' },
+      { id: 5, name: 'Trà Phượng Hoàng' },
+    ]);
   });
 
   it('bảng giá nguồn không tồn tại / đã ngừng → không đọc giá của bảng giá đó, giá thành Liên hệ', async () => {
