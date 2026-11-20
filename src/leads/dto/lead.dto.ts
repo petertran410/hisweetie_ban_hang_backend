@@ -149,6 +149,11 @@ export class LeadListQueryDto {
   @IsInt()
   salePicId?: number;
 
+  // Tên kênh, phân tách dấu phẩy
+  @IsOptional()
+  @IsString()
+  channels?: string;
+
   @IsOptional()
   @IsString()
   from?: string;

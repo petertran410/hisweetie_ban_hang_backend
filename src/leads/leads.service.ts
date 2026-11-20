@@ -10,6 +10,8 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import * as lark from '@larksuiteoapi/node-sdk';
+import * as ExcelJS from 'exceljs';
+import type { Response } from 'express';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { LARK_CLIENT } from '../lark-sync/lark-client.provider';
@@ -25,7 +27,9 @@ import {
   isAcceptableStepError,
   ZALO_PHONE_NOT_FOUND,
   LEAD_CATEGORY_LABEL,
+  LEAD_SOURCE_LABEL,
   LEAD_SOURCES,
+  LEAD_STATUS_LABEL,
   leadCode,
   renderLeadTemplate,
   StepResult,
@@ -78,9 +82,11 @@ export class LeadsService {
 
   // ───────────────────────────── danh sách / chi tiết ─────────────────────────────
 
-  async list(q: LeadListQueryDto, actor: LeadActor) {
-    const page = Math.max(1, q.page ?? 1);
-    const limit = Math.min(100, Math.max(1, q.limit ?? 15));
+  /** Điều kiện lọc lead (danh sách + xuất Excel). */
+  private listWhere(
+    q: LeadListQueryDto,
+    actor: LeadActor,
+  ): Prisma.LeadWhereInput {
     const csv = (v?: string) =>
       v
         ? v
@@ -96,6 +102,8 @@ export class LeadsService {
     if (csv(q.statuses).length) and.push({ status: { in: csv(q.statuses) } });
     if (q.provinceCode) and.push({ provinceCode: q.provinceCode });
     if (q.salePicId) and.push({ salePicId: q.salePicId });
+    if (csv(q.channels).length)
+      and.push({ channelName: { in: csv(q.channels) } });
     if (q.linked)
       and.push({ customerId: q.linked === 'true' ? { not: null } : null });
     if (q.from) and.push({ createdAt: { gte: new Date(q.from) } });
@@ -114,7 +122,13 @@ export class LeadsService {
         ],
       });
     }
-    const where: Prisma.LeadWhereInput = and.length ? { AND: and } : {};
+    return and.length ? { AND: and } : {};
+  }
+
+  async list(q: LeadListQueryDto, actor: LeadActor) {
+    const page = Math.max(1, q.page ?? 1);
+    const limit = Math.min(100, Math.max(1, q.limit ?? 15));
+    const where = this.listWhere(q, actor);
     const [data, total] = await Promise.all([
       this.prisma.lead.findMany({
         where,
@@ -143,6 +157,131 @@ export class LeadsService {
       page,
       limit,
     };
+  }
+
+  /** Xuất Excel danh sách lead theo bộ lọc đang xem (cùng phạm vi quyền như danh sách). */
+  async exportList(q: LeadListQueryDto, actor: LeadActor, res: Response) {
+    const where = this.listWhere(q, actor);
+    const BATCH_SIZE = 500;
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const sheet = workbook.addWorksheet('Lead');
+    const dateFmt = 'dd/mm/yyyy hh:mm';
+    sheet.columns = [
+      { header: 'STT', key: 'stt', width: 6 },
+      { header: 'Mã lead', key: 'code', width: 14 },
+      { header: 'Tên', key: 'name', width: 24 },
+      { header: 'SĐT', key: 'phone', width: 14 },
+      { header: 'SĐT Zalo', key: 'zaloPhone', width: 14 },
+      { header: 'Phân loại', key: 'category', width: 18 },
+      { header: 'Tỉnh/thành', key: 'province', width: 22 },
+      { header: 'Phường/xã', key: 'ward', width: 20 },
+      { header: 'Nguồn', key: 'source', width: 12 },
+      { header: 'Kênh', key: 'channel', width: 30 },
+      { header: 'Nhu cầu', key: 'need', width: 30 },
+      { header: 'Trạng thái', key: 'status', width: 16 },
+      { header: 'CSKH', key: 'cskh', width: 18 },
+      { header: 'Ghi chú CSKH', key: 'cskhNote', width: 30 },
+      { header: 'Sale PIC', key: 'sale', width: 18 },
+      { header: 'Mã khách hàng', key: 'customerCode', width: 16 },
+      { header: 'Tên khách hàng', key: 'customerName', width: 24 },
+      {
+        header: 'Ngày tạo',
+        key: 'createdAt',
+        width: 18,
+        style: { numFmt: dateFmt },
+      },
+      {
+        header: 'Ngày chuyển đổi',
+        key: 'convertedAt',
+        width: 18,
+        style: { numFmt: dateFmt },
+      },
+    ];
+    const headerRow = sheet.getRow(1);
+    headerRow.font = { bold: true, size: 11 };
+    headerRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFD9E1F2' },
+    };
+    headerRow.commit();
+
+    // Excel không có múi giờ: ghi giờ Việt Nam (UTC+7)
+    const vn = (d: Date | null) =>
+      d ? new Date(d.getTime() + 7 * 3600_000) : null;
+    let stt = 0;
+    let cursor = 0;
+    while (true) {
+      const batch = await this.prisma.lead.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: cursor,
+        take: BATCH_SIZE,
+        include: {
+          cskhUser: userBrief,
+          salePic: userBrief,
+          conversations: { select: { tid: true, pagePid: true } },
+        },
+      });
+      if (!batch.length) break;
+      const customersOf = await this.linkedCustomers(batch);
+      const salePicOf = await this.customerSalePics(
+        [...customersOf.values()].flat().map((c) => c.id),
+      );
+      for (const raw of batch) {
+        const customers = customersOf.get(raw.id) ?? [];
+        const l = this.withCustomerSalePic(raw, customers, salePicOf);
+        sheet
+          .addRow({
+            stt: ++stt,
+            code: leadCode(l.id),
+            name: l.name,
+            phone: l.phone ?? '',
+            zaloPhone: l.zaloPhone ?? '',
+            category: LEAD_CATEGORY_LABEL[l.category] ?? l.category,
+            province: l.provinceName ?? '',
+            ward: l.wardName ?? '',
+            source: LEAD_SOURCE_LABEL[l.source] ?? l.source,
+            channel: l.channelName ?? '',
+            need: l.need ?? '',
+            status: LEAD_STATUS_LABEL[l.status] ?? l.status,
+            cskh: l.cskhUser?.name ?? '',
+            cskhNote: l.cskhNote ?? '',
+            sale: (l.salePic as { name: string } | null)?.name ?? '',
+            customerCode: customers.map((c) => c.code ?? '').join(', '),
+            customerName: customers.map((c) => c.name).join(', '),
+            createdAt: vn(l.createdAt),
+            convertedAt: vn(l.convertedAt),
+          })
+          .commit();
+      }
+      cursor += batch.length;
+      if (batch.length < BATCH_SIZE) break;
+    }
+    await workbook.commit();
+  }
+
+  /** Tên kênh đã dùng ở lead (lọc "Kênh"), A→Z; có `sources` → chỉ kênh thuộc các nguồn đó. */
+  async channelFilterOptions(sources?: string) {
+    const list = (sources ?? '')
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean);
+    const rows = await this.prisma.lead.findMany({
+      where: {
+        channelName: { not: null },
+        ...(list.length ? { source: { in: list } } : {}),
+      },
+      distinct: ['channelName'],
+      select: { channelName: true },
+    });
+    return [
+      ...new Set(rows.map((r) => r.channelName!.trim()).filter(Boolean)),
+    ].sort((a, b) => a.localeCompare(b, 'vi'));
   }
 
   /**
