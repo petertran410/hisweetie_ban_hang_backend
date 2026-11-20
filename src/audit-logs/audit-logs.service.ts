@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { FINANCE_AUDIT_CATEGORY } from '../finance-audit/finance-audit.types';
 
 @Injectable()
 export class AuditLogsService {
@@ -164,9 +165,11 @@ export class AuditLogsService {
     const cutoffDate = new Date();
     cutoffDate.setMonth(cutoffDate.getMonth() - months);
 
+    // Lịch sử tài chính nội bộ giữ vĩnh viễn: không xóa theo hạn.
     return await this.prisma.auditLog.deleteMany({
       where: {
         createdAt: { lt: cutoffDate },
+        OR: [{ category: null }, { category: { not: FINANCE_AUDIT_CATEGORY } }],
       },
     });
   }

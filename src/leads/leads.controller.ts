@@ -10,9 +10,11 @@ import {
   Put,
   Query,
   Req,
+  Res,
   UseGuards,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
+import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { requestHasPermission } from '../auth/request-permissions';
@@ -57,6 +59,31 @@ export class LeadsController {
   @RequirePermissions('leads:view')
   list(@Query() q: LeadListQueryDto, @Req() req: any) {
     return this.service.list(q, this.actor(req));
+  }
+
+  @Get('export')
+  @RequirePermissions('leads:view')
+  async exportList(
+    @Query() q: LeadListQueryDto,
+    @Req() req: any,
+    @Res() res: Response,
+  ) {
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=Lead_${Date.now()}.xlsx`,
+    );
+    await this.service.exportList(q, this.actor(req), res);
+  }
+
+  // Tên kênh đã dùng ở lead → lựa chọn bộ lọc "Kênh"
+  @Get('channel-filter')
+  @RequirePermissions('leads:view')
+  channelFilter(@Query('sources') sources?: string) {
+    return this.service.channelFilterOptions(sources);
   }
 
   @Get('check-phone')

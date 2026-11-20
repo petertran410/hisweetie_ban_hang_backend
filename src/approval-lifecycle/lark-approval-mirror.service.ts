@@ -20,6 +20,17 @@ import {
   type LarkFormKind,
   type LarkInstanceSummary,
 } from './approval-lifecycle.constants';
+import {
+  FINANCE_AUDIT_ENTITY,
+  FinanceAuditService,
+  auditActor,
+  branchLabel,
+  entryKindLabel,
+  formatDate,
+  formatMoney,
+  reasonSuffix,
+  type AuditActor,
+} from '../finance-audit';
 
 /** Lý do Đã chi / Đã thu của phiếu sinh từ đơn Lark đã duyệt. */
 export const LARK_APPROVED_REASON = 'Đã duyệt trên Lark Approval';
@@ -48,6 +59,7 @@ export class LarkApprovalMirrorService {
     @Inject(LARK_CLIENT) private readonly larkClient: lark.Client,
     private readonly fundLedger: InternalFundLedgerService,
     private readonly codeService: InternalFinanceCodeService,
+    private readonly financeAudit: FinanceAuditService,
   ) {}
 
   /** Mã đơn của một form trong khoảng thời gian (theo ngày tạo đơn). */
@@ -272,8 +284,11 @@ export class LarkApprovalMirrorService {
    * Đơn tiền mặt Kho HN / Kho SG đã duyệt thành một dòng Đã chi / Đã thu ở Tài
    * chính nội bộ (gắn với dòng quỹ đã ghi, không ghi quỹ lần nữa); đơn bị thu
    * hồi thì hủy dòng đó.
+   *
+   * `actor`: ai đưa kết quả Lark về (webhook, cron, script) để ghi lịch sử;
+   * mặc định hệ thống Lark Approval, ghi thay người đề xuất.
    */
-  async ensureEntry(approvalRequestId: number) {
+  async ensureEntry(approvalRequestId: number, actor?: AuditActor) {
     const request = await this.prisma.approvalRequest.findUnique({
       where: { id: approvalRequestId },
     });
@@ -293,6 +308,19 @@ export class LarkApprovalMirrorService {
     if (!amount) return null;
     const branchId = mirror.branchId;
     const sourceKey = `${LARK_APPROVAL_SOURCE_TYPE}:${request.instanceCode}`;
+    const base = actor ?? auditActor.system('LARK', 'lark-approval');
+    // Đơn tạo trên Lark: người được ghi thay là người tạo đơn trên bản sao
+    // (chưa gắn tài khoản POS thì null), không phải createdById dự phòng (user 1).
+    const by: AuditActor = {
+      ...base,
+      onBehalfOfUserId: mirror.requesterId ?? base.onBehalfOfUserId ?? null,
+    };
+    const auditMeta = {
+      approvalRequestId: request.id,
+      instanceCode: request.instanceCode,
+      approvalStatus: request.status,
+      formKind: mirror.formKind,
+    };
 
     return this.prisma.$transaction(async (tx) => {
       await this.fundLedger.lock(tx, [branchId]);
@@ -317,10 +345,13 @@ export class LarkApprovalMirrorService {
             fundRow,
             request.createdById,
             LARK_REVOKED_REASON,
+            by,
           );
         if (!existing || existing.status === INTERNAL_FINANCE_STATUS.CANCELLED)
           return existing;
-        return tx.internalFinanceEntry.update({
+        // Chụp dòng trước khi hủy để ghi lịch sử.
+        const before = { ...existing };
+        const cancelled = await tx.internalFinanceEntry.update({
           where: { id: existing.id },
           data: {
             status: INTERNAL_FINANCE_STATUS.CANCELLED,
@@ -330,6 +361,53 @@ export class LarkApprovalMirrorService {
             cashIssued: false,
           },
         });
+        const issuedLabel =
+          before.direction === 'RECEIPT' ? 'Đã thu' : 'Đã chi';
+        await this.financeAudit.write(tx, {
+          action: 'FIN_ENTRY_CANCEL',
+          entityType: FINANCE_AUDIT_ENTITY.ENTRY,
+          entityId: before.id,
+          entityCode: before.code,
+          branchId: before.branchId,
+          actor: by,
+          params: {
+            kindLabel: entryKindLabel(before.category),
+            code: before.code,
+            reasonSuffix: reasonSuffix(LARK_REVOKED_REASON),
+          },
+          changes: [
+            ...this.financeAudit.diff(
+              FINANCE_AUDIT_ENTITY.ENTRY,
+              before,
+              { ...before, ...cancelled },
+              ['status', 'cancelReason'],
+            ),
+            ...(before.cashIssued
+              ? [
+                  {
+                    field: 'cashIssued',
+                    label: issuedLabel,
+                    from: 'Có',
+                    to: 'Không',
+                    type: 'field_changed' as const,
+                    detail: { from: true, to: false },
+                  },
+                ]
+              : []),
+          ],
+          snapshot: {
+            lines: entryAuditLines(before),
+            cashIssuedAt: before.cashIssuedAt,
+            cashIssuedBy: before.cashIssuedBy,
+            cashIssuedReason: before.cashIssuedReason,
+          },
+          metadata: {
+            ...auditMeta,
+            statusBefore: before.status,
+            fundTransactionId: fundRow?.id ?? null,
+          },
+        });
+        return cancelled;
       }
       if (request.status !== 'APPROVED') return existing;
 
@@ -434,6 +512,25 @@ export class LarkApprovalMirrorService {
             createdBy: request.createdById,
           },
         });
+        await this.financeAudit.write(tx, {
+          action: 'FIN_ENTRY_CREATE',
+          entityType: FINANCE_AUDIT_ENTITY.ENTRY,
+          entityId: entry.id,
+          entityCode: entry.code,
+          branchId,
+          actor: by,
+          params: {
+            kindLabel: entryKindLabel(category),
+            code: entry.code,
+            amount: Number(amount),
+          },
+          snapshot: { lines: entryAuditLines(entry) },
+          metadata: {
+            ...auditMeta,
+            fundTransactionId: fundRow?.id ?? null,
+            larkLedgerRecorded: ledgerRecorded,
+          },
+        });
       }
       if (fundRow && !fundRow.entryId)
         await tx.internalFundTransaction.update({
@@ -507,6 +604,23 @@ function voucherForm(formSnapshot: unknown, detailSnapshot: unknown) {
   const own = parseForm((formSnapshot as { form?: unknown } | null)?.form);
   if (own.length) return own;
   return parseForm((detailSnapshot as { form?: unknown } | null)?.form);
+}
+
+/** Tóm tắt phiếu cho lịch sử (loại, quỹ, số tiền, ngày, nội dung). */
+function entryAuditLines(entry: {
+  category: string;
+  branchId: number;
+  amount: unknown;
+  occurredAt: Date;
+  description?: string | null;
+}) {
+  return [
+    { label: 'Loại phiếu', value: entryKindLabel(entry.category) },
+    { label: 'Quỹ', value: branchLabel(entry.branchId) },
+    { label: 'Số tiền', value: formatMoney(entry.amount) },
+    { label: 'Ngày', value: formatDate(entry.occurredAt) },
+    { label: 'Nội dung', value: entry.description || '—' },
+  ];
 }
 
 /** Bỏ ô trống để snapshot gọn. */

@@ -1,3 +1,4 @@
+import { FinanceAuditService, auditActor } from '../finance-audit';
 import { summarizeLarkInstance } from './approval-lifecycle.constants';
 import { LarkApprovalMirrorService } from './lark-approval-mirror.service';
 
@@ -274,6 +275,17 @@ describe('LarkApprovalMirrorService.ensureEntry', () => {
       internalFinanceCodeCounter: {
         upsert: jest.fn().mockResolvedValue({ nextNumber: 2 }),
       },
+      user: {
+        findMany: jest.fn(async ({ where }: any) =>
+          where.id.in.map((id: number) => ({
+            id,
+            name: `User ${id}`,
+            email: null,
+          })),
+        ),
+      },
+      // Lịch sử tài chính nội bộ: FinanceAuditService thật ghi qua createMany.
+      auditLog: { createMany: jest.fn() },
     };
     prisma.$transaction = jest.fn(async (callback: any) => callback(prisma));
     const ledger: any = {
@@ -282,10 +294,18 @@ describe('LarkApprovalMirrorService.ensureEntry', () => {
         Object.assign(row, { status: 'CANCELLED', entryId: null }),
       ),
     };
-    const service = new LarkApprovalMirrorService(prisma, {} as any, ledger, {
-      nextCode: jest.fn().mockResolvedValue('TCNB-CHI-HN-20261014-000001'),
-    } as any);
-    return { service, prisma, entries, mirror, fundRow, ledger };
+    const service = new LarkApprovalMirrorService(
+      prisma,
+      {} as any,
+      ledger,
+      {
+        nextCode: jest.fn().mockResolvedValue('TCNB-CHI-HN-20261014-000001'),
+      } as any,
+      new FinanceAuditService(),
+    );
+    const auditRows = (): any[] =>
+      prisma.auditLog.createMany.mock.calls.flatMap(([arg]: any[]) => arg.data);
+    return { service, prisma, entries, mirror, fundRow, ledger, auditRows };
   }
 
   it('turns an approved cash voucher into one paid entry linked to its fund row', async () => {
@@ -517,6 +537,110 @@ describe('LarkApprovalMirrorService.ensureEntry', () => {
     );
   });
 
+  it('logs the entry it creates once, as Lark on behalf of the requester', async () => {
+    const f = setup({ request: {} });
+    await f.service.ensureEntry(50);
+    const rows = f.auditRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      actionCode: 'FIN_ENTRY_CREATE',
+      category: 'internal_finance',
+      entityType: 'internal_finance_entries',
+      entityId: '900',
+      entityCode: 'TCNB-CHI-HN-20261014-000001',
+      branchId: 6,
+      message: 'Tạo phiếu chi quỹ TCNB-CHI-HN-20261014-000001 – 500.000 đ',
+      userName: 'Hệ thống (Lark Approval)',
+      metadata: expect.objectContaining({
+        actorKind: 'LARK',
+        onBehalfOfUserId: 9,
+        approvalRequestId: 50,
+        instanceCode: 'INST-1',
+        fundTransactionId: 70,
+      }),
+    });
+
+    // Gọi lại (webhook lặp, cron) không tạo phiếu, không ghi thêm lịch sử.
+    await f.service.ensureEntry(50);
+    expect(f.auditRows()).toHaveLength(1);
+  });
+
+  it('uses the caller actor (and its opId) for the entry history', async () => {
+    const f = setup({ request: {} });
+    const actor = auditActor.system('CRON', 'cron:syncRecentLarkInstances');
+    await f.service.ensureEntry(50, actor);
+    expect(f.auditRows()[0]).toMatchObject({
+      requestId: actor.opId,
+      userName: 'Hệ thống (tự động)',
+      metadata: expect.objectContaining({
+        actorKind: 'CRON',
+        trigger: 'cron:syncRecentLarkInstances',
+        onBehalfOfUserId: 9,
+      }),
+    });
+  });
+
+  it('logs the cancel with the Lark actor when an approved order is revoked', async () => {
+    const f = setup({
+      request: { sourceType: 'INTERNAL_FUND_RECEIPT' },
+      mirror: { direction: 'RECEIPT', formKind: 'PHIEU_THU' },
+      fundRow: {
+        id: 71,
+        status: 'POSTED',
+        entryId: null,
+        branchId: 6,
+        occurredAt: approvedAt,
+        sourceKey: 'RECEIPT:50',
+      },
+    });
+    await f.service.ensureEntry(50);
+    f.prisma.approvalRequest.findUnique.mockResolvedValue({
+      id: 50,
+      instanceCode: 'INST-1',
+      clientUuid: 'LARK:INST-1',
+      sourceType: 'INTERNAL_FUND_RECEIPT',
+      status: 'REVERTED',
+      createdById: 9,
+    });
+    await f.service.ensureEntry(50);
+
+    // Dòng quỹ hủy bằng actor Lark (không phải user người tạo đơn).
+    expect(f.ledger.releaseCancelled).toHaveBeenCalledWith(
+      f.prisma,
+      expect.objectContaining({ id: 71 }),
+      9,
+      'Đơn bị thu hồi trên Lark Approval',
+      expect.objectContaining({ kind: 'LARK', onBehalfOfUserId: 9 }),
+    );
+    const cancel = f
+      .auditRows()
+      .filter((row) => row.actionCode === 'FIN_ENTRY_CANCEL');
+    expect(cancel).toHaveLength(1);
+    expect(cancel[0]).toMatchObject({
+      actionType: 'DELETE',
+      entityId: '900',
+      message:
+        'Hủy phiếu thu quỹ TCNB-CHI-HN-20261014-000001: Đơn bị thu hồi trên Lark Approval',
+      metadata: expect.objectContaining({
+        actorKind: 'LARK',
+        statusBefore: 'POSTED',
+        approvalStatus: 'REVERTED',
+      }),
+    });
+    expect(cancel[0].changes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: 'status', to: 'Đã hủy' }),
+        expect.objectContaining({ field: 'cashIssued', label: 'Đã thu' }),
+      ]),
+    );
+
+    // Thu hồi lặp lại: phiếu đã hủy, không ghi thêm.
+    await f.service.ensureEntry(50);
+    expect(
+      f.auditRows().filter((row) => row.actionCode === 'FIN_ENTRY_CANCEL'),
+    ).toHaveLength(1);
+  });
+
   it('ignores POS-created requests and out-of-scope orders', async () => {
     const pos = setup({ request: { clientUuid: 'INTERNAL_FINANCE_WEEK:1' } });
     expect(await pos.service.ensureEntry(50)).toBeNull();
@@ -539,6 +663,7 @@ describe('LarkApprovalMirrorService.inspect', () => {
       {} as any,
       {} as any,
       {} as any,
+      new FinanceAuditService(),
     );
     const result = await service.inspect('PHIEU_CHI', {
       form: JSON.stringify(voucher('Tiền Mặt', 'Tiền Mặt Kho HN')),

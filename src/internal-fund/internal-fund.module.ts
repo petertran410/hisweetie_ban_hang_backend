@@ -8,6 +8,7 @@ import {
 } from './internal-fund.controller';
 import { InternalFundService } from './internal-fund.service';
 import { InternalFundLedgerModule } from './internal-fund-ledger.module';
+import { FinanceAuditModule } from '../finance-audit/finance-audit.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { InternalFundLedgerModule } from './internal-fund-ledger.module';
     AuthModule,
     ApprovalLifecycleModule,
     InternalFundLedgerModule,
+    FinanceAuditModule,
   ],
   controllers: [InternalFundController, InternalFundApprovalController],
   providers: [InternalFundService],

@@ -12,6 +12,12 @@ import {
 } from '../auth/finance-access.service';
 import { LarkExpenseReviewNotificationService } from '../lark-sync/services/lark-expense-review-notification.service';
 import {
+  FINANCE_AUDIT_ENTITY,
+  FinanceAuditService,
+  auditActor,
+  previewText,
+} from '../finance-audit';
+import {
   INTERNAL_FINANCE_DIRECTION,
   localizeFeeCodes,
 } from './internal-finance.constants';
@@ -38,6 +44,7 @@ export class WarehouseExpenseNotesService {
     private readonly prisma: PrismaService,
     private readonly access: FinanceAccessService,
     private readonly lark: LarkExpenseReviewNotificationService,
+    private readonly financeAudit: FinanceAuditService,
   ) {}
 
   async list(entryId: number, user: FinanceActor) {
@@ -83,23 +90,52 @@ export class WarehouseExpenseNotesService {
       }
     }
 
-    const note = await this.prisma.internalFinanceEntryNote.create({
-      data: {
-        entryId,
-        content,
-        createdBy: user.id,
-        mentions: {
-          create: mentionIds.map((userId) => ({ userId })),
-        },
-      },
-      include: {
-        creator: { select: { id: true, name: true } },
-        mentions: {
-          include: {
-            user: { select: { id: true, name: true, larkUserId: true } },
+    // Ghi chú và dòng lịch sử lưu cùng một transaction.
+    const note = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.internalFinanceEntryNote.create({
+        data: {
+          entryId,
+          content,
+          createdBy: user.id,
+          mentions: {
+            create: mentionIds.map((userId) => ({ userId })),
           },
         },
-      },
+        include: {
+          creator: { select: { id: true, name: true } },
+          mentions: {
+            include: {
+              user: { select: { id: true, name: true, larkUserId: true } },
+            },
+          },
+        },
+      });
+      await this.financeAudit.write(tx, {
+        action: 'FIN_ENTRY_NOTE_ADD',
+        entityType: FINANCE_AUDIT_ENTITY.ENTRY,
+        entityId: entryId,
+        entityCode: entry.code,
+        branchId: entry.branchId,
+        actor: auditActor.user(user),
+        params: { code: entry.code, preview: previewText(content) },
+        snapshot: {
+          lines: [
+            { label: 'Ghi chú', value: content },
+            ...(created.mentions.length
+              ? [
+                  {
+                    label: 'Tag',
+                    value: created.mentions
+                      .map((mention) => mention.user.name)
+                      .join(', '),
+                  },
+                ]
+              : []),
+          ],
+        },
+        metadata: { noteId: created.id, mentionUserIds: mentionIds },
+      });
+      return created;
     });
 
     // Lỗi gửi Lark không làm mất ghi chú: ghi lại trạng thái từng người.

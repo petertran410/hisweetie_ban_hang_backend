@@ -9,9 +9,11 @@ import {
   IsDecimal,
   IsIn,
   IsBoolean,
+  IsPositive,
   Min,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
+import { CreatePaymentNoteDto } from '../../payment-notes/create-payment-note.dto';
 
 export class DeliveryInfoDto {
   @IsString()
@@ -251,6 +253,22 @@ export class CreateOrderDto {
   delivery?: DeliveryInfoDto;
 }
 
+/** 1 khoản "Khách thanh toán" gửi kèm PUT /orders/:id (orderId lấy từ URL). */
+export class UpdateOrderPaymentDto {
+  @IsNumber({ allowNaN: false, allowInfinity: false })
+  @IsPositive()
+  amount: number;
+
+  @IsString()
+  @IsOptional()
+  paymentMethod?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  accountId?: number;
+}
+
 export class UpdateOrderDto {
   @IsInt()
   @IsOptional()
@@ -330,6 +348,21 @@ export class UpdateOrderDto {
   @Type(() => DeliveryInfoDto)
   @IsOptional()
   delivery?: DeliveryInfoDto;
+
+  // Tiền khách trả của lần lưu này (Bán hàng → Sửa ĐH). Ghi trong CÙNG
+  // transaction với đơn: lưu đơn lỗi thì không để lại phiếu thu.
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => UpdateOrderPaymentDto)
+  payments?: UpdateOrderPaymentDto[];
+
+  // Phương thức thanh toán (CK/TM) của lần lưu này. Ghi trước bước kiểm tra
+  // công nợ để "thu tiền mặt khi giao" được tính đúng ngay lần lưu này.
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => CreatePaymentNoteDto)
+  paymentNote?: CreatePaymentNoteDto;
 }
 
 export class OrderQueryDto {

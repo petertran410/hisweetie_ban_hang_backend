@@ -738,6 +738,8 @@ export class CashFlowsService {
       where: { id: params.entryId },
       include: {
         invoiceLinks: {
+          // Bỏ liên kết hóa đơn đã gỡ khỏi phiếu.
+          where: { removedAt: null },
           include: {
             invoice: {
               select: {

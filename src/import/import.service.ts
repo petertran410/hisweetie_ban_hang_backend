@@ -12,6 +12,10 @@ import { INVOICE_STATUS, getStatusLabel } from 'src/invoices/dto';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
 import { replaceDefaultFormulaComponents } from '../products/product-formulas.util';
 import { buildProductImageRows } from '../products/product-images.util';
+import {
+  FINANCE_OWNED_INVOICE_ERROR,
+  financeOwnedInvoiceIds,
+} from './finance-owned-cash-flows';
 
 /**
  * Thông tin người thao tác để gắn vào audit log và enqueue sync.
@@ -1915,16 +1919,28 @@ export class ImportService {
           const batchUpdated: any[] = [];
 
           // === PRE-CLEANUP: Batch delete tất cả invoice cần update ===
-          const updateInvoiceIds = batch
+          const matchedInvoiceIds = batch
             .map((g) => existingInvoiceMap.get(g.header.invoiceCode))
             .filter((id): id is number => !!id);
+          const matchedPayments = matchedInvoiceIds.length
+            ? await tx.invoicePayment.findMany({
+                where: { invoiceId: { in: matchedInvoiceIds } },
+                select: { invoiceId: true, cashFlowId: true },
+              })
+            : [];
+          // Hóa đơn có phiếu thu do Tiền mặt kho lập: không xóa cứng phiếu thu
+          // đó (phiếu tài chính nội bộ mất cashFlowId) → bỏ qua, báo lỗi.
+          const blockedInvoiceIds = await financeOwnedInvoiceIds(
+            tx,
+            matchedPayments,
+          );
+          const updateInvoiceIds = matchedInvoiceIds.filter(
+            (id) => !blockedInvoiceIds.has(id),
+          );
 
           if (updateInvoiceIds.length > 0) {
-            const oldPayments = await tx.invoicePayment.findMany({
-              where: { invoiceId: { in: updateInvoiceIds } },
-              select: { cashFlowId: true },
-            });
-            const oldCashFlowIds = oldPayments
+            const oldCashFlowIds = matchedPayments
+              .filter((p) => !blockedInvoiceIds.has(p.invoiceId))
               .map((p) => p.cashFlowId)
               .filter((id): id is number => id != null);
 
@@ -1983,6 +1999,16 @@ export class ImportService {
               if (!h.invoiceCode) autoCodeIndex++;
 
               const existingInvoiceId = existingInvoiceMap.get(code);
+              if (
+                existingInvoiceId &&
+                blockedInvoiceIds.has(existingInvoiceId)
+              ) {
+                failed.push({
+                  invoiceCode: code,
+                  error: FINANCE_OWNED_INVOICE_ERROR,
+                });
+                continue;
+              }
               const isUpdate = !!existingInvoiceId;
 
               const excelBranch = h.branchName

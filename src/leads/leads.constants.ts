@@ -29,6 +29,25 @@ export const LEAD_CATEGORY_LABEL: Record<string, string> = {
   training: 'Đào tạo/Set up',
 };
 
+export const LEAD_SOURCE_LABEL: Record<string, string> = {
+  facebook: 'Fanpage',
+  tiktok: 'Tiktok',
+  shopee: 'Shopee',
+  zalo_oa: 'Zalo OA',
+  zalo_user: 'Zalo User',
+  website: 'Website',
+  direct: 'Trực tiếp',
+  other: 'Khác',
+};
+
+export const LEAD_STATUS_LABEL: Record<string, string> = {
+  new: 'Mới',
+  caring: 'Đang chăm sóc',
+  handed_over: 'Đã chuyển Sale',
+  converted: 'Đã chuyển đổi',
+  cancelled: 'Huỷ',
+};
+
 /** Mã lead hiển thị (khớp frontend), dùng cho link /khach-hang/lead?Code= */
 export const leadCode = (id: number) => `LEAD${String(id).padStart(6, '0')}`;
 

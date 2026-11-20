@@ -22,6 +22,19 @@ const MISA_STOCK_CODE_BY_POS_BRANCH_ID: Record<number, string> = {
   6: 'KHO1',
 };
 
+// Lỗi mạng không có HTTP response (timeout, rớt kết nối) → coi là lỗi tạm thời.
+const TRANSIENT_NETWORK_ERROR_CODES = new Set([
+  'ECONNABORTED',
+  'ETIMEDOUT',
+  'ECONNRESET',
+  'ECONNREFUSED',
+  'EAI_AGAIN',
+  'EPIPE',
+  'ENETUNREACH',
+  'EHOSTUNREACH',
+  'ERR_NETWORK',
+]);
+
 type MisaFailureStage =
   | 'invoice_not_found'
   | 'cancelled'
@@ -69,6 +82,14 @@ export class MisaVoucherService {
   private readonly DEBIT_ACCOUNT = '131';
   private readonly CREDIT_ACCOUNT = '5111';
   private readonly COST_ACCOUNT = '632';
+
+  // save chỉ ghi yêu cầu vào hàng đợi MISA nên phản hồi nhanh; timeout ngắn hơn
+  // mặc định 60s của HttpModule để kịp thử lại trong một lô đẩy hàng loạt.
+  private readonly SAVE_TIMEOUT_MS = 20000;
+  // Mốc chờ trước mỗi lần thử lại khi gọi save lỗi tạm thời (timeout, 429, 5xx).
+  private readonly SAVE_RETRY_DELAYS_MS = [1000, 3000];
+  // Nghỉ giữa các hóa đơn khi đẩy hàng loạt (ghi đè bằng env MISA_BULK_DELAY_MS).
+  private readonly DEFAULT_BULK_DELAY_MS = 500;
 
   constructor(
     private readonly configService: ConfigService,
@@ -725,10 +746,39 @@ export class MisaVoucherService {
     return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
   }
 
+  /**
+   * Gửi chứng từ lên MISA, tự thử lại khi lỗi tạm thời (timeout, 429, 5xx).
+   * An toàn khi gửi lại: cùng org_refid thì MISA cập nhật đề nghị cũ, không tạo trùng.
+   */
   private async sendVoucherToMisa(payload: MisaSaveVoucherRequestDto): Promise<{
     success: boolean;
     message: string;
     stage?: MisaFailureStage;
+  }> {
+    const orgRefId = payload.voucher?.[0]?.org_refid;
+    const orgRefNo = payload.voucher?.[0]?.org_refno;
+    const maxAttempts = this.SAVE_RETRY_DELAYS_MS.length + 1;
+
+    for (let attempt = 1; ; attempt++) {
+      const { retryable, ...result } = await this.postVoucherOnce(payload);
+      if (result.success || !retryable || attempt >= maxAttempts) {
+        return result;
+      }
+
+      const delayMs = this.SAVE_RETRY_DELAYS_MS[attempt - 1];
+      this.logger.warn(
+        `🔁 Retrying Misa save invoice=${orgRefNo} orgRefId=${orgRefId} ` +
+          `after ${delayMs}ms (attempt ${attempt + 1}/${maxAttempts})`,
+      );
+      await this.sleep(delayMs);
+    }
+  }
+
+  private async postVoucherOnce(payload: MisaSaveVoucherRequestDto): Promise<{
+    success: boolean;
+    message: string;
+    stage?: MisaFailureStage;
+    retryable: boolean;
   }> {
     const baseUrl =
       this.configService.get<string>('MISA_BASE_URL')?.replace(/\/+$/, '') ||
@@ -752,6 +802,7 @@ export class MisaVoucherService {
             ClientID: clientId,
             'X-MISA-AccessToken': accessToken,
           },
+          timeout: this.SAVE_TIMEOUT_MS,
         }),
       );
 
@@ -769,6 +820,7 @@ export class MisaVoucherService {
         return {
           success: true,
           message: data.Data || 'Voucher queued successfully',
+          retryable: false,
         };
       }
 
@@ -783,6 +835,7 @@ export class MisaVoucherService {
           [data.ErrorCode, data.ErrorMessage].filter(Boolean).join(': ') ||
           'Misa rejected voucher',
         stage: 'misa_rejected',
+        retryable: false,
       };
     } catch (error: any) {
       const respData = error.response?.data;
@@ -801,8 +854,36 @@ export class MisaVoucherService {
         success: false,
         message,
         stage: 'misa_request',
+        retryable: this.isTransientMisaError(error),
       };
     }
+  }
+
+  /** Lỗi tạm thời đáng thử lại: HTTP 429/5xx, hoặc lỗi mạng không có response. */
+  private isTransientMisaError(error: unknown): boolean {
+    const err = (error ?? {}) as {
+      response?: { status?: unknown };
+      code?: unknown;
+      request?: unknown;
+    };
+    const status = err.response?.status;
+    if (typeof status === 'number') {
+      return status === 429 || status >= 500;
+    }
+    const code = typeof err.code === 'string' ? err.code : '';
+    return TRANSIENT_NETWORK_ERROR_CODES.has(code) || Boolean(err.request);
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private getBulkDelayMs(): number {
+    const raw = this.configService.get<string | number>('MISA_BULK_DELAY_MS');
+    const parsed = raw === undefined || raw === '' ? NaN : Number(raw);
+    return Number.isFinite(parsed) && parsed >= 0
+      ? parsed
+      : this.DEFAULT_BULK_DELAY_MS;
   }
 
   private logFailure(
@@ -940,6 +1021,7 @@ export class MisaVoucherService {
     let successCount = 0;
     let failedCount = 0;
     const failureSummary = new Map<MisaFailureStage, number>();
+    const bulkDelayMs = this.getBulkDelayMs();
 
     for (let index = 0; index < invoiceCodes.length; index++) {
       const invoiceCode = invoiceCodes[index];
@@ -976,6 +1058,16 @@ export class MisaVoucherService {
               `durationMs=${Date.now() - startedAt} ` +
               `message="${this.truncateLogValue(result.message)}"`,
           );
+        }
+
+        // Giãn nhịp giữa các lần thật sự gọi MISA: gọi dồn dập dễ bị gateway
+        // trả timeout/429. Hóa đơn bị bỏ qua trước khi gọi MISA thì không cần chờ.
+        const calledMisa =
+          result.success ||
+          result.stage === 'misa_request' ||
+          result.stage === 'misa_rejected';
+        if (calledMisa && bulkDelayMs > 0 && index < invoiceCodes.length - 1) {
+          await this.sleep(bulkDelayMs);
         }
       } catch (error: any) {
         failedCount++;

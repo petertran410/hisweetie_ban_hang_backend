@@ -48,6 +48,23 @@ import {
   larkTime,
   type LarkMirrorResult,
 } from './lark-approval-mirror.service';
+import {
+  FINANCE_AUDIT_ENTITY,
+  FinanceAuditService,
+  approvalAuditRef,
+  approvalStatusLabel,
+  auditActor,
+  batchStatusLabel,
+  branchLabel,
+  entryStatusLabel,
+  formatMoney,
+  reasonSuffix,
+  type AuditActor,
+  type FinanceAuditChange,
+  type FinanceAuditEntry,
+  type FinanceAuditParams,
+  type FinanceAuditSnapshot,
+} from '../finance-audit';
 
 type ApprovalEvent = {
   approval_code?: string;
@@ -65,6 +82,65 @@ function isLarkCreated(clientUuid: string | null | undefined) {
 // Đơn duyệt tuần: tạo từ POS hoặc đồng bộ từ Lark khi còn đang chờ duyệt.
 const WEEKLY_SOURCE_TYPES = ['INTERNAL_FINANCE_WEEKLY', 'LARK_IMPORT_WEEKLY'];
 
+/** Các trường của đơn dùng để ghi lịch sử (thiếu trường nào thì bỏ qua). */
+type ApprovalAuditRow = {
+  id: number;
+  kind?: string | null;
+  status?: string | null;
+  sourceType?: string | null;
+  sourceId?: number | null;
+  branchId?: number | null;
+  instanceCode?: string | null;
+  clientUuid?: string | null;
+  createdById?: number | null;
+  formSnapshot?: unknown;
+  detailSnapshot?: unknown;
+};
+
+type ApprovalAuditAction =
+  | 'FIN_APPROVAL_CREATE'
+  | 'FIN_APPROVAL_CREATE_FAILED'
+  | 'FIN_APPROVAL_STATUS'
+  | 'FIN_APPROVAL_REVERT';
+
+/** Phiếu trong batch tuần: đủ để ghi lịch sử đổi trạng thái / gỡ khỏi batch. */
+const ENTRY_AUDIT_SELECT = {
+  id: true,
+  code: true,
+  status: true,
+  branchId: true,
+} as const;
+
+type EntryAuditRow = {
+  id: number;
+  code: string;
+  status: string;
+  branchId: number;
+};
+
+/** Actor kèm người được ghi thay (người tạo đơn) nếu actor chưa có. */
+function onBehalfOf(actor: AuditActor, userId?: number | null): AuditActor {
+  return actor.onBehalfOfUserId || !userId
+    ? actor
+    : { ...actor, onBehalfOfUserId: userId };
+}
+
+/**
+ * Người tạo đơn để ghi thay khi CHƯA tra bản sao Lark: đơn tạo từ POS là
+ * createdById; đơn nhân viên tạo trên Lark thì null (createdById có thể chỉ là
+ * user 1 dự phòng khi open_id chưa gắn tài khoản POS) — applyLarkStatus tra
+ * requesterId của bản sao.
+ */
+function posRequester(
+  request?: {
+    clientUuid?: string | null;
+    createdById?: number | null;
+  } | null,
+): number | null {
+  if (!request || isLarkCreated(request.clientUuid)) return null;
+  return request.createdById ?? null;
+}
+
 @Injectable()
 export class ApprovalLifecycleService implements OnApplicationBootstrap {
   private readonly logger = new Logger(ApprovalLifecycleService.name);
@@ -75,9 +151,18 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
     @Inject(LARK_CLIENT) private readonly larkClient: lark.Client,
     private readonly fundLedger: InternalFundLedgerService,
     private readonly larkMirror: LarkApprovalMirrorService,
+    private readonly financeAudit: FinanceAuditService,
   ) {}
 
-  async create(dto: CreateApprovalRequestDto, userId: number) {
+  /**
+   * `actor`: người tạo đơn để ghi lịch sử (mặc định user `userId` qua HTTP);
+   * truyền actor của thao tác gọi để các dòng lịch sử dùng chung opId.
+   */
+  async create(
+    dto: CreateApprovalRequestDto,
+    userId: number,
+    actor?: AuditActor,
+  ) {
     const kind = this.parseKind(dto.kind);
     const definition = APPROVAL_DEFINITIONS[kind];
     const clientUuid = dto.clientUuid?.trim() || randomUUID();
@@ -136,26 +221,49 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
       }),
     ) as Prisma.InputJsonValue;
 
-    const request = existing
-      ? await this.prisma.approvalRequest.update({
-          where: { id: existing.id },
-          data: {
-            status: 'PENDING',
-            formSnapshot,
-          },
-        })
-      : await this.prisma.approvalRequest.create({
-          data: {
-            kind,
-            approvalCode: definition.approvalCode,
-            clientUuid,
-            branchId: dto.branchId,
-            sourceType: dto.sourceType,
-            sourceId: dto.sourceId,
-            createdById: user.id,
-            formSnapshot,
-          },
-        });
+    const by = actor ?? auditActor.user(userId);
+    const amount = this.toNumber(
+      form.find(
+        (item) =>
+          item.id ===
+          (kind === 'RECEIPT'
+            ? RECEIPT_FIELD_IDS.amount
+            : EXPENSE_FIELD_IDS.common.amount),
+      )?.value,
+    );
+    // Tạo (hoặc gửi lại đơn chưa lên được Lark) và ghi lịch sử cùng transaction.
+    const request = await this.prisma.$transaction(async (tx) => {
+      const row = existing
+        ? await tx.approvalRequest.update({
+            where: { id: existing.id },
+            data: {
+              status: 'PENDING',
+              formSnapshot,
+            },
+          })
+        : await tx.approvalRequest.create({
+            data: {
+              kind,
+              approvalCode: definition.approvalCode,
+              clientUuid,
+              branchId: dto.branchId,
+              sourceType: dto.sourceType,
+              sourceId: dto.sourceId,
+              createdById: user.id,
+              formSnapshot,
+            },
+          });
+      await this.financeAudit.write(
+        tx,
+        this.approvalEntry('FIN_APPROVAL_CREATE', row, by, {
+          snapshot: this.approvalCreateSnapshot(row, amount),
+          metadata: existing
+            ? { retry: true, statusBefore: existing.status }
+            : undefined,
+        }),
+      );
+      return row;
+    });
 
     try {
       const response = await this.larkClient.approval.v4.instance.create({
@@ -184,17 +292,39 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
           detailSnapshot: response.data,
         },
       });
-      await this.replayOrphanEvents(updated.id, instanceCode);
+      // Sự kiện Lark về trước khi lưu mã đơn: xử lý như webhook, cùng opId.
+      await this.replayOrphanEvents(
+        updated.id,
+        instanceCode,
+        auditActor.system('LARK', 'lark-webhook', user.id, by.opId),
+      );
       return this.serializeRequest(updated);
     } catch (error: any) {
-      await this.prisma.approvalRequest.update({
-        where: { id: request.id },
-        data: {
-          status: 'CREATE_FAILED',
-          detailSnapshot: {
-            error: error?.message || 'Không tạo được Approval',
+      const message =
+        (error instanceof Error && error.message) || 'Không tạo được Approval';
+      await this.prisma.$transaction(async (tx) => {
+        const failed = await tx.approvalRequest.update({
+          where: { id: request.id },
+          data: {
+            status: 'CREATE_FAILED',
+            detailSnapshot: {
+              error: message,
+            },
           },
-        },
+        });
+        await this.financeAudit.write(
+          tx,
+          this.approvalEntry(
+            'FIN_APPROVAL_CREATE_FAILED',
+            { ...request, ...failed, id: request.id },
+            by,
+            {
+              params: { error: message },
+              changes: this.statusChanges(request.status, 'CREATE_FAILED'),
+              metadata: { error: message },
+            },
+          ),
+        );
       });
       throw new BadRequestException(
         error?.message || 'Không tạo được Approval trên Lark',
@@ -479,6 +609,13 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
       }
     }
 
+    // Lịch sử: Lark webhook ghi thay người tạo đơn.
+    const actor = auditActor.system(
+      'LARK',
+      'lark-webhook',
+      posRequester(matchedRequest),
+    );
+
     // Đơn nhân viên tạo trực tiếp trên Lark của 4 form: lưu bản sao; PHIẾU CHI
     // / PHIẾU THU tiền mặt thì nhận vào quỹ (và Tài chính nội bộ nếu là quỹ kho).
     const larkKind = matchedRequest ? null : this.larkFormKind(approvalCode);
@@ -488,9 +625,10 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
         instanceCode,
         approvalCode,
         larkKind,
+        actor,
       );
       if (ingested.requestId) {
-        await this.replayOrphanEvents(ingested.requestId, instanceCode);
+        await this.replayOrphanEvents(ingested.requestId, instanceCode, actor);
         return;
       }
       skipReason = ingested.skipReason;
@@ -515,6 +653,7 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
         matchedRequest.id,
         instanceCode,
         status,
+        actor,
         operationTime,
         undefined,
         event.uuid,
@@ -552,7 +691,11 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
    * Nhận đơn TẠM ỨNG LƯƠNG chi tiền mặt từ một quỹ nội bộ (kho, VPHN) để trừ
    * quỹ khi duyệt. Đơn chuyển khoản chỉ có bản sao, không tạo request.
    */
-  private async ingestSalaryAdvance(instanceCode: string, knownDetail?: any) {
+  private async ingestSalaryAdvance(
+    instanceCode: string,
+    actor: AuditActor,
+    knownDetail?: any,
+  ) {
     const detail: any = knownDetail || (await this.getInstance(instanceCode));
     let form: ApprovalFormItem[] = [];
     try {
@@ -570,34 +713,61 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
       : null;
     const createdById = requester?.id || 1;
     const name = await this.larkMirror.larkUserName(detail?.open_id);
+    const description = name ? `Tạm ứng lương - ${name}` : 'Tạm ứng lương';
     try {
-      const created = await this.prisma.approvalRequest.create({
-        data: {
+      return await this.prisma.$transaction(async (tx) => {
+        const created = await tx.approvalRequest.create({
+          data: {
+            kind: SALARY_ADVANCE.kind,
+            approvalCode: this.salaryAdvanceCode(),
+            instanceCode,
+            clientUuid: `LARK:${instanceCode}`,
+            status: 'PENDING',
+            sourceType: SALARY_ADVANCE.sourceType,
+            branchId: advance.branchId,
+            createdById,
+            formSnapshot: {
+              version: 'lark',
+              form,
+              metadata: {
+                branchId: advance.branchId,
+                amount: advance.amount,
+                cashSource: advance.cashSource,
+                method: advance.method,
+                description,
+                serialNumber: detail?.serial_number || null,
+              },
+            } as unknown as Prisma.InputJsonValue,
+            detailSnapshot: detail as Prisma.InputJsonValue,
+          },
+          select: { id: true },
+        });
+        const row: ApprovalAuditRow = {
+          id: created.id,
           kind: SALARY_ADVANCE.kind,
-          approvalCode: this.salaryAdvanceCode(),
-          instanceCode,
-          clientUuid: `LARK:${instanceCode}`,
-          status: 'PENDING',
           sourceType: SALARY_ADVANCE.sourceType,
           branchId: advance.branchId,
-          createdById,
-          formSnapshot: {
-            version: 'lark',
-            form,
-            metadata: {
-              branchId: advance.branchId,
-              amount: advance.amount,
-              cashSource: advance.cashSource,
-              method: advance.method,
-              description: name ? `Tạm ứng lương - ${name}` : 'Tạm ứng lương',
-              serialNumber: detail?.serial_number || null,
+          instanceCode,
+          clientUuid: `LARK:${instanceCode}`,
+          detailSnapshot: detail,
+        };
+        await this.financeAudit.write(
+          tx,
+          this.approvalEntry(
+            'FIN_APPROVAL_CREATE',
+            row,
+            onBehalfOf(actor, requester?.id),
+            {
+              snapshot: this.approvalCreateSnapshot(
+                row,
+                advance.amount,
+                description,
+              ),
             },
-          } as unknown as Prisma.InputJsonValue,
-          detailSnapshot: detail as Prisma.InputJsonValue,
-        },
-        select: { id: true },
+          ),
+        );
+        return created.id;
       });
-      return created.id;
     } catch (error: any) {
       if (error?.code !== 'P2002') throw error;
       const existing = await this.prisma.approvalRequest.findUnique({
@@ -612,7 +782,11 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
    * Nhận đơn PHIẾU CHI tạo trực tiếp trên Lark. Chỉ lưu đơn chi tiền mặt từ
    * một trong các quỹ nội bộ; đơn khác trả null để sự kiện bị bỏ qua như cũ.
    */
-  private async ingestPaymentVoucher(instanceCode: string, knownDetail?: any) {
+  private async ingestPaymentVoucher(
+    instanceCode: string,
+    actor: AuditActor,
+    knownDetail?: any,
+  ) {
     const detail: any = knownDetail || (await this.getInstance(instanceCode));
     let form: ApprovalFormItem[] = [];
     try {
@@ -631,26 +805,55 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
     // Người đề xuất PHIẾU CHI luôn có tài khoản POS; 1 chỉ là chốt an toàn.
     const createdById = requester?.id || 1;
     try {
-      const created = await this.prisma.approvalRequest.create({
-        data: {
+      return await this.prisma.$transaction(async (tx) => {
+        const created = await tx.approvalRequest.create({
+          data: {
+            kind: PAYMENT_VOUCHER.kind,
+            approvalCode: this.paymentVoucherCode(),
+            instanceCode,
+            clientUuid: `LARK:${instanceCode}`,
+            status: 'PENDING',
+            sourceType: PAYMENT_VOUCHER.sourceType,
+            branchId: cash.branchId,
+            createdById,
+            formSnapshot: {
+              version: 'lark',
+              form,
+              metadata: {
+                ...cash,
+                serialNumber: detail?.serial_number || null,
+              },
+            } as unknown as Prisma.InputJsonValue,
+            detailSnapshot: detail as Prisma.InputJsonValue,
+          },
+          select: { id: true },
+        });
+        const row: ApprovalAuditRow = {
+          id: created.id,
           kind: PAYMENT_VOUCHER.kind,
-          approvalCode: this.paymentVoucherCode(),
-          instanceCode,
-          clientUuid: `LARK:${instanceCode}`,
-          status: 'PENDING',
           sourceType: PAYMENT_VOUCHER.sourceType,
           branchId: cash.branchId,
-          createdById,
-          formSnapshot: {
-            version: 'lark',
-            form,
-            metadata: { ...cash, serialNumber: detail?.serial_number || null },
-          } as unknown as Prisma.InputJsonValue,
-          detailSnapshot: detail as Prisma.InputJsonValue,
-        },
-        select: { id: true },
+          instanceCode,
+          clientUuid: `LARK:${instanceCode}`,
+          detailSnapshot: detail,
+        };
+        await this.financeAudit.write(
+          tx,
+          this.approvalEntry(
+            'FIN_APPROVAL_CREATE',
+            row,
+            onBehalfOf(actor, requester?.id),
+            {
+              snapshot: this.approvalCreateSnapshot(
+                row,
+                cash.amount,
+                cash.description,
+              ),
+            },
+          ),
+        );
+        return created.id;
       });
-      return created.id;
     } catch (error: any) {
       if (error?.code !== 'P2002') throw error;
       const existing = await this.prisma.approvalRequest.findUnique({
@@ -667,7 +870,11 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
    * "chuyển đến" ở quỹ đích); đơn thu tiền mặt vào một quỹ thành phiếu thu quỹ.
    * Đơn không liên quan quỹ tiền mặt trả null để sự kiện bị bỏ qua như cũ.
    */
-  private async ingestFundReceipt(instanceCode: string, knownDetail?: any) {
+  private async ingestFundReceipt(
+    instanceCode: string,
+    actor: AuditActor,
+    knownDetail?: any,
+  ) {
     const detail: any = knownDetail || (await this.getInstance(instanceCode));
     let form: ApprovalFormItem[] = [];
     try {
@@ -700,6 +907,23 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
       } as unknown as Prisma.InputJsonValue,
       detailSnapshot: detail as Prisma.InputJsonValue,
     };
+    // Lịch sử: Lark ghi thay người đề xuất.
+    const by = onBehalfOf(actor, requester?.id);
+    const auditRow = (
+      id: number,
+      sourceType: string,
+      branchId: number,
+      sourceId: number | null,
+    ): ApprovalAuditRow => ({
+      id,
+      kind: base.kind,
+      sourceType,
+      sourceId,
+      branchId,
+      instanceCode,
+      clientUuid,
+      detailSnapshot: detail,
+    });
     try {
       return await this.prisma.$transaction(async (tx) => {
         if (receipt.kind === 'RECEIPT') {
@@ -711,12 +935,29 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
             },
             select: { id: true },
           });
+          const row = auditRow(
+            created.id,
+            'INTERNAL_FUND_RECEIPT',
+            receipt.branchId,
+            null,
+          );
+          await this.financeAudit.write(
+            tx,
+            this.approvalEntry('FIN_APPROVAL_CREATE', row, by, {
+              snapshot: this.approvalCreateSnapshot(
+                row,
+                receipt.amount,
+                receipt.description,
+              ),
+            }),
+          );
           return created.id;
         }
+        const transferCode = this.fundLedger.code('CHUYEN');
         const transfer = await tx.internalFundTransfer.create({
           data: {
             clientUuid,
-            code: this.fundLedger.code('CHUYEN'),
+            code: transferCode,
             sourceBranchId: receipt.sourceBranchId,
             destinationBranchId: receipt.destinationBranchId,
             amount: receipt.amount,
@@ -740,6 +981,55 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
           where: { id: transfer.id },
           data: { approvalRequestId: created.id },
         });
+        const row = auditRow(
+          created.id,
+          'INTERNAL_FUND_TRANSFER',
+          receipt.sourceBranchId,
+          transfer.id,
+        );
+        await this.financeAudit.write(tx, [
+          this.approvalEntry('FIN_APPROVAL_CREATE', row, by, {
+            snapshot: this.approvalCreateSnapshot(
+              row,
+              receipt.amount,
+              receipt.description,
+            ),
+            metadata: { transferId: transfer.id, transferCode },
+          }),
+          {
+            action: 'FIN_FUND_TRANSFER_REQUEST',
+            entityType: FINANCE_AUDIT_ENTITY.FUND_TRANSFER,
+            entityId: transfer.id,
+            entityCode: transferCode,
+            branchId: receipt.sourceBranchId,
+            actor: by,
+            params: {
+              code: transferCode,
+              amount: receipt.amount,
+              fromBranch: branchLabel(receipt.sourceBranchId),
+              toBranch: branchLabel(receipt.destinationBranchId),
+            },
+            snapshot: {
+              lines: [
+                {
+                  label: 'Quỹ chuyển',
+                  value: branchLabel(receipt.sourceBranchId),
+                },
+                {
+                  label: 'Quỹ nhận',
+                  value: branchLabel(receipt.destinationBranchId),
+                },
+                { label: 'Số tiền', value: formatMoney(receipt.amount) },
+                { label: 'Nội dung', value: receipt.description || '—' },
+              ],
+            },
+            metadata: {
+              approvalRequestId: created.id,
+              instanceCode,
+              source: 'LARK_RECEIPT',
+            },
+          },
+        ]);
         return created.id;
       });
     } catch (error: any) {
@@ -786,6 +1076,7 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
     instanceCode: string,
     approvalCode: string,
     kind: LarkFormKind,
+    actor: AuditActor,
     knownDetail?: any,
     inspected?: LarkMirrorResult,
     fundBranches?: number[],
@@ -805,11 +1096,11 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
     const requestId = !allowed
       ? null
       : kind === 'PHIEU_CHI'
-        ? await this.ingestPaymentVoucher(instanceCode, detail)
+        ? await this.ingestPaymentVoucher(instanceCode, actor, detail)
         : kind === 'PHIEU_THU'
-          ? await this.ingestFundReceipt(instanceCode, detail)
+          ? await this.ingestFundReceipt(instanceCode, actor, detail)
           : kind === 'TAM_UNG_LUONG' && result.summary.inScope
-            ? await this.ingestSalaryAdvance(instanceCode, detail)
+            ? await this.ingestSalaryAdvance(instanceCode, actor, detail)
             : null;
     if (requestId) await this.larkMirror.linkRequest(instanceCode, requestId);
     return { requestId, skipReason: result.summary.skipReason };
@@ -884,7 +1175,7 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
   }
 
   /** Sau khi đơn Lark đổi trạng thái: cập nhật bản sao, tạo hoặc hủy phiếu POS. */
-  private async syncLarkEntry(requestId: number) {
+  private async syncLarkEntry(requestId: number, actor: AuditActor) {
     const request = await this.prisma.approvalRequest.findUnique({
       where: { id: requestId },
       select: {
@@ -907,7 +1198,7 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
           detail: request.detailSnapshot,
           approvalRequestId: request.id,
         });
-      await this.larkMirror.ensureEntry(request.id);
+      await this.larkMirror.ensureEntry(request.id, actor);
     } catch (error: any) {
       this.logger.warn(
         `Không tạo được phiếu POS cho đơn Lark #${request.id}: ${error?.message}`,
@@ -1017,10 +1308,17 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
       knownDetail?: any;
       /** Lấy bù: chỉ ghi quỹ của các chi nhánh này (đơn khác chỉ lưu bản sao). */
       fundBranches?: number[];
+      /**
+       * Người/hệ thống thực hiện để ghi lịch sử (cron, script...). Mặc định hệ
+       * thống tự động.
+       */
+      actor?: AuditActor;
     } = {},
   ) {
     const kind = this.larkFormKind(approvalCode);
     if (!kind) return 'UNKNOWN_FORM';
+    const actor =
+      options.actor ?? auditActor.system('SYSTEM', 'sync-lark-instance');
     const existing = await this.prisma.approvalRequest.findUnique({
       where: { instanceCode },
       select: { id: true, clientUuid: true, status: true },
@@ -1049,6 +1347,7 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
             instanceCode,
             approvalCode,
             kind,
+            actor,
             detail,
             inspected,
             options.fundBranches,
@@ -1066,7 +1365,7 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
         inspected,
         approvalRequestId: existing.id,
       });
-      await this.larkMirror.ensureEntry(existing.id);
+      await this.larkMirror.ensureEntry(existing.id, actor);
       return 'UNCHANGED';
     }
     if (status)
@@ -1074,10 +1373,11 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
         requestId,
         instanceCode,
         status,
+        actor,
         status === 'PENDING' ? undefined : larkTime(detail?.end_time),
         detail,
       );
-    else await this.syncLarkEntry(requestId);
+    else await this.syncLarkEntry(requestId, actor);
     return 'SYNCED';
   }
 
@@ -1096,11 +1396,13 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
         const done = await this.larkMirror.settledCodes(codes);
         for (const instanceCode of codes) {
           if (done.has(instanceCode)) continue;
-          await this.syncLarkInstance(instanceCode, approvalCode).catch(
-            (error: any) =>
-              this.logger.warn(
-                `Không đồng bộ được đơn Lark ${instanceCode}: ${error?.message}`,
-              ),
+          // Mỗi đơn là một thao tác riêng (opId riêng).
+          await this.syncLarkInstance(instanceCode, approvalCode, {
+            actor: auditActor.system('CRON', 'cron:syncRecentLarkInstances'),
+          }).catch((error: any) =>
+            this.logger.warn(
+              `Không đồng bộ được đơn Lark ${instanceCode}: ${error?.message}`,
+            ),
           );
         }
       } catch (error: any) {
@@ -1111,7 +1413,11 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
     }
   }
 
-  private async replayOrphanEvents(requestId: number, instanceCode: string) {
+  private async replayOrphanEvents(
+    requestId: number,
+    instanceCode: string,
+    actor: AuditActor,
+  ) {
     const orphanEvents = await this.prisma.approvalRequestEvent.findMany({
       where: {
         instanceCode,
@@ -1139,6 +1445,7 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
         requestId,
         instanceCode,
         status,
+        actor,
         latest.instanceOperateTime,
         undefined,
         latest.eventKey,
@@ -1148,6 +1455,28 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
         data: { processedAt: new Date(), error: null },
       });
     }
+  }
+
+  /**
+   * Người được ghi thay trong lịch sử của một đơn: đơn tạo từ POS là
+   * createdById; đơn nhân viên tạo trên Lark lấy requesterId của bản sao Lark
+   * (không gắn được tài khoản POS thì null, không dùng user 1 dự phòng).
+   */
+  private async requesterOf(
+    db: Pick<Prisma.TransactionClient, 'larkApprovalInstance'>,
+    request: {
+      clientUuid?: string | null;
+      instanceCode?: string | null;
+      createdById?: number | null;
+    },
+  ): Promise<number | null> {
+    if (!isLarkCreated(request.clientUuid)) return request.createdById ?? null;
+    if (!request.instanceCode) return null;
+    const mirror = await db.larkApprovalInstance.findUnique({
+      where: { instanceCode: request.instanceCode },
+      select: { requesterId: true },
+    });
+    return mirror?.requesterId ?? null;
   }
 
   @Cron('*/10 * * * *')
@@ -1171,6 +1500,11 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
           request.id,
           request.instanceCode,
           status,
+          auditActor.system(
+            'CRON',
+            'cron:reconcilePending',
+            posRequester(request),
+          ),
           this.parseEventTime(detail?.end_time || detail?.start_time),
           detail,
         );
@@ -1255,6 +1589,7 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
             },
             request.status as ApprovalInstanceStatus,
             false,
+            auditActor.system('SYSTEM', 'bootstrap:repairImportedWeeks'),
           ),
         );
         this.logger.log(
@@ -1268,10 +1603,15 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
     }
   }
 
+  /**
+   * `actor`: ai đưa trạng thái Lark về POS (webhook, cron, ...) để ghi lịch sử;
+   * mọi bước quỹ / phiếu của lần cập nhật này dùng chung actor (và opId).
+   */
   private async refreshFromLark(
     requestId: number,
     instanceCode: string,
     status: ApprovalInstanceStatus,
+    actor: AuditActor,
     eventTime?: Date | null,
     knownDetail?: any,
     eventUuid?: string,
@@ -1280,17 +1620,19 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
       requestId,
       instanceCode,
       status,
+      actor,
       eventTime,
       knownDetail,
       eventUuid,
     );
-    await this.syncLarkEntry(requestId);
+    await this.syncLarkEntry(requestId, actor);
   }
 
   private async applyLarkStatus(
     requestId: number,
     instanceCode: string,
     status: ApprovalInstanceStatus,
+    actor: AuditActor,
     eventTime?: Date | null,
     knownDetail?: any,
     eventUuid?: string,
@@ -1343,6 +1685,9 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
           sourceId: true,
           clientUuid: true,
           branchId: true,
+          kind: true,
+          createdById: true,
+          instanceCode: true,
         },
       });
       if (!current) return;
@@ -1369,13 +1714,48 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
         return;
       }
 
+      const currentNode = this.getCurrentNode(detail);
       const data: any = {
         status,
-        currentNode: this.getCurrentNode(detail),
+        currentNode,
         lastEventUuid: eventUuid,
         lastEventAt: eventTime || new Date(),
         completedAt: status === 'PENDING' ? undefined : eventTime || new Date(),
         ...(detail ? { detailSnapshot: detail } : {}),
+      };
+
+      // Lịch sử: chỉ ghi khi trạng thái lưu thật sự đổi (sự kiện lặp lại / cron
+      // hỏi lại cùng trạng thái không ghi gì), trong cùng transaction.
+      const by = actor.onBehalfOfUserId
+        ? actor
+        : onBehalfOf(actor, await this.requesterOf(tx, current));
+      const statusBefore = String(current.status);
+      const updateRequest = async (metadata?: Record<string, unknown>) => {
+        const updated = await tx.approvalRequest.update({
+          where: { id: requestId },
+          data,
+        });
+        if (statusBefore !== status)
+          await this.financeAudit.write(
+            tx,
+            this.approvalStatusEntry(
+              {
+                ...current,
+                ...(updated as Partial<ApprovalAuditRow> | undefined),
+                id: requestId,
+              },
+              statusBefore,
+              status,
+              by,
+              {
+                eventUuid: eventUuid ?? null,
+                eventTime: eventTime ?? null,
+                currentNode,
+                ...metadata,
+              },
+            ),
+          );
+        return updated;
       };
 
       // Chuyển tiền giữa 2 quỹ: mỗi bên xét mốc lên POS của chính quỹ đó.
@@ -1404,7 +1784,7 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
               larkFundCutoff(current.branchId, current.sourceType).getTime() ||
             (await this.ledgerHasLarkOrder(tx, requestId, data.completedAt)))
       ) {
-        await tx.approvalRequest.update({ where: { id: requestId }, data });
+        await updateRequest({ fundRecordedOnLarkLedger: true });
         return;
       }
 
@@ -1413,31 +1793,25 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
           current.sourceType || '',
         )
       ) {
-        const updated = await tx.approvalRequest.update({
-          where: { id: requestId },
-          data,
-        });
+        const updated = await updateRequest(
+          transferSkip?.length ? { skipBranchIds: transferSkip } : undefined,
+        );
         await this.fundLedger.applyApproval(tx, updated, {
           skipBranchIds: transferSkip ?? [],
+          auditActor: by,
         });
         return;
       }
 
       if (current.sourceType === PAYMENT_VOUCHER.sourceType) {
-        const updated = await tx.approvalRequest.update({
-          where: { id: requestId },
-          data,
-        });
-        await this.fundLedger.applyPaymentVoucher(tx, updated);
+        const updated = await updateRequest();
+        await this.fundLedger.applyPaymentVoucher(tx, updated, by);
         return;
       }
 
       if (current.sourceType === SALARY_ADVANCE.sourceType) {
-        const updated = await tx.approvalRequest.update({
-          where: { id: requestId },
-          data,
-        });
-        await this.fundLedger.applySalaryAdvance(tx, updated);
+        const updated = await updateRequest();
+        await this.fundLedger.applySalaryAdvance(tx, updated, by);
         return;
       }
 
@@ -1445,10 +1819,7 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
         !WEEKLY_SOURCE_TYPES.includes(current.sourceType || '') ||
         !current.sourceId
       ) {
-        await tx.approvalRequest.update({
-          where: { id: requestId },
-          data,
-        });
+        await updateRequest();
         return;
       }
 
@@ -1462,7 +1833,8 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
         },
         status,
         wasApproved,
-        () => tx.approvalRequest.update({ where: { id: requestId }, data }),
+        by,
+        () => updateRequest(),
       );
     });
   }
@@ -1477,11 +1849,12 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
     request: { id: number; sourceId: number; sourceType?: string | null },
     status: ApprovalInstanceStatus,
     wasApproved: boolean,
+    actor: AuditActor,
     updateRequest?: () => Promise<unknown>,
   ) {
     const batch = await tx.internalFinanceWeeklyBatch.findUnique({
       where: { id: request.sourceId },
-      select: { branchId: true, createdBy: true, status: true },
+      select: { branchId: true, createdBy: true, status: true, code: true },
     });
     if (batch) await this.fundLedger.lock(tx, [batch.branchId]);
     if (updateRequest) await updateRequest();
@@ -1508,12 +1881,27 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
           : status === 'CANCELED'
             ? 'Người gửi thu hồi Approval Lark'
             : 'Approval Lark đã bị xóa';
-      await cancelWeeklyBatchInTx(tx, request.sourceId, {
-        cancelledBy: null,
-        reason: comment ? `${label}: ${comment}` : label,
-      });
+      await cancelWeeklyBatchInTx(
+        tx,
+        request.sourceId,
+        {
+          cancelledBy: null,
+          reason: comment ? `${label}: ${comment}` : label,
+          actor,
+        },
+        this.financeAudit,
+      );
       return;
     }
+
+    // Lịch sử của batch / phiếu: ghi trong cùng transaction, chỉ dòng đổi thật.
+    const logs: FinanceAuditEntry[] = [];
+    const batchCode = batch?.code ?? `#${request.sourceId}`;
+    const auditMeta = {
+      batchId: request.sourceId,
+      approvalRequestId: request.id,
+      approvalStatus: status,
+    };
 
     // Tuần Kho HN đồng bộ từ Lark được gắn phiếu theo khoảng ngày: chỉ phiếu đã
     // được Quản lý kho và Kế toán kho đồng kiểm mới thuộc approval, phiếu còn lại
@@ -1524,15 +1912,52 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
       status === 'APPROVED' &&
       request.sourceType === 'LARK_IMPORT_WEEKLY'
     ) {
+      const where = {
+        weeklyBatchId: request.sourceId,
+        cashIssued: false,
+        cashFlowId: null,
+        OR: [{ managerReviewedAt: null }, { accountantReviewedAt: null }],
+      };
+      const dropped: EntryAuditRow[] = await tx.internalFinanceEntry.findMany({
+        where,
+        select: ENTRY_AUDIT_SELECT,
+      });
       await tx.internalFinanceEntry.updateMany({
-        where: {
-          weeklyBatchId: request.sourceId,
-          cashIssued: false,
-          cashFlowId: null,
-          OR: [{ managerReviewedAt: null }, { accountantReviewedAt: null }],
-        },
+        where,
         data: { weeklyBatchId: null, status: 'PENDING_ACCOUNTANT' },
       });
+      const reason = 'Chưa đủ tick Quản lý kho và Kế toán kho khi Lark duyệt';
+      for (const entry of dropped ?? [])
+        logs.push({
+          action: 'FIN_ENTRY_BATCH_REMOVE',
+          entityType: FINANCE_AUDIT_ENTITY.ENTRY,
+          entityId: entry.id,
+          entityCode: entry.code,
+          branchId: entry.branchId,
+          actor,
+          params: {
+            code: entry.code,
+            batchCode,
+            reasonSuffix: reasonSuffix(reason),
+          },
+          changes: [
+            {
+              field: 'weeklyBatchId',
+              label: 'Approval tuần',
+              from: batchCode,
+              to: '—',
+              type: 'field_changed',
+              detail: { from: request.sourceId, to: null },
+            },
+            ...this.financeAudit.diff(
+              FINANCE_AUDIT_ENTITY.ENTRY,
+              { status: entry.status },
+              { status: 'PENDING_ACCOUNTANT' },
+              ['status'],
+            ),
+          ],
+          metadata: { ...auditMeta, statusBefore: entry.status },
+        });
     }
 
     if (batch) {
@@ -1552,14 +1977,64 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
         where: { id: request.sourceId },
         data: { status: batchStatus },
       });
+      if (batch.status !== batchStatus) {
+        const changes = this.financeAudit.diff(
+          FINANCE_AUDIT_ENTITY.BATCH,
+          { status: batch.status },
+          { status: batchStatus },
+          ['status'],
+        );
+        logs.push(
+          wasApproved && batchStatus !== 'APPROVED'
+            ? {
+                action: 'FIN_BATCH_LARK_REVERT',
+                entityType: FINANCE_AUDIT_ENTITY.BATCH,
+                entityId: request.sourceId,
+                entityCode: batch.code ?? null,
+                branchId: batch.branchId,
+                actor,
+                params: { batchCode },
+                changes,
+                metadata: { ...auditMeta, statusBefore: batch.status },
+              }
+            : {
+                action: 'FIN_BATCH_LARK_STATUS',
+                entityType: FINANCE_AUDIT_ENTITY.BATCH,
+                entityId: request.sourceId,
+                entityCode: batch.code ?? null,
+                branchId: batch.branchId,
+                actor,
+                params: {
+                  batchCode,
+                  statusLabel: batchStatusLabel(batchStatus),
+                },
+                changes,
+                metadata: { ...auditMeta, statusBefore: batch.status },
+              },
+        );
+      }
+      const openWhere = {
+        weeklyBatchId: request.sourceId,
+        cashFlowId: null,
+        cashIssued: false,
+      };
+      logs.push(
+        ...(await this.weeklyEntryStatusLogs(
+          tx,
+          openWhere,
+          entryStatus,
+          batchCode,
+          actor,
+          auditMeta,
+        )),
+      );
       await tx.internalFinanceEntry.updateMany({
-        where: {
-          weeklyBatchId: request.sourceId,
-          cashFlowId: null,
-          cashIssued: false,
-        },
+        where: openWhere,
         data: { status: entryStatus },
       });
+      // Batch + phiếu trước, dòng quỹ (sổ quỹ tự ghi) sau.
+      await this.financeAudit.write(tx, logs);
+      logs.length = 0;
       // Kho: Approval duyệt thì tự ghi quỹ + tick Đã chi; bị thu hồi thì rút lại.
       if ([1, 6].includes(batch.branchId)) {
         if (status === 'APPROVED') {
@@ -1568,6 +2043,7 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
             request.sourceId,
             request.id,
             batch.createdBy,
+            actor,
           );
         } else if (wasApproved) {
           await this.fundLedger.revertApprovedBatch(
@@ -1575,14 +2051,157 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
             request.sourceId,
             request.id,
             batch.createdBy,
+            actor,
+          );
+          // Phiếu vừa bỏ Đã chi cũng về trạng thái của đơn.
+          const revertedWhere = {
+            weeklyBatchId: request.sourceId,
+            cashIssued: false,
+          };
+          logs.push(
+            ...(await this.weeklyEntryStatusLogs(
+              tx,
+              revertedWhere,
+              entryStatus,
+              batchCode,
+              actor,
+              auditMeta,
+            )),
           );
           await tx.internalFinanceEntry.updateMany({
-            where: { weeklyBatchId: request.sourceId, cashIssued: false },
+            where: revertedWhere,
             data: { status: entryStatus },
           });
         }
       }
     }
+    await this.financeAudit.write(tx, logs);
+  }
+
+  /**
+   * FIN_ENTRY_WEEKLY_STATUS cho các phiếu (theo `where`) sắp đổi sang
+   * `entryStatus`; phiếu đã ở trạng thái đó thì bỏ qua. Gọi TRƯỚC updateMany.
+   */
+  private async weeklyEntryStatusLogs(
+    tx: Prisma.TransactionClient,
+    where: Prisma.InternalFinanceEntryWhereInput,
+    entryStatus: string,
+    batchCode: string,
+    actor: AuditActor,
+    metadata: Record<string, unknown>,
+  ): Promise<FinanceAuditEntry[]> {
+    const entries: EntryAuditRow[] =
+      (await tx.internalFinanceEntry.findMany({
+        where,
+        select: ENTRY_AUDIT_SELECT,
+      })) ?? [];
+    return entries
+      .filter((entry) => entry.status !== entryStatus)
+      .map((entry) => ({
+        action: 'FIN_ENTRY_WEEKLY_STATUS',
+        entityType: FINANCE_AUDIT_ENTITY.ENTRY,
+        entityId: entry.id,
+        entityCode: entry.code,
+        branchId: entry.branchId,
+        actor,
+        params: {
+          code: entry.code,
+          batchCode,
+          statusLabel: entryStatusLabel(entryStatus),
+        },
+        changes: this.financeAudit.diff(
+          FINANCE_AUDIT_ENTITY.ENTRY,
+          { status: entry.status },
+          { status: entryStatus },
+          ['status'],
+        ),
+        metadata: { ...metadata, statusBefore: entry.status },
+      }));
+  }
+
+  /** Một dòng lịch sử của đơn Approval. */
+  private approvalEntry(
+    action: ApprovalAuditAction,
+    request: ApprovalAuditRow,
+    actor: AuditActor,
+    extra: {
+      params?: FinanceAuditParams;
+      changes?: FinanceAuditChange[];
+      snapshot?: FinanceAuditSnapshot;
+      metadata?: Record<string, unknown>;
+    } = {},
+  ): FinanceAuditEntry {
+    const ref = approvalAuditRef(request);
+    return {
+      action,
+      entityType: FINANCE_AUDIT_ENTITY.APPROVAL,
+      entityId: request.id,
+      entityCode: ref.entityCode,
+      branchId: request.branchId ?? null,
+      actor,
+      params: { kindLabel: ref.kindLabel, code: ref.code, ...extra.params },
+      changes: extra.changes,
+      snapshot: extra.snapshot,
+      metadata: {
+        instanceCode: request.instanceCode ?? null,
+        clientUuid: request.clientUuid ?? null,
+        sourceType: request.sourceType ?? null,
+        sourceId: request.sourceId ?? null,
+        ...extra.metadata,
+      },
+    };
+  }
+
+  /** Lark đổi trạng thái đơn: FIN_APPROVAL_STATUS, thu hồi → FIN_APPROVAL_REVERT. */
+  private approvalStatusEntry(
+    request: ApprovalAuditRow,
+    from: string,
+    to: ApprovalInstanceStatus,
+    actor: AuditActor,
+    metadata: Record<string, unknown>,
+  ): FinanceAuditEntry {
+    const changes = this.statusChanges(from, to);
+    const meta = { ...metadata, statusBefore: from, statusAfter: to };
+    return to === 'REVERTED'
+      ? this.approvalEntry('FIN_APPROVAL_REVERT', request, actor, {
+          changes,
+          metadata: meta,
+        })
+      : this.approvalEntry('FIN_APPROVAL_STATUS', request, actor, {
+          params: {
+            from: approvalStatusLabel(from),
+            to: approvalStatusLabel(to),
+          },
+          changes,
+          metadata: meta,
+        });
+  }
+
+  private statusChanges(from: string | null | undefined, to: string) {
+    return this.financeAudit.diff(
+      FINANCE_AUDIT_ENTITY.APPROVAL,
+      { status: from ?? null },
+      { status: to },
+      ['status'],
+    );
+  }
+
+  /** Tóm tắt đơn lúc tạo (loại, quỹ, số tiền, nội dung). */
+  private approvalCreateSnapshot(
+    request: ApprovalAuditRow,
+    amount?: number | null,
+    description?: string | null,
+  ): FinanceAuditSnapshot {
+    const ref = approvalAuditRef(request);
+    return {
+      lines: [
+        { label: 'Loại đơn', value: ref.kindLabel || '—' },
+        { label: 'Chi nhánh', value: branchLabel(request.branchId) },
+        ...(amount ? [{ label: 'Số tiền', value: formatMoney(amount) }] : []),
+        ...(description ? [{ label: 'Nội dung', value: description }] : []),
+      ],
+      amount: amount ?? null,
+    };
   }
 
   private async getInstance(instanceCode: string) {

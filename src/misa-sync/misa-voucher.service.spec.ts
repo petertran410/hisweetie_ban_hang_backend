@@ -83,6 +83,7 @@ describe('MisaVoucherService OpenAPI flow', () => {
           ClientID: 'client-id',
           'X-MISA-AccessToken': 'access-token',
         },
+        timeout: 20000,
       },
     );
     expect(post.mock.calls[0][1]).not.toHaveProperty('app_id');
@@ -121,6 +122,8 @@ describe('MisaVoucherService OpenAPI flow', () => {
       stage: 'misa_rejected',
       message: 'InvalidParam: Invalid voucher',
     });
+    // Lỗi dữ liệu do MISA từ chối → không thử lại.
+    expect(post).toHaveBeenCalledTimes(1);
     expect(errorLog).toHaveBeenCalledWith(
       expect.stringContaining('[stage=misa_rejected]'),
     );
@@ -150,6 +153,8 @@ describe('MisaVoucherService OpenAPI flow', () => {
     const errorLog = jest
       .spyOn((service as any).logger, 'error')
       .mockImplementation(() => undefined);
+    jest.spyOn((service as any).logger, 'warn').mockImplementation(() => {});
+    jest.spyOn(service as any, 'sleep').mockResolvedValue(undefined);
 
     const result = await (service as any).sendVoucherToMisa({
       org_company_code: 'company-code',
@@ -166,6 +171,154 @@ describe('MisaVoucherService OpenAPI flow', () => {
     expect(errorLog).toHaveBeenCalledWith(
       expect.stringContaining('[stage=misa_request]'),
     );
+    // 503 là lỗi tạm thời → 1 lần gọi + 2 lần thử lại.
+    expect(post).toHaveBeenCalledTimes(3);
+  });
+
+  describe('save retry on transient errors', () => {
+    const payload = {
+      org_company_code: 'company-code',
+      voucher: [{ org_refid: 'org-refid', org_refno: 'INV-001' }],
+    };
+
+    const makeService = (post: jest.Mock, config = makeConfig()) => {
+      const service = new MisaVoucherService(
+        config as any,
+        { post } as any,
+        {} as any,
+        { getAccessToken: jest.fn().mockResolvedValue('access-token') } as any,
+        {} as any,
+      );
+      jest.spyOn((service as any).logger, 'error').mockImplementation(() => {});
+      jest.spyOn((service as any).logger, 'warn').mockImplementation(() => {});
+      const sleep = jest
+        .spyOn(service as any, 'sleep')
+        .mockResolvedValue(undefined);
+      return { service, sleep };
+    };
+
+    it('retries a 503 and succeeds on the next attempt', async () => {
+      const post = jest
+        .fn()
+        .mockReturnValueOnce(
+          throwError(() => ({
+            message: 'Request failed with status code 503',
+            response: { status: 503, data: {} },
+          })),
+        )
+        .mockReturnValueOnce(of({ data: { Success: true, Data: 'queued' } }));
+      const { service, sleep } = makeService(post);
+
+      await expect(
+        (service as any).sendVoucherToMisa(payload),
+      ).resolves.toEqual({ success: true, message: 'queued' });
+      expect(post).toHaveBeenCalledTimes(2);
+      expect(sleep).toHaveBeenCalledWith(1000);
+    });
+
+    it('gives up after repeated timeouts with stage misa_request', async () => {
+      const post = jest.fn().mockReturnValue(
+        throwError(() => ({
+          message: 'timeout of 20000ms exceeded',
+          code: 'ECONNABORTED',
+        })),
+      );
+      const { service, sleep } = makeService(post);
+
+      const result = await (service as any).sendVoucherToMisa(payload);
+
+      expect(result).toMatchObject({ success: false, stage: 'misa_request' });
+      expect(post).toHaveBeenCalledTimes(3);
+      expect(sleep.mock.calls).toEqual([[1000], [3000]]);
+    });
+
+    it('does not retry a 400 response', async () => {
+      const post = jest.fn().mockReturnValue(
+        throwError(() => ({
+          message: 'Request failed with status code 400',
+          response: { status: 400, data: {} },
+        })),
+      );
+      const { service, sleep } = makeService(post);
+
+      await (service as any).sendVoucherToMisa(payload);
+
+      expect(post).toHaveBeenCalledTimes(1);
+      expect(sleep).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('bulk pacing', () => {
+    const queued = {
+      success: true,
+      orgRefId: 'org-refid',
+      message: 'queued',
+    };
+
+    const makeService = (bulkDelay?: string) => {
+      const config = {
+        get: jest.fn((key: string) =>
+          key === 'MISA_BULK_DELAY_MS' ? bulkDelay : undefined,
+        ),
+      };
+      const service = new MisaVoucherService(
+        config as any,
+        {} as any,
+        {} as any,
+        {} as any,
+        {} as any,
+      );
+      jest.spyOn((service as any).logger, 'log').mockImplementation(() => {});
+      jest.spyOn((service as any).logger, 'warn').mockImplementation(() => {});
+      const sleep = jest
+        .spyOn(service as any, 'sleep')
+        .mockResolvedValue(undefined);
+      return { service, sleep };
+    };
+
+    it('pauses between invoices that reached Misa, not after the last one', async () => {
+      const { service, sleep } = makeService();
+      jest
+        .spyOn(service, 'createSaleVoucherFromInvoice')
+        .mockResolvedValue(queued);
+
+      await service.createVouchersBulk(['INV-001', 'INV-002', 'INV-003']);
+
+      expect(sleep.mock.calls).toEqual([[500], [500]]);
+    });
+
+    it('skips the pause for invoices stopped before calling Misa', async () => {
+      const { service, sleep } = makeService();
+      jest
+        .spyOn(service, 'createSaleVoucherFromInvoice')
+        .mockResolvedValueOnce({
+          success: false,
+          orgRefId: null,
+          message: 'Missing Misa code',
+          stage: 'missing_misa_code',
+        })
+        .mockResolvedValueOnce(queued);
+
+      await service.createVouchersBulk(['INV-001', 'INV-002']);
+
+      expect(sleep).not.toHaveBeenCalled();
+    });
+
+    it('uses MISA_BULK_DELAY_MS and allows turning the pause off', async () => {
+      const custom = makeService('1500');
+      jest
+        .spyOn(custom.service, 'createSaleVoucherFromInvoice')
+        .mockResolvedValue(queued);
+      await custom.service.createVouchersBulk(['INV-001', 'INV-002']);
+      expect(custom.sleep.mock.calls).toEqual([[1500]]);
+
+      const off = makeService('0');
+      jest
+        .spyOn(off.service, 'createSaleVoucherFromInvoice')
+        .mockResolvedValue(queued);
+      await off.service.createVouchersBulk(['INV-001', 'INV-002']);
+      expect(off.sleep).not.toHaveBeenCalled();
+    });
   });
 
   it('logs a grouped summary for bulk failures by stage', async () => {
@@ -198,6 +351,7 @@ describe('MisaVoucherService OpenAPI flow', () => {
     const warnLog = jest
       .spyOn((service as any).logger, 'warn')
       .mockImplementation(() => undefined);
+    jest.spyOn(service as any, 'sleep').mockResolvedValue(undefined);
 
     await service.createVouchersBulk(['INV-001', 'INV-002', 'INV-003']);
 

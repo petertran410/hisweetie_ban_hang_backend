@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { activeAttachments } from './entry-files';
 
 /**
  * Xuất Excel trang Phiếu chi kho: nhãn và cách hiển thị chép từ bảng
@@ -115,9 +116,10 @@ export const WAREHOUSE_EXPENSE_EXPORT_SELECT = {
   weeklyBatch: {
     select: { code: true, approvalRequest: { select: { status: true } } },
   },
+  // Chỉ chứng từ còn dùng (bỏ dòng đã gỡ).
   attachments: {
+    ...activeAttachments,
     select: { fileUrl: true, fileName: true },
-    orderBy: { id: 'asc' as const },
   },
 } satisfies Prisma.InternalFinanceEntrySelect;
 

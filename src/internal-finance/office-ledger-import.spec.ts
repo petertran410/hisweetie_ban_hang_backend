@@ -4,6 +4,7 @@ import {
   VPSG_FUND_START,
 } from '../approval-lifecycle/approval-lifecycle.constants';
 import { InternalFundLedgerService } from '../internal-fund/internal-fund-ledger.service';
+import { flushScriptLog, scriptRun } from './finance-script-audit';
 import {
   applyLedgerImport,
   applyLedgerPlan,
@@ -257,17 +258,30 @@ const rerunPosRows = [
   }),
 ];
 
+// Phiếu gắn với dòng quỹ POS tự ghi (đọc trước khi script gắn dấu Lark).
+const entryRows = [80, 90].map((id) => ({
+  id,
+  code: `TCNB-${id}`,
+  category: 'CASH_FUND_EXPENSE',
+  branchId: 4,
+  cashIssued: true,
+  cashIssuedReason: 'Lark Approval đã duyệt',
+  sourceSnapshot: { formKind: 'PHIEU_CHI' },
+}));
+
 function fakeDb(rows: any[] = posRows) {
   return {
     internalFundTransaction: {
       findMany: jest.fn(async ({ where }: any) =>
         where.code
           ? []
-          : rows.filter(
-              (row) =>
-                row.occurredAt < where.occurredAt.lt &&
-                row.branchId === where.branchId,
-            ),
+          : where.id
+            ? rows.filter((row) => where.id.in.includes(row.id))
+            : rows.filter(
+                (row) =>
+                  row.occurredAt < where.occurredAt.lt &&
+                  row.branchId === where.branchId,
+              ),
       ),
       update: jest.fn(async ({ where, data }: any) => ({
         id: where.id,
@@ -275,10 +289,26 @@ function fakeDb(rows: any[] = posRows) {
       })),
       createMany: jest.fn(),
     },
-    internalFundDailyClosing: { updateMany: jest.fn() },
+    internalFinanceEntry: {
+      findMany: jest.fn(async ({ where }: any) =>
+        entryRows.filter((entry) => where.id.in.includes(entry.id)),
+      ),
+    },
+    internalFundDailyClosing: {
+      updateMany: jest.fn(),
+      findMany: jest.fn(async () => []),
+    },
+    auditLog: { createMany: jest.fn() },
+    user: { findMany: jest.fn(async () => []) },
     $executeRaw: jest.fn(),
   };
 }
+
+/** Mọi dòng lịch sử đã ghi (gộp các lần createMany). */
+const auditRows = (tx: ReturnType<typeof fakeDb>) =>
+  tx.auditLog.createMany.mock.calls.flatMap(([args]: any) => args.data);
+const byCode = (rows: any[], code: string) =>
+  rows.filter((row) => row.actionCode === code);
 
 describe('untilOf / voidReason', () => {
   it('defaults to the office cutoff and reads --to as end of a Vietnam day', () => {
@@ -481,6 +511,68 @@ describe('planLedgerImport (VPSG merge)', () => {
         (row: any) => row.sourceKey,
       ),
     ).toEqual(['LARK_LEDGER:rec-s3']);
+    // Không có `run` (chạy ngoài script): không ghi lịch sử.
+    expect(tx.auditLog.createMany).not.toHaveBeenCalled();
+  });
+
+  it('logs each restored row with its old cancel info when run by a script', async () => {
+    const tx = fakeDb(sgRows);
+    const plan = await planLedgerImport(
+      tx as any,
+      sgRecords,
+      7,
+      undefined,
+      options,
+    );
+    const run = scriptRun('import-office-ledger', 5, ['--branch=7']);
+    await applyLedgerPlan(
+      tx as any,
+      plan,
+      5,
+      new InternalFundLedgerService(run.service),
+      run,
+    );
+    await flushScriptLog(tx as any, run);
+
+    const rows = auditRows(tx);
+    const restores = byCode(rows, 'FIN_FUND_TXN_RESTORE');
+    expect(restores.map((row) => [row.entityId, row.entityCode])).toEqual([
+      ['40', 'SQ-1s1'],
+      ['41', 'SQ-1s2'],
+    ]);
+    expect(restores[0]).toMatchObject({
+      category: 'internal_finance',
+      branchId: 7,
+      userId: 5,
+      message: 'Khôi phục dòng quỹ SQ-1s1: Nhập lại sổ quỹ Lark',
+      snapshot: expect.objectContaining({
+        cancelledBefore: expect.objectContaining({
+          status: 'CANCELLED',
+          sourceKey: 'LARK_LEDGER:rec-s1:CANCELLED:40',
+          cancelReason: DROP,
+        }),
+      }),
+    });
+    expect(restores[0].changes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: 'status', to: 'Đã ghi quỹ' }),
+        expect.objectContaining({
+          field: 'sourceKey',
+          from: 'LARK_LEDGER:rec-s1:CANCELLED:40',
+          to: 'LARK_LEDGER:rec-s1',
+        }),
+      ]),
+    );
+    // Dòng thu SePay #43 hủy qua ledger: cùng người chạy và cùng opId.
+    const cancels = byCode(rows, 'FIN_FUND_TXN_CANCEL');
+    expect(cancels.map((row) => row.entityId)).toEqual(['43']);
+    expect(new Set(rows.map((row) => row.requestId))).toEqual(
+      new Set([run.actor.opId]),
+    );
+    expect(cancels[0].metadata).toMatchObject({
+      actorKind: 'SCRIPT',
+      trigger: 'script:import-office-ledger',
+    });
   });
 });
 
@@ -564,6 +656,82 @@ describe('applyLedgerImport', () => {
     expect(tx.internalFundDailyClosing.updateMany).toHaveBeenCalled();
   });
 
+  it('writes one FIN_SCRIPT_RUN with the counts and CLI args inside the apply transaction', async () => {
+    const tx = fakeDb();
+    const prisma: any = { $transaction: jest.fn((fn: any) => fn(tx)) };
+    const args = ['--branch=4', '--apply', '--user=5'];
+
+    await applyLedgerImport(prisma, records, 4, 5, undefined, args);
+
+    const rows = auditRows(tx);
+    const runs = byCode(rows, 'FIN_SCRIPT_RUN');
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      actionType: 'POST',
+      severity: 'critical',
+      entityType: 'finance_scripts',
+      entityCode: 'import-office-ledger',
+      branchId: 4,
+      userId: 5,
+      userName: 'Script import-office-ledger',
+    });
+    expect(runs[0].entityId).toMatch(
+      /^import-office-ledger:\d{4}-\d{2}-\d{2}T/,
+    );
+    expect(runs[0].message).toContain(
+      'Chạy script import-office-ledger --apply: Sổ quỹ Văn phòng HN tới hết 31/10/2026: thêm 2, hủy dòng POS tự ghi 3',
+    );
+    expect(runs[0].metadata).toMatchObject({
+      counts: expect.objectContaining({
+        added: 2,
+        voids: 3,
+        removed: 0,
+        entriesFlagged: 1,
+      }),
+      args,
+      actorKind: 'SCRIPT',
+    });
+    expect(runs[0].snapshot.lines).toEqual(
+      expect.arrayContaining([
+        { label: 'Dòng sổ Lark thêm', value: '2' },
+        { label: 'Tham số', value: args.join(' ') },
+      ]),
+    );
+    // Dòng quỹ hủy do ledger ghi; phiếu 80 mang dấu Lark do script ghi.
+    expect(
+      byCode(rows, 'FIN_FUND_TXN_CANCEL').map((row) => row.entityId),
+    ).toEqual(['11', '12', '13']);
+    const entry = byCode(rows, 'FIN_ENTRY_UPDATE');
+    expect(entry).toHaveLength(1);
+    expect(entry[0]).toMatchObject({
+      entityId: '80',
+      entityCode: 'TCNB-80',
+      message: 'Sửa phiếu chi quỹ TCNB-80 (script import-office-ledger)',
+    });
+    expect(entry[0].changes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'Lý do Đã chi',
+          to: 'Đã trừ quỹ trên Lark',
+        }),
+        expect.objectContaining({
+          label: 'Đã trừ quỹ trên Lark',
+          from: 'Không',
+          to: 'Có',
+        }),
+      ]),
+    );
+    // Không ghi lịch sử từng dòng sổ thêm vào.
+    expect(byCode(rows, 'FIN_FUND_TXN_POST')).toEqual([]);
+    expect(new Set(rows.map((row) => row.requestId)).size).toBe(1);
+  });
+
+  it('dry runs write no history', async () => {
+    const tx = fakeDb();
+    await planLedgerImport(tx as any, records, 4);
+    expect(tx.auditLog.createMany).not.toHaveBeenCalled();
+  });
+
   it('syncs rows edited on Lark and leaves the balance row alone', async () => {
     const tx = fakeDb(rerunPosRows);
     const prisma: any = { $transaction: jest.fn((fn: any) => fn(tx)) };
@@ -606,6 +774,41 @@ describe('applyLedgerImport', () => {
       strings.join('').includes('larkLedgerRecorded'),
     );
     expect(marks[0].slice(1)).toContain(90);
+
+    // Lịch sử: script sửa thẳng dòng quỹ (nhả khóa #25, đổi nội dung #21).
+    const rows = auditRows(tx);
+    const updates = byCode(rows, 'FIN_FUND_TXN_SCRIPT_UPDATE');
+    expect(
+      updates.map((row) => [
+        row.entityId,
+        row.changes.map((change: any) => [
+          change.label,
+          change.from,
+          change.to,
+        ]),
+      ]),
+    ).toEqual([
+      [
+        '25',
+        [['Khóa nguồn', 'LARK_LEDGER:rec-m', 'LARK_LEDGER:rec-m:CANCELLED:25']],
+      ],
+      ['21', [['Nội dung', 'Rút tiền TK', 'Rút tiền TK về quỹ']]],
+    ]);
+    expect(updates[1].message).toBe('Script cập nhật dòng quỹ SQ-1i');
+    expect(
+      byCode(rows, 'FIN_FUND_TXN_CANCEL')
+        .map((row) => row.entityId)
+        .sort(),
+    ).toEqual(['20', '22', '23', '24', '27']);
+    expect(byCode(rows, 'FIN_ENTRY_UPDATE').map((row) => row.entityId)).toEqual(
+      ['90'],
+    );
+    expect(byCode(rows, 'FIN_SCRIPT_RUN')[0].metadata.counts).toMatchObject({
+      changed: 2,
+      renamed: 1,
+      removed: 3,
+      voids: 1,
+    });
   });
 
   it('only writes up to the cutoff in code', async () => {

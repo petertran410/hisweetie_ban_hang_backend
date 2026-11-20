@@ -60,13 +60,27 @@ export function pickLarkDisplayName(
   return 'Lark User';
 }
 
-export function safeReturnTo(
-  value: string | undefined,
-  fallback = '/',
-): string {
-  if (!value) return fallback;
-  if (value.startsWith('/') && !value.startsWith('//')) return value;
-  return fallback;
+const RETURN_TO_BASE = 'http://return-to.invalid';
+
+/**
+ * Đích chuyển sau đăng nhập: chỉ đường dẫn nội bộ. Từ chối `//host`, `/\host`,
+ * ký tự điều khiển (trình duyệt bỏ tab/xuống dòng nên `/<TAB>/host` thành
+ * `//host`) và dạng dấu chấm như `/.//host` (chuẩn hóa thành `//host`).
+ * Cùng logic với pos-hisweetie/lib/auth/safe-return-url.ts.
+ */
+export function safeReturnTo(value: unknown, fallback = '/'): string {
+  if (typeof value !== 'string' || !value) return fallback;
+  if (!/^\/(?![/\\])/.test(value)) return fallback;
+  // eslint-disable-next-line no-control-regex
+  if (/[\\\u0000-\u001f\u007f]/.test(value)) return fallback;
+  try {
+    const url = new URL(value, RETURN_TO_BASE);
+    if (url.origin !== RETURN_TO_BASE) return fallback;
+    const path = url.pathname + url.search + url.hash;
+    return path.startsWith('//') ? fallback : path;
+  } catch {
+    return fallback;
+  }
 }
 
 export function buildAuthorizationUrl(

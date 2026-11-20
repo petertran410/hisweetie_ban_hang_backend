@@ -64,9 +64,9 @@ describe('manufacturer_stock print data', () => {
     expect(JSON.stringify(data)).not.toMatch(/3,000,000|3000000|1,500,000|1500000/);
   });
 
-  it('escapes names; the default template only uses declared keys and has no money words', () => {
+  it('returns raw names; the default template only uses declared keys and has no money words', () => {
     const data = mapManufacturerStock(slip({ manufacturer: { code: 'N', name: '<b>X</b>' } }));
-    expect(data.Nha_San_Xuat).toBe('&lt;b&gt;X&lt;/b&gt;');
+    expect(data.Nha_San_Xuat).toBe('<b>X</b>');
     const keys = new Set(MANUFACTURER_STOCK_VARIABLES.map((v) => v.key));
     const used = [...MANUFACTURER_STOCK_DEFAULT_TEMPLATE.matchAll(/\{(\w+)\}/g)].map((m) => m[1]);
     expect(used.filter((key) => !keys.has(key))).toEqual([]);
@@ -109,6 +109,18 @@ describe('PrintTemplatesService — manufacturer_stock', () => {
     expect(content).toContain('0.5 Thùng');
     expect(content).not.toMatch(/\{[A-Za-z_]+\}/);
     expect(content).not.toMatch(/4,753,840|2,376,920/);
+  });
+
+  it('escapes record text exactly once in the rendered print', async () => {
+    const { prisma, svc } = service();
+    prisma.manufacturerStockSlip.findUnique.mockResolvedValue(slip({
+      manufacturer: { code: 'N', name: '<b>X</b> & Co' },
+      lines: [{ productCode: 'A', productName: '<img src=x onerror=alert(1)>', quantity: 1, unit: 'g', units: 1, product: { unit: 'Thùng' } }],
+    }));
+    const { content } = await svc.renderPreview(1, 3);
+    expect(content).toContain('&lt;b&gt;X&lt;/b&gt; &amp; Co');
+    expect(content).toContain('&lt;img src=x onerror=alert(1)&gt;');
+    expect(content).not.toMatch(/&amp;(amp|lt|gt);|<b>X|<img src=x/);
   });
 
   it('exposes its variables to the editor', async () => {

@@ -3,6 +3,11 @@ import {
   FUND_SOURCE_TYPE,
   InternalFundLedgerService,
 } from '../internal-fund/internal-fund-ledger.service';
+import {
+  flushScriptLog,
+  pushScriptRun,
+  scriptRun,
+} from './finance-script-audit';
 import { VPSG_BRANCH_ID } from './internal-finance.constants';
 
 /**
@@ -92,26 +97,34 @@ export async function planVpsgBalance(db: Db, actual: number, date?: string) {
   };
 }
 
+/** Tên script ghi trong lịch sử (Cài đặt → Lịch sử). */
+export const VPSG_BALANCE_SCRIPT = 'balance-vpsg-fund';
+
 export async function applyVpsgBalance(
   prisma: PrismaClient,
   actual: number,
   userId: number,
   date?: string,
+  /** Tham số dòng lệnh, ghi vào lịch sử lần chạy. */
+  args: string[] = [],
 ) {
-  const ledger = new InternalFundLedgerService();
+  const run = scriptRun(VPSG_BALANCE_SCRIPT, userId, args);
+  const ledger = new InternalFundLedgerService(run.service);
   return prisma.$transaction(
     async (tx) => {
       await ledger.lock(tx, [VPSG_BRANCH_ID]);
       const plan = await planVpsgBalance(tx, actual, date);
-      if (plan.unchanged) return plan;
-      if (plan.current)
+      const replaced = !plan.unchanged && Boolean(plan.current);
+      const posted = !plan.unchanged && !plan.difference.isZero();
+      if (replaced)
         await ledger.releaseCancelled(
           tx,
-          plan.current,
+          plan.current!,
           userId,
           VPSG_BALANCE_REPLACED,
+          run.actor,
         );
-      if (!plan.difference.isZero())
+      if (posted)
         await ledger.postSystemTransaction(tx, {
           branchId: VPSG_BRANCH_ID,
           transactionType: plan.transactionType,
@@ -122,7 +135,53 @@ export async function applyVpsgBalance(
           sourceType: FUND_SOURCE_TYPE.BALANCE_ADJUSTMENT,
           sourceKey: VPSG_BALANCE_KEY,
           userId,
+          auditActor: run.actor,
         });
+      // Một dòng lịch sử cho mỗi lần chạy --apply (cả khi không đổi gì).
+      pushScriptRun(
+        run,
+        `Quỹ VPSG ngày ${vnDate(plan.at)}: đếm ${money(plan.actual)}, sổ ${money(plan.system)}, ${
+          plan.unchanged
+            ? 'không có gì thay đổi'
+            : posted
+              ? `ghi ${plan.transactionType === 'RECEIPT' ? 'THU' : 'CHI'} ${money(plan.difference.abs())}`
+              : 'khớp sổ, bỏ dòng cân bằng'
+        }`,
+        [
+          { key: 'actual', label: 'Tiền đếm', value: money(plan.actual) },
+          {
+            key: 'system',
+            label: 'Số dư POS (không tính dòng cân bằng)',
+            value: money(plan.system),
+          },
+          {
+            key: 'difference',
+            label: 'Chênh lệch',
+            value: money(plan.difference),
+          },
+          {
+            key: 'replaced',
+            label: 'Hủy dòng cân bằng cũ',
+            value: replaced ? 1 : 0,
+          },
+          {
+            key: 'posted',
+            label: 'Ghi dòng cân bằng mới',
+            value: posted ? 1 : 0,
+          },
+        ],
+        {
+          branchId: VPSG_BRANCH_ID,
+          metadata: {
+            at: plan.at,
+            actual: plan.actual,
+            system: plan.system,
+            difference: plan.difference,
+            replacedFundId: replaced ? plan.current!.id : null,
+          },
+        },
+      );
+      await flushScriptLog(tx, run);
       return plan;
     },
     { timeout: 120_000, maxWait: 60_000 },

@@ -126,13 +126,8 @@ const TYPE_TEXT: Record<string, {
   },
 };
 
-const escapeHtml = (value: unknown) =>
-  String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+/** Giá trị thô cho biến mẫu in — PrintTemplatesService escape khi thay biến. */
+const str = (value: unknown) => String(value ?? '');
 
 const qty = (value: unknown) =>
   value == null || value === '' ? '' : Number(value).toLocaleString('en-US', { maximumFractionDigits: 4 });
@@ -157,37 +152,37 @@ export function mapManufacturerStock(slip: any) {
   const date = slip.date ? new Date(slip.date) : null;
   const lines = slip.lines ?? [];
   return {
-    Ten_Cua_Hang: escapeHtml(slip.branch?.name || slip.branchName),
-    Dia_Chi_Cua_Hang: escapeHtml(slip.branch?.address),
-    So_Dien_Thoai_Cua_Hang: escapeHtml(slip.branch?.contactNumber),
+    Ten_Cua_Hang: str(slip.branch?.name || slip.branchName),
+    Dia_Chi_Cua_Hang: str(slip.branch?.address),
+    So_Dien_Thoai_Cua_Hang: str(slip.branch?.contactNumber),
     Tieu_De: text.title,
-    Ma_Phieu: escapeHtml(slip.code),
+    Ma_Phieu: str(slip.code),
     Loai_Phieu: text.label,
     Trang_Thai: slip.status === 2 ? 'Đã hủy' : 'Hiệu lực',
     Ngay_Phieu: ddmmyyyy(date),
     Ngay: date ? ddmmyyyy(date) : '',
     Thang: date ? String(date.getMonth() + 1) : '',
     Nam: date ? String(date.getFullYear()) : '',
-    Kho: escapeHtml(slip.branchName || slip.branch?.name || (adjust || slip.type === 'OPENING' ? 'Tồn tại nhà sản xuất' : '')),
-    Nguoi_Lap: escapeHtml(slip.createdByName),
+    Kho: str(slip.branchName || slip.branch?.name || (adjust || slip.type === 'OPENING' ? 'Tồn tại nhà sản xuất' : '')),
+    Nguoi_Lap: str(slip.createdByName),
     Ghi_Chu: slip.note || '',
     Tong_So_Mat_Hang: String(lines.length),
     Cot_So_Luong: text.quantity,
     Cot_Quy_Doi: text.converted,
     Ben_Giao: text.giver,
     Ben_Nhan: text.receiver,
-    Ma_Nha_San_Xuat: escapeHtml(slip.manufacturer?.code),
-    Nha_San_Xuat: escapeHtml(slip.manufacturer?.name),
-    Dien_Thoai_Nha_San_Xuat: escapeHtml(slip.manufacturer?.contactNumber),
-    Dia_Chi_Nha_San_Xuat: escapeHtml(slip.manufacturer?.address),
+    Ma_Nha_San_Xuat: str(slip.manufacturer?.code),
+    Nha_San_Xuat: str(slip.manufacturer?.name),
+    Dien_Thoai_Nha_San_Xuat: str(slip.manufacturer?.contactNumber),
+    Dia_Chi_Nha_San_Xuat: str(slip.manufacturer?.address),
     items: lines.map((line: any, index: number) => ({
       STT: String(index + 1),
-      Ma_Hang: escapeHtml(line.productCode),
-      Ten_Hang_Hoa: escapeHtml(line.productName),
+      Ma_Hang: str(line.productCode),
+      Ten_Hang_Hoa: str(line.productName),
       So_Luong: qty(line.quantity),
-      Don_Vi: escapeHtml(line.unit === 'unit' ? line.product?.unit : line.unit),
+      Don_Vi: str(line.unit === 'unit' ? line.product?.unit : line.unit),
       Quy_Doi: adjust ? signed(line.units) : qty(Math.abs(Number(line.units ?? 0))),
-      Don_Vi_Kho: escapeHtml(line.product?.unit),
+      Don_Vi_Kho: str(line.product?.unit),
       Ton_He_Thong: adjust ? qty(line.systemUnits) : '',
     })),
   };

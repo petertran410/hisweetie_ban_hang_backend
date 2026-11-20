@@ -6,9 +6,15 @@ import { ApprovalLifecycleService } from './approval-lifecycle.service';
 import { InternalFundLedgerModule } from '../internal-fund/internal-fund-ledger.module';
 import { InternalFinanceCodeService } from '../internal-finance/internal-finance-code.service';
 import { LarkApprovalMirrorService } from './lark-approval-mirror.service';
+import { FinanceAuditModule } from '../finance-audit/finance-audit.module';
 
 @Module({
-  imports: [PrismaModule, LarkSyncModule, InternalFundLedgerModule],
+  imports: [
+    PrismaModule,
+    LarkSyncModule,
+    InternalFundLedgerModule,
+    FinanceAuditModule,
+  ],
   controllers: [ApprovalLifecycleController],
   providers: [
     ApprovalLifecycleService,

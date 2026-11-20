@@ -12,6 +12,7 @@ import { InternalFundLedgerModule } from '../internal-fund/internal-fund-ledger.
 import { VehiclesModule } from '../vehicles/vehicles.module';
 import { LarkSyncModule } from '../lark-sync/lark-sync.module';
 import { WarehouseExpenseNotesService } from './warehouse-expense-notes.service';
+import { FinanceAuditModule } from '../finance-audit/finance-audit.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { WarehouseExpenseNotesService } from './warehouse-expense-notes.service'
     InternalFundLedgerModule,
     VehiclesModule,
     LarkSyncModule,
+    FinanceAuditModule,
   ],
   controllers: [InternalFinanceController],
   providers: [
