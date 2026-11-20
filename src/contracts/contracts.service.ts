@@ -20,6 +20,7 @@ import {
 import { Prisma } from '@prisma/client';
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomBytes } from 'crypto';
 
 @Injectable()
 export class ContractsService {
@@ -537,11 +538,8 @@ export class ContractsService {
     }
 
     if (contract.signedFileUrl) {
-      const localPath = path.join(
-        process.cwd(),
-        contract.signedFileUrl.replace(/^\//, ''),
-      );
-      if (fs.existsSync(localPath)) {
+      const localPath = this.storedPdfPath(contract.signedFileUrl);
+      if (localPath && fs.existsSync(localPath)) {
         return {
           buffer: fs.readFileSync(localPath),
           filename: `hop-dong-${contract.id}.pdf`,
@@ -1013,14 +1011,31 @@ export class ContractsService {
     return env.documentNumericId;
   }
 
-  /** Lưu PDF vào uploads/contracts, trả relative URL. */
+  /**
+   * Thư mục lưu PDF hợp đồng. Nằm trong volume uploads/ (giữ được qua các lần
+   * deploy blue/green) nhưng KHÔNG phục vụ công khai: main.ts chặn
+   * /uploads/contracts bằng privateUploadsGuard; tải qua getSignedPdf.
+   */
+  private contractsDir(): string {
+    return path.join(process.cwd(), 'uploads', 'contracts');
+  }
+
+  /** Lưu PDF với tên có thành phần ngẫu nhiên (không đoán được), trả khóa lưu trữ. */
   private storePdf(prefix: string, kind: string, buffer: Buffer): string {
-    const dir = path.join(process.cwd(), 'uploads', 'contracts');
+    const dir = this.contractsDir();
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const safePrefix = prefix.replace(/[^a-zA-Z0-9_-]/g, '');
-    const filename = `${safePrefix}-${kind}-${Date.now()}.pdf`;
+    const safeKind = kind.replace(/[^a-zA-Z0-9_-]/g, '');
+    const filename = `${safePrefix}-${safeKind}-${randomBytes(16).toString('hex')}.pdf`;
     fs.writeFileSync(path.join(dir, filename), buffer);
     return `/uploads/contracts/${filename}`;
+  }
+
+  /** Khóa lưu trữ (mới hoặc cũ) → đường dẫn file trong thư mục hợp đồng; khóa lạ → null. */
+  private storedPdfPath(stored: string): string | null {
+    const name = path.basename(stored);
+    if (!/^[A-Za-z0-9_-]+\.pdf$/.test(name)) return null;
+    return path.join(this.contractsDir(), name);
   }
 
   async createFromUpload(

@@ -7,7 +7,6 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import {
-  PRICE_GROUPS,
   PriceCatalogEntry,
   PricePageConfig,
   PriceRegionKey,
@@ -172,9 +171,8 @@ export class PublicPriceService {
             tradeMarkId: true,
             tradeMark: { select: { name: true } },
             images: {
-              select: { image: true },
+              select: { id: true, image: true },
               orderBy: [{ isPrimary: 'desc' }, { id: 'asc' }],
-              take: 1,
             },
           },
         })
@@ -212,6 +210,14 @@ export class PublicPriceService {
       details.map((d) => [`${d.priceBookId}:${d.productId}`, Number(d.price)]),
     );
     const byId = new Map(products.map((p) => [p.id, p]));
+    const itemOf = new Map(config.items.map((it) => [it.productId, it]));
+    // Ảnh đã chọn (phải là ảnh của chính sản phẩm), không có thì ảnh chính
+    const imageOf = (p: (typeof products)[number]) => {
+      const id = itemOf.get(p.id)?.imageId;
+      return (
+        p.images.find((i) => i.id === id)?.image ?? p.images[0]?.image ?? null
+      );
+    };
 
     const priceOf = (p: (typeof products)[number], key: PriceRegionKey) => {
       const region = config.regions.find((r) => r.key === key)!;
@@ -222,41 +228,55 @@ export class PublicPriceService {
       return v != null && v > 0 ? v : null;
     };
 
+    const brandCfg = new Map(config.brands.map((b) => [b.tradeMarkId, b]));
+    // Thương hiệu chọn riêng phải nằm trong danh sách thương hiệu đã cấu hình
+    const brandOf = (p: (typeof products)[number]) => {
+      const id = itemOf.get(p.id)?.brandId;
+      return id != null && brandCfg.has(id) ? id : p.tradeMarkId;
+    };
+    const autoSpec = (p: (typeof products)[number]) => {
+      const parts = splitProductName(p.name);
+      return {
+        name: stripBrandPrefix(parts.name, p.tradeMark?.name),
+        size: parts.size,
+        spec: parts.spec,
+        unit: p.unit || parts.unit,
+      };
+    };
+
     const catalog: PriceCatalogEntry[] = products.map((p) => ({
       id: p.id,
       code: p.code,
       fullName: p.name,
-      image: p.images[0]?.image ?? null,
+      image: imageOf(p),
       isActive: p.isActive,
       tradeMarkId: p.tradeMarkId,
       tradeMarkName: p.tradeMark?.name ?? null,
       price: { N: priceOf(p, 'N'), S: priceOf(p, 'S') },
+      images: p.images,
+      auto: autoSpec(p),
     }));
 
-    const brandCfg = new Map(config.brands.map((b) => [b.tradeMarkId, b]));
     const shown: PublicPriceProduct[] = [];
-    for (const g of PRICE_GROUPS) {
-      if (config.hiddenGroups.includes(g.key)) continue;
+    const visibleGroups = config.groups.filter((g) => g.visible);
+    for (const g of visibleGroups) {
       for (const it of config.items) {
         const p = byId.get(it.productId);
         if (it.group !== g.key || !it.visible || !p || !p.isActive) continue;
-        if (
-          p.tradeMarkId != null &&
-          brandCfg.get(p.tradeMarkId)?.visible === false
-        )
+        const brandId = brandOf(p);
+        if (brandId != null && brandCfg.get(brandId)?.visible === false)
           continue;
-        const parts = splitProductName(p.name);
-        const name = it.name || stripBrandPrefix(parts.name, p.tradeMark?.name);
+        const auto = autoSpec(p);
         shown.push({
           id: p.id,
           code: p.code,
-          name,
-          size: parts.size,
-          spec: parts.spec,
-          unit: p.unit || parts.unit,
-          brandId: p.tradeMarkId,
+          name: it.name || auto.name,
+          size: it.size || auto.size,
+          spec: it.spec || auto.spec,
+          unit: it.unit || auto.unit,
+          brandId,
           group: g.key,
-          image: p.images[0]?.image ?? null,
+          image: imageOf(p),
           tag: it.tag,
           desc: it.desc,
           price: {
@@ -271,7 +291,12 @@ export class PublicPriceService {
     const usedBrands = new Map<number, string>();
     for (const s of shown) {
       if (s.brandId == null || usedBrands.has(s.brandId)) continue;
-      usedBrands.set(s.brandId, byId.get(s.id)?.tradeMark?.name ?? '');
+      const p = byId.get(s.id);
+      // Tên POS chỉ dùng khi thương hiệu là của chính sản phẩm (không phải thương hiệu chọn riêng)
+      usedBrands.set(
+        s.brandId,
+        p?.tradeMarkId === s.brandId ? (p.tradeMark?.name ?? '') : '',
+      );
     }
     const brands = [
       ...config.brands
@@ -298,7 +323,7 @@ export class PublicPriceService {
           listName,
           hotline,
         })),
-      groups: PRICE_GROUPS.filter((g) => !config.hiddenGroups.includes(g.key)),
+      groups: visibleGroups.map(({ key, name, icon }) => ({ key, name, icon })),
       brands,
       products: shown,
     };

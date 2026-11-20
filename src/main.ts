@@ -9,6 +9,7 @@ import * as compression from 'compression';
 import * as cookieParser from 'cookie-parser';
 import { PrismaService } from './prisma/prisma.service';
 import { createPublicationPdfMiddleware } from './upload/publication-pdf.middleware';
+import { privateUploadsGuard } from './upload/private-uploads.middleware';
 import { selectPublicationDisplayName } from './upload/publication-pdf-title';
 import { startEventLoopMonitor } from './common/monitoring/event-loop-monitor';
 import { isCorsOriginAllowed } from './common/cors-origin.util';
@@ -93,6 +94,10 @@ async function bootstrap() {
     mkdirSync(uploadsPath, { recursive: true });
   }
 
+  // Thư mục riêng tư dưới uploads/ (PDF hợp đồng đã ký) không phục vụ công khai.
+  // Phải đứng trước static và middleware PDF công bố.
+  app.use('/uploads', privateUploadsGuard);
+
   // Chrome lấy /Title của PDF làm tên trên thanh xem. File công bố cố ý
   // mang tên ngẫu nhiên, nên gắn Title = tên gốc lúc trả về. URL không đổi.
   // Phải đứng trước static, nếu không request bị static phục vụ trước.
@@ -118,6 +123,18 @@ async function bootstrap() {
     prefix: '/uploads/',
     maxAge: '1y',
     immutable: true,
+    // File người dùng tải lên chỉ để hiển thị/tải về, không được chạy như trang
+    // web trên domain backend (vd. .html/.svg cũ). Trừ PDF để trình xem PDF
+    // của trình duyệt hoạt động bình thường. Ảnh/video nhúng trong web không
+    // bị ảnh hưởng (CSP của file ảnh không áp lên trang nhúng nó).
+    setHeaders: (res, filePath) => {
+      if (!filePath.toLowerCase().endsWith('.pdf')) {
+        res.setHeader(
+          'Content-Security-Policy',
+          "default-src 'none'; img-src 'self'; media-src 'self'; style-src 'unsafe-inline'; sandbox",
+        );
+      }
+    },
   });
 
   app.setGlobalPrefix('api');

@@ -1,10 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { join } from 'path';
-import { existsSync, unlinkSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync } from 'fs';
 import { writeFile } from 'fs/promises';
 import convert from 'heic-convert';
 import { repairUploadedFilename } from '../common/uploaded-filename.util';
 import { stampPdfTitle } from './publication-pdf-title';
+import {
+  resolveUploadDir,
+  safeImageExtension,
+  safeStoredExtension,
+} from './upload-paths.util';
 
 const HEIC_MIMES = new Set([
   'image/heic',
@@ -52,6 +57,9 @@ export class UploadService {
     mimetype: string,
     subfolder?: string,
   ): Promise<{ filename: string; url: string; size: number }> {
+    // Kiểm tra thư mục trước khi xử lý ảnh (tránh tốn CPU cho request sai).
+    const { dir: uploadDir, subfolder: safeSubfolder } =
+      resolveUploadDir(subfolder);
     const timestamp = Date.now();
     const randomName = Array(16)
       .fill(null)
@@ -151,7 +159,6 @@ export class UploadService {
     }
 
     const filename = `${timestamp}-${randomName}${ext}`;
-    const uploadDir = join(process.cwd(), 'uploads', subfolder || '');
 
     if (!existsSync(uploadDir)) {
       mkdirSync(uploadDir, { recursive: true });
@@ -170,16 +177,9 @@ export class UploadService {
 
     return {
       filename,
-      url: this.getFileUrl(filename, subfolder),
+      url: this.getFileUrl(filename, safeSubfolder),
       size: finalBuffer.length,
     };
-  }
-
-  async deleteFile(filename: string): Promise<void> {
-    const filePath = join(process.cwd(), 'uploads', filename);
-    if (existsSync(filePath)) {
-      unlinkSync(filePath);
-    }
   }
 
   /**
@@ -199,12 +199,16 @@ export class UploadService {
     mimetype: string;
     originalname: string;
   }> {
+    // Kiểm tra thư mục và đuôi file trước khi xử lý (đuôi .html/.svg/.js… → 400).
+    const { dir: uploadDir, subfolder: safeSubfolder } =
+      resolveUploadDir(subfolder);
+    const ext = safeStoredExtension(originalname);
     const displayName = repairUploadedFilename(
       originalNameOverride || originalname,
     );
     let fileBuffer = buffer;
     if (
-      subfolder === 'products/cong-bo' &&
+      safeSubfolder === 'products/cong-bo' &&
       mimetype.toLowerCase() === 'application/pdf'
     ) {
       try {
@@ -222,11 +226,8 @@ export class UploadService {
       .map(() => Math.floor(Math.random() * 16).toString(16))
       .join('');
 
-    const idx = originalname.lastIndexOf('.');
-    const ext = idx >= 0 ? originalname.slice(idx).toLowerCase() : '';
     const filename = `${timestamp}-${randomName}${ext}`;
 
-    const uploadDir = join(process.cwd(), 'uploads', subfolder || '');
     if (!existsSync(uploadDir)) {
       mkdirSync(uploadDir, { recursive: true });
     }
@@ -244,7 +245,7 @@ export class UploadService {
 
     return {
       filename,
-      url: this.getFileUrl(filename, subfolder),
+      url: this.getFileUrl(filename, safeSubfolder),
       size: fileBuffer.length,
       mimetype,
       originalname: displayName,
@@ -255,9 +256,7 @@ export class UploadService {
     if (mime === 'image/png') return '.png';
     if (mime === 'image/webp') return '.webp';
     if (mime === 'image/jpeg' || mime === 'image/jpg') return '.jpg';
-    // fallback: lấy theo originalname
-    const idx = originalname.lastIndexOf('.');
-    if (idx >= 0) return originalname.slice(idx).toLowerCase();
-    return '.jpg';
+    // fallback: lấy theo originalname nhưng chỉ nhận đuôi ảnh (tránh lưu .svg/.html)
+    return safeImageExtension(originalname);
   }
 }
