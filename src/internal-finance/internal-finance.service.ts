@@ -156,6 +156,35 @@ const WAREHOUSE_EXPENSE_CATEGORIES = [
   INTERNAL_FINANCE_CATEGORY.OTHER_EXPENSE,
 ] as const;
 
+/** Điều kiện gom phiếu chi vào Approval tuần theo chi nhánh. */
+type WeeklyGatherOptions = {
+  eligibleStatuses: string[];
+  allowedCategories?: string[];
+  requireBothChecks?: boolean;
+};
+
+/** Kho: chỉ gom phiếu đã được cả quản lý kho và kế toán kho tick. */
+const WAREHOUSE_WEEKLY_OPTIONS: WeeklyGatherOptions = {
+  eligibleStatuses: [
+    INTERNAL_FINANCE_STATUS.MANAGER_APPROVED,
+    INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL,
+  ],
+  allowedCategories: [...WAREHOUSE_EXPENSE_CATEGORIES],
+  requireBothChecks: true,
+};
+
+/** Phiếu tick muộn hiện trong hộp thoại trước khi gửi Approval tuần. */
+const LATE_WEEKLY_ENTRY_SELECT = {
+  id: true,
+  code: true,
+  occurredAt: true,
+  amount: true,
+  description: true,
+} satisfies Prisma.InternalFinanceEntrySelect;
+type LateWeeklyEntry = Prisma.InternalFinanceEntryGetPayload<{
+  select: typeof LATE_WEEKLY_ENTRY_SELECT;
+}>;
+
 /** Tuần ISO (Thứ hai–Chủ nhật) của ngày yyyy-mm-dd: năm ISO và số tuần. */
 export const isoWeekOf = (dateKey: string) => {
   const date = new Date(`${dateKey}T00:00:00Z`);
@@ -3049,14 +3078,11 @@ export class InternalFinanceService {
     await this.assertWeeklyApprovalPermission(user, dto.branchId, 'prepare');
     // Kho: chỉ gom phiếu đã được cả quản lý kho và kế toán kho tick.
     if (this.isWarehouseBranch(dto.branchId)) {
-      return this.prepareWeeklyBatchInternal(dto, user.id, {
-        eligibleStatuses: [
-          INTERNAL_FINANCE_STATUS.MANAGER_APPROVED,
-          INTERNAL_FINANCE_STATUS.READY_FOR_WEEKLY_APPROVAL,
-        ],
-        allowedCategories: [...WAREHOUSE_EXPENSE_CATEGORIES],
-        requireBothChecks: true,
-      });
+      return this.prepareWeeklyBatchInternal(
+        dto,
+        user.id,
+        WAREHOUSE_WEEKLY_OPTIONS,
+      );
     }
     return this.prepareWeeklyBatchInternal(dto, user.id, {
       eligibleStatuses: [
@@ -3076,11 +3102,7 @@ export class InternalFinanceService {
   private async prepareWeeklyBatchInternal(
     dto: PrepareWeeklyBatchDto,
     userId: number,
-    options: {
-      eligibleStatuses: string[];
-      allowedCategories?: string[];
-      requireBothChecks?: boolean;
-    },
+    options: WeeklyGatherOptions,
   ) {
     await this.validateBranch(dto.branchId);
     const weekStart = fundDayStart(dto.weekStart);
@@ -3129,24 +3151,7 @@ export class InternalFinanceService {
 
       const entries = await tx.internalFinanceEntry.findMany({
         where: {
-          branchId: dto.branchId,
-          direction: INTERNAL_FINANCE_DIRECTION.EXPENSE,
-          status: { in: options.eligibleStatuses },
-          ...(options.allowedCategories?.length
-            ? { category: { in: options.allowedCategories } }
-            : {}),
-          cashFlowId: null,
-          cashIssued: false,
-          // Phiếu xăng Kho HN từ mốc trừ vào tiền ứng xăng, không gom tuần.
-          NOT: fuelAdvanceEntryWhere,
-          // Kho: dòng đồng bộ về cũng gom được khi đã đủ hai tick. Chi nhánh
-          // khác giữ nguyên: khoản nhập lịch sử chỉ để hiển thị.
-          ...(options.requireBothChecks
-            ? {
-                managerReviewedAt: { not: null },
-                accountantReviewedAt: { not: null },
-              }
-            : { sourceType: { not: 'LARK_IMPORT' } }),
+          ...this.weeklyEligibleWhere(dto.branchId, options),
           OR: [
             // Phiếu trong tuần (chưa vào tuần nào, hoặc đang ở batch này).
             {
@@ -3382,6 +3387,76 @@ export class InternalFinanceService {
     });
   }
 
+  /** Điều kiện phiếu chi gom được vào Approval tuần (chưa xét ngày / batch). */
+  private weeklyEligibleWhere(
+    branchId: number,
+    options: WeeklyGatherOptions,
+  ): Prisma.InternalFinanceEntryWhereInput {
+    return {
+      branchId,
+      direction: INTERNAL_FINANCE_DIRECTION.EXPENSE,
+      status: { in: options.eligibleStatuses },
+      ...(options.allowedCategories?.length
+        ? { category: { in: options.allowedCategories } }
+        : {}),
+      cashFlowId: null,
+      cashIssued: false,
+      // Phiếu xăng Kho HN từ mốc trừ vào tiền ứng xăng, không gom tuần.
+      NOT: fuelAdvanceEntryWhere,
+      // Kho: dòng đồng bộ về cũng gom được khi đã đủ hai tick. Chi nhánh
+      // khác giữ nguyên: khoản nhập lịch sử chỉ để hiển thị.
+      ...(options.requireBothChecks
+        ? {
+            managerReviewedAt: { not: null },
+            accountantReviewedAt: { not: null },
+          }
+        : { sourceType: { not: 'LARK_IMPORT' } }),
+    };
+  }
+
+  /**
+   * Phiếu chi kho trong tuần của batch đã đủ điều kiện gom nhưng chưa nằm trong
+   * batch nào: thường là phiếu được tick sau lần Tổng hợp gần nhất. Bấm "Tổng
+   * hợp lại" sẽ gom đúng các phiếu này. Batch văn phòng: không xét.
+   */
+  private async lateWeeklyEntries(
+    db: Prisma.TransactionClient | PrismaService,
+    batch: { branchId: number; weekStart: Date; weekEnd: Date },
+  ): Promise<LateWeeklyEntry[]> {
+    if (!this.isWarehouseBranch(batch.branchId)) return [];
+    return db.internalFinanceEntry.findMany({
+      where: {
+        ...this.weeklyEligibleWhere(batch.branchId, WAREHOUSE_WEEKLY_OPTIONS),
+        occurredAt: { gte: batch.weekStart, lte: batch.weekEnd },
+        weeklyBatchId: null,
+      },
+      orderBy: [{ occurredAt: 'asc' }, { id: 'asc' }],
+      select: LATE_WEEKLY_ENTRY_SELECT,
+    });
+  }
+
+  /** Trước khi gửi Lark: phiếu đủ tick sau lần Tổng hợp gần nhất của batch. */
+  async warehouseBatchLateEntries(batchId: number, user: any) {
+    const batch = await this.prisma.internalFinanceWeeklyBatch.findUnique({
+      where: { id: batchId },
+      select: { id: true, branchId: true, weekStart: true, weekEnd: true },
+    });
+    if (!batch) throw new NotFoundException('Không tìm thấy batch tuần');
+    if (
+      !(await this.access.can(user, batch.branchId, 'weekly_approval:prepare'))
+    )
+      await this.assertWeeklyApprovalPermission(user, batch.branchId, 'submit');
+    const entries = await this.lateWeeklyEntries(this.prisma, batch);
+    return {
+      count: entries.length,
+      amount: entries.reduce((sum, entry) => sum + Number(entry.amount), 0),
+      entries: entries.map((entry) => ({
+        ...entry,
+        amount: Number(entry.amount),
+      })),
+    };
+  }
+
   /** Mã batch đã có (batch cũ đã hủy của cùng tuần) thì thêm đuôi -L2, -L3… */
   private async uniqueBatchCode(tx: Prisma.TransactionClient, base: string) {
     const taken = new Set(
@@ -3518,6 +3593,8 @@ export class InternalFinanceService {
     userId: number,
     detailUrl?: string,
     viewUrl?: string,
+    /** Người gửi đã thấy phiếu tick muộn và vẫn chọn gửi. */
+    allowLateEntries = false,
   ) {
     const batch = await this.prisma.internalFinanceWeeklyBatch.findUnique({
       where: { id: batchId },
@@ -3618,6 +3695,14 @@ export class InternalFinanceService {
         where: { AND: [{ weeklyBatchId: batch.id }, fuelAdvanceEntryWhere] },
       });
       if (fuelAdvance) throw new BadRequestException(FUEL_ADVANCE_BATCH_BLOCK);
+      // Phiếu đủ tick sau lần Tổng hợp: chỉ gửi khi người gửi đã chọn bỏ qua.
+      if (!allowLateEntries) {
+        const late = await this.lateWeeklyEntries(tx, batch);
+        if (late.length)
+          throw new ConflictException(
+            `Có ${late.length} phiếu chi trong tuần đã đủ tick sau lần Tổng hợp gần nhất: bấm Tổng hợp lại, hoặc chọn Vẫn tạo approval Lark`,
+          );
+      }
       const claimed = await tx.internalFinanceWeeklyBatch.updateMany({
         where: {
           id: batch.id,
@@ -3757,6 +3842,7 @@ export class InternalFinanceService {
     user: any,
     detailUrl?: string,
     viewUrl?: string,
+    allowLateEntries = false,
   ) {
     const batch = await this.prisma.internalFinanceWeeklyBatch.findUnique({
       where: { id: batchId },
@@ -3764,7 +3850,13 @@ export class InternalFinanceService {
     });
     if (!batch) throw new NotFoundException('Không tìm thấy batch tuần');
     await this.assertWeeklyApprovalPermission(user, batch.branchId, 'submit');
-    return this.createWeeklyApproval(batchId, user.id, detailUrl, viewUrl);
+    return this.createWeeklyApproval(
+      batchId,
+      user.id,
+      detailUrl,
+      viewUrl,
+      allowLateEntries,
+    );
   }
 
   /** Phiếu sót tuần trước có thể gộp vào tuần bắt đầu từ `weekStart`. */

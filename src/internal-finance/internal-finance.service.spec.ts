@@ -334,6 +334,107 @@ describe('InternalFinanceService', () => {
     ).rejects.toThrow('đã hủy');
   });
 
+  describe('entries ticked after the last prepare (late entries)', () => {
+    const batch = {
+      id: 4,
+      branchId: 6,
+      status: 'READY',
+      approvalRequestId: null,
+      totalAmount: 100,
+      weekStart: new Date('2026-11-08T17:00:00Z'),
+      weekEnd: new Date('2026-11-15T16:59:59.999Z'),
+      updatedAt: new Date(),
+    };
+    const late = [
+      {
+        id: 21,
+        code: 'TCNB-CHI-HN-20261113-000062',
+        occurredAt: new Date('2026-11-12T17:00:00Z'),
+        amount: 150000,
+        description: 'Mua băng keo',
+      },
+    ];
+    const setup = (rows: any[] = late, row: any = batch) => {
+      const findMany = jest.fn(async ({ where }: any) =>
+        where?.weeklyBatchId === null ? rows : [],
+      );
+      const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const ctx = makeService({
+        internalFinanceWeeklyBatch: {
+          findUnique: jest.fn().mockResolvedValue(row),
+          updateMany,
+          update: jest.fn(),
+        },
+        internalFinanceEntry: { findMany, updateMany: jest.fn() },
+      });
+      ctx.approvalLifecycle.create.mockResolvedValue({ id: 55 });
+      return { ...ctx, findMany, updateMany };
+    };
+
+    it('lists eligible entries of the week that are in no batch yet', async () => {
+      const f = setup();
+      f.authService.getPermissionsForBranch.mockResolvedValue([
+        'weekly_approval:submit',
+      ]);
+      expect(
+        await f.service.warehouseBatchLateEntries(4, { id: 7, roles: [] }),
+      ).toEqual({ count: 1, amount: 150000, entries: late });
+      const where = f.findMany.mock.calls[0][0].where;
+      expect(where).toMatchObject({
+        branchId: 6,
+        status: { in: ['MANAGER_APPROVED', 'READY_FOR_WEEKLY_APPROVAL'] },
+        cashIssued: false,
+        cashFlowId: null,
+        managerReviewedAt: { not: null },
+        accountantReviewedAt: { not: null },
+        weeklyBatchId: null,
+        occurredAt: { gte: batch.weekStart, lte: batch.weekEnd },
+      });
+      expect(where.NOT).toEqual(fuelAdvanceEntryWhere);
+    });
+
+    it('needs the submit or prepare permission to look', async () => {
+      const f = setup();
+      await expect(
+        f.service.warehouseBatchLateEntries(4, { id: 7, roles: [] }),
+      ).rejects.toThrow('Không có quyền');
+    });
+
+    it('does not check office batches', async () => {
+      const f = setup(late, { ...batch, branchId: 4 });
+      f.authService.getPermissionsForBranch.mockResolvedValue([
+        'weekly_approval:prepare',
+      ]);
+      expect(
+        await f.service.warehouseBatchLateEntries(4, {
+          id: 7,
+          roles: [],
+          branchIds: [4],
+        }),
+      ).toMatchObject({ count: 0 });
+      expect(f.findMany).not.toHaveBeenCalled();
+    });
+
+    it('refuses to send while late entries exist, unless the sender chose to', async () => {
+      const blocked = setup();
+      await expect(blocked.service.createWeeklyApproval(4, 7)).rejects.toThrow(
+        'Có 1 phiếu chi trong tuần đã đủ tick sau lần Tổng hợp',
+      );
+      expect(blocked.updateMany).not.toHaveBeenCalled();
+      expect(blocked.approvalLifecycle.create).not.toHaveBeenCalled();
+
+      const allowed = setup();
+      await allowed.service.createWeeklyApproval(
+        4,
+        7,
+        undefined,
+        undefined,
+        true,
+      );
+      expect(allowed.approvalLifecycle.create).toHaveBeenCalled();
+    });
+  });
+
   it('releases a claimed weekly batch when Approval submission fails', async () => {
     const updateMany = jest.fn().mockResolvedValue({ count: 1 });
     const { service, approvalLifecycle, prisma } = makeService({
@@ -4252,9 +4353,13 @@ describe('InternalFinanceService', () => {
           update: jest.fn(),
         },
       });
-      ok.prisma.internalFinanceEntry.findMany.mockResolvedValue([
-        { id: 11, code: 'TCNB-11', branchId: 6 },
-      ]);
+      // Phiếu trong batch; không có phiếu tick muộn (chưa thuộc batch nào).
+      ok.prisma.internalFinanceEntry.findMany.mockImplementation(
+        async ({ where }: any) =>
+          where?.weeklyBatchId === null
+            ? []
+            : [{ id: 11, code: 'TCNB-11', branchId: 6 }],
+      );
       // Lịch sử gửi duyệt ghi trong transaction khóa batch, TRƯỚC khi gọi Lark.
       ok.approvalLifecycle.create.mockImplementation(async () => {
         expect(ok.auditWrite).toHaveBeenCalledTimes(1);
@@ -4292,9 +4397,12 @@ describe('InternalFinanceService', () => {
           updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         },
       });
-      failed.prisma.internalFinanceEntry.findMany.mockResolvedValue([
-        { id: 11, code: 'TCNB-11', branchId: 6 },
-      ]);
+      failed.prisma.internalFinanceEntry.findMany.mockImplementation(
+        async ({ where }: any) =>
+          where?.weeklyBatchId === null
+            ? []
+            : [{ id: 11, code: 'TCNB-11', branchId: 6 }],
+      );
       failed.approvalLifecycle.create.mockRejectedValue(
         new Error('Offline Lark'),
       );

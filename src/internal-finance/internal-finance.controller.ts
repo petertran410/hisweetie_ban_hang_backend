@@ -262,7 +262,19 @@ export class InternalFinanceController {
       user,
       dto.detailUrl,
       dto.viewUrl,
+      dto.allowLateEntries,
     );
+  }
+
+  @Get('warehouse-expenses/weekly-batches/:id/late-entries')
+  @ApiOperation({
+    summary: 'Entries ticked after the last prepare of a weekly batch',
+  })
+  warehouseBatchLateEntries(
+    @Param('id', ParseIntPipe) id: number,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.warehouseBatchLateEntries(id, user);
   }
 
   @Post('warehouse-expenses/weekly-batches/:id/add-entries')
@@ -622,6 +634,7 @@ export class InternalFinanceController {
       user.id,
       dto.detailUrl,
       dto.viewUrl,
+      dto.allowLateEntries,
     );
   }
 
