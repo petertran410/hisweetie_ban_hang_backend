@@ -545,6 +545,11 @@ export class CreateApprovalForWeeklyBatchDto {
   @IsOptional()
   @IsString()
   viewUrl?: string;
+
+  /** Vẫn gửi dù có phiếu đủ tick sau lần Tổng hợp gần nhất. */
+  @IsOptional()
+  @IsBoolean()
+  allowLateEntries?: boolean;
 }
 
 export const INTERNAL_FINANCE_CATEGORIES = Object.values(
