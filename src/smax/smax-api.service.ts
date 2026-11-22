@@ -111,6 +111,8 @@ export interface SmaxRecentThread {
   isGroup: boolean;
   lastMessage: string;
   lastMessageAt: string | null;
+  // Lần cuối khách nhắn (Smax last_message_by_customer_at); trùng lastMessageAt = tin cuối là của khách
+  lastCustomerAt: string | null;
   unread: boolean;
   // Tổng số tin của thread (Smax reply_count) — client tính "tin mới" theo chênh lệch
   messageCount: number;
@@ -646,6 +648,7 @@ export class SmaxApiService {
         // Tin cuối: "attach" = tệp/ảnh
         lastMessage: typeof t.message === 'string' ? t.message : '',
         lastMessageAt: t.last_message_at ?? null,
+        lastCustomerAt: t.last_message_by_customer_at ?? null,
         unread: t.read === false,
         messageCount: Number(t.reply_count ?? 0),
         avatar: t.customer?.picture ?? t.customer?.zaloweb?.picture ?? null,

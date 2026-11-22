@@ -10,8 +10,12 @@ export type ToolCall = {
   function: { name: string; arguments: string };
 };
 
+/** Ảnh gửi kèm tin user (base64, không có tiền tố data:). */
+export type ChatImage = { mediaType: string; data: string };
+
 export type ChatMessage =
-  | { role: 'system' | 'user'; content: string }
+  | { role: 'system'; content: string }
+  | { role: 'user'; content: string; images?: ChatImage[] }
   /** `anthropicContent`: Claude's original content blocks of this turn, sent back as is to Claude only. */
   | {
       role: 'assistant';
@@ -117,7 +121,21 @@ export function createOpenAiChatClient(
           message.role === 'assistant' && 'anthropicContent' in message
             ? // eslint-disable-next-line @typescript-eslint/no-unused-vars
               (({ anthropicContent: _omit, ...rest }) => rest)(message)
-            : message,
+            : message.role === 'user' && message.images?.length
+              ? // Ảnh theo dạng OpenAI: image_url là data URI
+                {
+                  role: 'user',
+                  content: [
+                    ...message.images.map((image) => ({
+                      type: 'image_url',
+                      image_url: {
+                        url: `data:${image.mediaType};base64,${image.data}`,
+                      },
+                    })),
+                    { type: 'text', text: message.content },
+                  ],
+                }
+              : message,
         ),
         ...(request.tools?.length
           ? { tools: request.tools, tool_choice: 'auto' }

@@ -8,6 +8,7 @@ import { InventoriesService } from '../../inventories/inventories.service';
 import { LeadsService } from '../../leads/leads.service';
 import { QuotesService } from '../../quotes/quotes.service';
 import { DashboardService } from '../../dashboard/dashboard.service';
+import { SmaxChatService } from '../../smax/smax-chat.service';
 import type { AiTool } from './common';
 import type { AiToolDeps } from './deps';
 import { AI_TOOLS } from './index';
@@ -28,6 +29,7 @@ export class AiToolsService {
     leads: LeadsService,
     quotes: QuotesService,
     dashboard: DashboardService,
+    smaxChat: SmaxChatService,
   ) {
     this.deps = {
       prisma,
@@ -39,6 +41,7 @@ export class AiToolsService {
       leads,
       quotes,
       dashboard,
+      smaxChat,
     };
   }
 }

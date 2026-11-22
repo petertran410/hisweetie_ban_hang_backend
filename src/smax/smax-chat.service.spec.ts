@@ -103,6 +103,7 @@ const makeService = (env: Record<string, string> = {}) => {
         ),
       ),
     },
+    aiThreadLabel: { findMany: jest.fn().mockResolvedValue([]) },
     userBankAccount: {
       findUnique: jest.fn().mockResolvedValue({
         bankAccount: { bankName: 'MB', bankCode: 'MB', accountNumber: '3095686868', accountHolder: 'DIEP TRA' },
@@ -670,6 +671,53 @@ describe('SmaxChatService', () => {
       smaxUrl: `https://smax.ai/bizs/dieptra/chats/${PAGE}?tid=zlw2395241168877084467`,
     });
     expect((api as any).listRecentThreads).toHaveBeenCalledTimes(1);
+  });
+
+  it('recentChats: cảnh báo khách chờ quá 30 phút giờ làm; nhóm kiểm người gửi tin cuối (nền)', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'] });
+    jest.setSystemTime(new Date('2026-11-23T10:00:00+07:00')); // Thứ 2
+    try {
+      const { service, api } = makeService();
+      (service as any).prisma.smaxChannelUser.findMany = jest.fn().mockResolvedValue([
+        { pagePid: PAGE, pageName: 'Diệp Trà Cs', platform: 'zaloweb', userId: 1 },
+      ]);
+      (service as any).prisma.customerZaloContact.findMany = jest.fn().mockResolvedValue([]);
+      (service as any).prisma.customer.findMany = jest.fn().mockResolvedValue([]);
+      api.listPages.mockResolvedValue([...pages, { pid: 'zlwSTAFF', name: 'Diệp Trà - Mr Sĩ Phú', platform: 'zaloweb' }]);
+      const at = (hm: string) => `2026-11-23T${hm}:00+07:00`;
+      const thread = (tid: string, isGroup: boolean, last: string, byCustomer: string, text = 'gửi giá giúp chị') => ({
+        tid, pagePid: PAGE, name: tid, isGroup, lastMessage: text, lastMessageAt: at(last), lastCustomerAt: at(byCustomer),
+        unread: true, messageCount: 1, avatar: null, memberPreview: [],
+      });
+      (api as any).listRecentThreads = jest.fn().mockResolvedValue([
+        thread('zlw1001', false, '08:30', '08:30', 'chưa gửi hàng cho chị à'), // 90 phút, bực
+        thread('zlw1002', false, '09:00', '08:00'), // bên mình trả lời sau → không báo
+        thread('zlw1003', false, '09:45', '09:45'), // mới 15 phút
+        thread('zlw1004', true, '08:00', '08:00'), // nhóm: tin cuối của nhân viên kênh khác
+        thread('zlw1005', true, '08:00', '08:00'), // nhóm: tin cuối của khách
+      ]);
+      api.getMessages.mockImplementation(async (_p: string, tid: string) => [
+        { id: '1', pid: 'p1', type: 'zaloweb_message', sender_pid: tid === 'zlw1004' ? 'zlwSTAFF' : 'zlwKHACH', created_at: at('08:00') },
+      ]);
+
+      const first = await service.recentChats(1);
+      const waitingOf = (r: typeof first) => Object.fromEntries(r.items.map((i) => [i.tid, i.waiting]));
+      expect(waitingOf(first)).toEqual({
+        zlw1001: { minutes: 90, since: at('08:30'), upset: true },
+        zlw1002: null,
+        zlw1003: null,
+        zlw1004: null, // đang kiểm nền
+        zlw1005: null,
+      });
+      await new Promise((r) => setImmediate(r));
+      jest.setSystemTime(new Date('2026-11-23T10:00:20+07:00'));
+      const second = await service.recentChats(1);
+      expect(waitingOf(second).zlw1004).toBeNull();
+      expect(waitingOf(second).zlw1005).toEqual({ minutes: 120, since: at('08:00'), upset: false });
+      expect(api.getMessages).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('recentChats fresh (nút ⟳): bỏ qua cache 10s, nhưng dùng chung kết quả vừa lấy < 2s', async () => {

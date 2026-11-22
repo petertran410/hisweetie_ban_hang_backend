@@ -7,6 +7,7 @@ import type { InventoriesService } from '../../inventories/inventories.service';
 import type { LeadsService } from '../../leads/leads.service';
 import type { QuotesService } from '../../quotes/quotes.service';
 import type { DashboardService } from '../../dashboard/dashboard.service';
+import type { SmaxChatService } from '../../smax/smax-chat.service';
 
 /** Service sẵn có mà công cụ gọi lại (AiToolsService tiêm vào). */
 export interface AiToolDeps {
@@ -19,4 +20,5 @@ export interface AiToolDeps {
   leads: LeadsService;
   quotes: QuotesService;
   dashboard: DashboardService;
+  smaxChat: SmaxChatService;
 }

@@ -6399,6 +6399,7 @@ model AiChatConversation {
   updatedAt DateTime        @updatedAt @map("updated_at")
   user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
   messages  AiChatMessage[]
+  share     AiChatShare?
 
   @@index([userId, updatedAt])
   @@index([updatedAt])
@@ -6419,4 +6420,39 @@ model AiChatMessage {
   @@index([conversationId, createdAt])
   @@index([createdAt])
   @@map("ai_chat_messages")
+}
+
+/// Link chia sẻ chỉ đọc một hội thoại Trợ lý AI cho người dùng POS đã đăng nhập. Một link / hội thoại.
+model AiChatShare {
+  id             Int                @id @default(autoincrement())
+  token          String             @unique
+  conversationId Int                @unique @map("conversation_id")
+  /// Bản chụp lúc chia sẻ: chỉ hiện tin có id <= mốc này
+  lastMessageId  Int                @map("last_message_id")
+  createdAt      DateTime           @default(now()) @map("created_at")
+  updatedAt      DateTime           @updatedAt @map("updated_at")
+  conversation   AiChatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@map("ai_chat_shares")
+}
+
+/// Nhãn phân loại hội thoại Smax: AI gắn khi nhân viên bấm "Phân loại", nhân viên sửa tay được.
+model AiThreadLabel {
+  id            Int       @id @default(autoincrement())
+  pagePid       String    @map("page_pid")
+  tid           String
+  /// order | price | complaint | delivery | other
+  label         String
+  reason        String?
+  /// Khách đang chờ bên bán phản hồi / xử lý
+  pending       Boolean   @default(false)
+  /// Tin cuối lúc gắn nhãn — có tin mới hơn thì nhãn là "cũ"
+  lastMessageAt DateTime? @map("last_message_at")
+  manual        Boolean   @default(false)
+  labeledById   Int?      @map("labeled_by_id")
+  labeledAt     DateTime  @default(now()) @map("labeled_at")
+
+  @@unique([pagePid, tid])
+  @@index([tid])
+  @@map("ai_thread_labels")
 }

@@ -254,9 +254,9 @@ const run = (
 const text = (value: unknown) => JSON.stringify(value);
 
 describe('AI tools', () => {
-  it('có đủ 8 công cụ, tên không trùng', () => {
+  it('có đủ 9 công cụ, tên không trùng', () => {
     const names = AI_TOOLS.map((tool) => tool.name);
-    expect(new Set(names).size).toBe(8);
+    expect(new Set(names).size).toBe(9);
   });
 
   it.each([

@@ -4,6 +4,7 @@ import * as compression from 'compression';
 import type { AddressInfo } from 'node:net';
 import { EventType } from '@ag-ui/core';
 import { PrismaService } from '../prisma/prisma.service';
+import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { AiAssistantController } from './ai-assistant.controller';
 import { AiChatService, type AgentEvent } from './ai-chat.service';
 import { compressUnlessAiStream } from './ai-stream.util';
@@ -53,6 +54,7 @@ describe('POST /api/ai/agent (giao thức stream)', () => {
       providers: [
         { provide: AiChatService, useValue: chat },
         { provide: PrismaService, useValue: {} },
+        { provide: AuditLogsService, useValue: {} },
       ],
     }).compile();
     app = moduleRef.createNestApplication();

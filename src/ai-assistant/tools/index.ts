@@ -7,6 +7,7 @@ import { stockLevelsTool } from './stock-levels.tool';
 import { leadsSummaryTool } from './leads-summary.tool';
 import { quotesSummaryTool } from './quotes-summary.tool';
 import { revenueSummaryTool } from './revenue-summary.tool';
+import { smaxChatsTool } from './smax-chats.tool';
 
 /** Mọi công cụ của trợ lý, theo thứ tự gửi cho model. */
 export const AI_TOOLS: AiTool[] = [
@@ -18,4 +19,5 @@ export const AI_TOOLS: AiTool[] = [
   stockLevelsTool,
   leadsSummaryTool,
   quotesSummaryTool,
+  smaxChatsTool,
 ];

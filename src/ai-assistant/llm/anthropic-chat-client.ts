@@ -83,6 +83,28 @@ export function toAnthropicMessages(messages: readonly ChatMessage[]): {
       continue;
     }
     if (message.role === 'system') system.push(message.content);
+    else if (message.images?.length)
+      // Ảnh trước chữ (Claude đọc ảnh tốt hơn khi ảnh đứng trước câu hỏi)
+      out.push({
+        role: 'user',
+        content: [
+          ...message.images.map(
+            (image): ContentBlockParam => ({
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: image.mediaType as
+                  | 'image/jpeg'
+                  | 'image/png'
+                  | 'image/gif'
+                  | 'image/webp',
+                data: image.data,
+              },
+            }),
+          ),
+          { type: 'text', text: message.content },
+        ],
+      });
     else out.push({ role: 'user', content: message.content });
   }
   return { system: system.join('\n\n'), messages: out };
