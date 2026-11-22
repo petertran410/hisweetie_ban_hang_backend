@@ -52,6 +52,7 @@
     "seed:leads-permissions": "ts-node prisma/seeds/add-leads-permissions.ts",
     "seed:quotes-permissions": "ts-node prisma/seeds/add-quotes-permissions.ts",
     "seed:ai-assistant-permissions": "ts-node prisma/seeds/add-ai-assistant-permissions.ts",
+    "seed:smax-report-permission": "ts-node prisma/seeds/add-smax-report-permission.ts",
     "ai:eval": "ts-node prisma/scripts/ai-eval.ts",
     "seed:quote-templates": "ts-node prisma/seeds/seed-quote-templates.ts",
     "import:quote-library": "ts-node prisma/scripts/import-quote-library.ts",
