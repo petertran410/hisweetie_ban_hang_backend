@@ -70,6 +70,7 @@ model User {
   soldInvoices                                              Invoice[]                         @relation("InvoiceSeller")
   notifications                                             Notification[]
   pushDevices                                               PushDevice[]
+  aiChatConversations                                       AiChatConversation[]
   createdOrderPaymentNotes                                  OrderPaymentNote[]                @relation("OrderPaymentNoteCreator")
   createdPayments                                           OrderPayment[]                    @relation("PaymentCreator")
   createdOrderSuppliers                                     OrderSupplier[]                   @relation("OrderSupplierCreator")
@@ -6387,4 +6388,35 @@ model QuoteItemTier {
 
   @@index([quoteItemId])
   @@map("quote_item_tiers")
+}
+
+/// Hội thoại với Trợ lý AI — riêng của từng người, tự xoá sau AI_CHAT_RETENTION_DAYS ngày không dùng.
+model AiChatConversation {
+  id        Int             @id @default(autoincrement())
+  userId    Int             @map("user_id")
+  title     String
+  createdAt DateTime        @default(now()) @map("created_at")
+  updatedAt DateTime        @updatedAt @map("updated_at")
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages  AiChatMessage[]
+
+  @@index([userId, updatedAt])
+  @@index([updatedAt])
+  @@map("ai_chat_conversations")
+}
+
+/// Một tin trong hội thoại (câu hỏi / câu trả lời). Không lưu kết quả thô của công cụ.
+model AiChatMessage {
+  id             Int                @id @default(autoincrement())
+  conversationId Int                @map("conversation_id")
+  role           String
+  content        String
+  toolNames      String[]           @default([]) @map("tool_names")
+  model          String?
+  createdAt      DateTime           @default(now()) @map("created_at")
+  conversation   AiChatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@index([createdAt])
+  @@map("ai_chat_messages")
 }

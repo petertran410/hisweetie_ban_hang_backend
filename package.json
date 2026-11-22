@@ -51,6 +51,8 @@
     "seed:lead-report-permission": "ts-node prisma/seeds/add-lead-report-permission.ts",
     "seed:leads-permissions": "ts-node prisma/seeds/add-leads-permissions.ts",
     "seed:quotes-permissions": "ts-node prisma/seeds/add-quotes-permissions.ts",
+    "seed:ai-assistant-permissions": "ts-node prisma/seeds/add-ai-assistant-permissions.ts",
+    "ai:eval": "ts-node prisma/scripts/ai-eval.ts",
     "seed:quote-templates": "ts-node prisma/seeds/seed-quote-templates.ts",
     "import:quote-library": "ts-node prisma/scripts/import-quote-library.ts",
     "seed:product-formulas": "ts-node prisma/seeds/backfill-product-formulas.ts",
@@ -134,6 +136,9 @@
     "import:product-images": "ts-node prisma/seeds/import-product-images.ts"
   },
   "dependencies": {
+    "@ag-ui/core": "1.0.4",
+    "@ag-ui/encoder": "1.0.4",
+    "@anthropic-ai/sdk": "1.6.0",
     "@larksuiteoapi/node-sdk": "^1.63.1",
     "@nestjs/axios": "^4.0.1",
     "@nestjs/common": "^11.0.1",
@@ -172,7 +177,8 @@
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "sharp": "^0.34.5",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "zod": "3.25.76"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
