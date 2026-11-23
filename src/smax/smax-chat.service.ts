@@ -30,6 +30,9 @@ import {
   WAIT_LOOKBACK_DAYS,
   workingMinutes,
 } from './wait-alerts';
+
+/** Audit: nhân viên bỏ qua cảnh báo "Cần trả lời gấp" (metadata.since = tin khách đã bỏ qua). */
+const AUDIT_WAIT_SKIP = 'SMAX_WAIT_SKIP';
 import {
   GROUP_SCAN_LIMIT,
   SmaxApiService,
@@ -614,6 +617,26 @@ export class SmaxChatService {
       userId: actor.id,
       userName: actor.name,
       metadata: { pagePid: channel.pid, tid, pid: dto.pid, reaction: dto.reaction },
+    });
+    return { ok: true };
+  }
+
+  /**
+   * Bỏ qua cảnh báo "Cần trả lời gấp" của 1 hội thoại (vd tin khách không cần trả lời). Ghi audit
+   * kèm thời điểm tin khách đang chờ; khách nhắn tin mới (thời điểm khác) thì cảnh báo hiện lại.
+   */
+  async skipWait(actor: ChatActor, dto: { pagePid: string; tid: string; since: string }) {
+    const tid = this.assertTid(dto.tid);
+    const channel = await this.assertOwnChannel(actor.id, dto.pagePid);
+    await this.auditLogs.create({
+      actionType: 'POST',
+      actionCode: AUDIT_WAIT_SKIP,
+      entityType: 'smax_threads',
+      entityId: `${channel.pid}:${tid}`,
+      message: `Bỏ qua cảnh báo khách chờ (kênh "${channel.name}")`,
+      userId: actor.id,
+      userName: actor.name,
+      metadata: { pagePid: channel.pid, tid, since: dto.since },
     });
     return { ok: true };
   }
@@ -1604,6 +1627,23 @@ export class SmaxChatService {
     if (keyword) threads = threads.filter((t) => foldVi(t.name).includes(foldVi(keyword)));
 
     const waiting = this.waitingAlerts(threads);
+    // Nhân viên đã bấm "Bỏ qua" cho đúng tin khách đang chờ → không báo nữa
+    if (waiting.size) {
+      const skips = await this.prisma.auditLog
+        .findMany({
+          where: {
+            actionCode: AUDIT_WAIT_SKIP,
+            entityId: { in: [...waiting.keys()] },
+            createdAt: { gte: new Date(Date.now() - WAIT_LOOKBACK_DAYS * 86_400_000) },
+          },
+          select: { entityId: true, metadata: true },
+        })
+        .catch(() => []);
+      for (const s of skips) {
+        const since = (s.metadata as { since?: string } | null)?.since;
+        if (s.entityId && since && waiting.get(s.entityId)?.since === since) waiting.delete(s.entityId);
+      }
+    }
     // Nhãn phân loại (AI khi nhân viên bấm "Phân loại", hoặc gắn tay) — lỗi đọc nhãn không chặn danh sách
     const labels: {
       pagePid: string;

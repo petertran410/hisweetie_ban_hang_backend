@@ -37,6 +37,7 @@ import {
   CreateZaloContactDto,
   ReactMessageDto,
   RenameThreadDto,
+  SkipWaitDto,
   LibraryFilesQueryDto,
   LibraryImportDto,
   LibraryUploadDto,
@@ -120,6 +121,13 @@ export class SmaxChatController {
   @RequirePermissions('smax_chat:send')
   renameThread(@Body() dto: RenameThreadDto, @Req() req: any) {
     return this.service.renameThread(this.actor(req), dto);
+  }
+
+  // Bỏ qua cảnh báo "Cần trả lời gấp" (dùng chung mọi người; khách nhắn tin mới thì báo lại)
+  @Post('threads/skip-wait')
+  @RequirePermissions('smax_chat:send')
+  skipWait(@Body() dto: SkipWaitDto, @Req() req: any) {
+    return this.service.skipWait(this.actor(req), dto);
   }
 
   // Bật Meta Business AI trả lời hội thoại Messenger (API nội bộ Smax, cần SMAX_USER_TOKEN)

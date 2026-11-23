@@ -335,6 +335,22 @@ export class RenameThreadDto {
   name: string;
 }
 
+/** Bỏ qua cảnh báo "Cần trả lời gấp" cho tin khách hiện tại (`since` = lúc khách nhắn tin đó). */
+export class SkipWaitDto {
+  @IsString()
+  @IsNotEmpty()
+  pagePid: string;
+
+  @IsString()
+  @IsNotEmpty()
+  tid: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(40)
+  since: string;
+}
+
 export class PassControlBizAIDto {
   @IsString()
   @IsNotEmpty()

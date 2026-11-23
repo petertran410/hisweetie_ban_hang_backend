@@ -104,6 +104,7 @@ const makeService = (env: Record<string, string> = {}) => {
       ),
     },
     aiThreadLabel: { findMany: jest.fn().mockResolvedValue([]) },
+    auditLog: { findMany: jest.fn().mockResolvedValue([]) },
     userBankAccount: {
       findUnique: jest.fn().mockResolvedValue({
         bankAccount: { bankName: 'MB', bankCode: 'MB', accountNumber: '3095686868', accountHolder: 'DIEP TRA' },
@@ -715,6 +716,15 @@ describe('SmaxChatService', () => {
       expect(waitingOf(second).zlw1004).toBeNull();
       expect(waitingOf(second).zlw1005).toEqual({ minutes: 120, since: at('08:00'), upset: false });
       expect(api.getMessages).toHaveBeenCalledTimes(2);
+
+      // "Bỏ qua" đúng tin đang chờ → hết báo; bỏ qua tin cũ hơn (khách đã nhắn tiếp) → vẫn báo
+      (service as any).prisma.auditLog.findMany = jest.fn().mockResolvedValue([
+        { entityId: `${PAGE}:zlw1001`, metadata: { since: at('08:30') } },
+        { entityId: `${PAGE}:zlw1005`, metadata: { since: at('07:00') } },
+      ]);
+      const third = await service.recentChats(1);
+      expect(waitingOf(third).zlw1001).toBeNull();
+      expect(waitingOf(third).zlw1005).toMatchObject({ since: at('08:00') });
     } finally {
       jest.useRealTimers();
     }

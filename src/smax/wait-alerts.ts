@@ -75,24 +75,40 @@ export function isStaffName(name: string | null | undefined): boolean {
   return !!name && STAFF_NAME.test(fold(name));
 }
 
-// Tin chỉ để xác nhận / cảm ơn, không cần trả lời
+// Tin chỉ để xác nhận / đã tiếp nhận / cảm ơn / chào kết thúc, không cần trả lời.
+// Chỉ bỏ qua khi MỌI từ đều thuộc danh sách này: thêm bất kỳ nội dung nào khác ("ok mai giao nhé",
+// "được, lấy cho chị 2 thùng", "cảm ơn, nhưng đơn còn thiếu…") là còn việc cần xử lý → vẫn cảnh báo.
 const ACK_WORDS = new Set(
-  'ok oke okie oki okay vang da u uh uk o duoc dc dung roi r cam on thanks thank tks you a ah e em chi c anh ban b nha nhe nhen oi ha ne luon nhieu'.split(
-    ' ',
-  ),
+  [
+    // xác nhận
+    'ok oke okie oki okay okee okela oce vang da u uh uk um uhm o duoc dc dung roi r dong y',
+    // đã tiếp nhận
+    'nhan biet ro hieu',
+    // cảm ơn
+    'cam on thanks thank tks you',
+    // chào / kết thúc
+    'chao bye vay shop ad',
+    // xưng hô, từ đệm
+    'a ah e em chi c anh ban b nha nhe nhen nghen oi ha ne luon nhieu',
+  ]
+    .join(' ')
+    .split(' '),
 );
 
-/** Tin ngắn chỉ gồm từ xác nhận ("Vâng", "Đúng r e ơi", "ok cảm ơn em") — không cần trả lời. */
+// "@Tên người được tag" (tag thành viên nhóm Zalo): các từ viết hoa ngay sau @
+const MENTION = /@[\p{Lu}(][^\s@]*(?:\s+[\p{Lu}(][^\s@]*)*/gu;
+
+/**
+ * Tin ngắn chỉ để xác nhận ("Vâng", "Đúng r e ơi", "ok cảm ơn em", "@Kế Toán Diệp Trà Ms Thương ok ạ",
+ * "👍") — không cần trả lời. Có câu hỏi / yêu cầu / thông tin mới thì không bỏ qua.
+ */
 export function isAckOnly(text: string): boolean {
-  const t = (text ?? '').trim();
-  if (!t || t.length > 40 || t.includes('?') || t === 'attach') return false;
+  if ((text ?? '').trim() === 'attach') return false;
+  const t = (text ?? '').replace(MENTION, ' ').trim();
+  if (!t || t.length > 40 || t.includes('?')) return false;
   const folded = fold(t);
-  // Cười ("kkkk", "haha", "hihi") hoặc lời cảm ơn ngắn (kể cả kèm @tag nhân viên)
-  if (
-    /^(k{2,}|(ha){2,}|(hi){2,}|(he){2,})[!. ]*$/.test(folded) ||
-    /\b(cam on|thanks?|tks)\b/.test(folded)
-  )
-    return true;
+  // Cười ("kkkk", "haha", "hihi")
+  if (/^(k{2,}|(ha){2,}|(hi){2,}|(he){2,})[!. ]*$/.test(folded)) return true;
   const words = folded
     .replace(/[^a-z0-9\s]/g, ' ')
     .split(/\s+/)

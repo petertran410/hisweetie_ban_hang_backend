@@ -83,6 +83,37 @@ describe('isStaffName / isAckOnly', () => {
       'Dạ',
       '👍',
       'oke nha',
+      // xác nhận
+      'Ok',
+      'OK ạ',
+      'Ừ',
+      'Được',
+      'Đồng ý',
+      'Ok em',
+      // đã tiếp nhận
+      'Đã nhận',
+      'Nhận được rồi',
+      'Biết rồi',
+      'Rõ rồi',
+      'Đã hiểu',
+      // cảm ơn
+      'Cảm ơn',
+      'Thank you',
+      'Cảm ơn shop',
+      // kết thúc
+      'Dạ vâng ạ',
+      'Ok nhé',
+      'Vậy nha',
+      'Bye',
+      'Chào shop',
+      // emoji
+      '👌',
+      '❤️',
+      '🙏',
+      '😊',
+      // tag thành viên nhóm Zalo
+      '@Kế Toán Diệp Trà Ms Thương ok ạ',
+      '@Dung Tròn cảm ơn chị nhé',
     ])
       expect(isAckOnly(t)).toBe(true);
     for (const t of [
@@ -90,6 +121,12 @@ describe('isStaffName / isAckOnly', () => {
       'vs mình có loại nào nhân phomai?',
       'attach',
       'C gửi e giá nh',
+      'Ok, mai giao nhé',
+      'Được, lấy cho chị 2 thùng',
+      'Cảm ơn, nhưng đơn hàng của chị vẫn thiếu 1 sản phẩm',
+      'dạ hết r ạ',
+      '@Thương lấy 2 thùng',
+      '@Kế Toán Diệp Trà Ms Thương',
     ])
       expect(isAckOnly(t)).toBe(false);
   });
