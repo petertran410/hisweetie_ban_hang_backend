@@ -31,10 +31,15 @@ const MAX_TEXT = 200;
 export const num = (value: unknown) =>
   Math.round(Number(value ?? 0) * 100) / 100;
 
-/** Chuỗi cắt còn `max` ký tự, gộp khoảng trắng. */
+/**
+ * Chuỗi cắt còn `max` ký tự, gộp khoảng trắng. Không cắt đôi emoji (nửa cặp surrogate làm JSON gửi
+ * model bị Anthropic từ chối: "unexpected end of hex escape").
+ */
 export const clip = (value: string | null | undefined, max = MAX_TEXT) => {
   const text = (value ?? '').replace(/\s+/g, ' ').trim();
-  return text.length > max ? `${text.slice(0, max - 1)}…` : text || null;
+  return text.length > max
+    ? `${text.slice(0, max - 1).replace(/[\uD800-\uDBFF]$/, '')}…`
+    : text || null;
 };
 
 /** Ngày theo giờ Việt Nam dạng YYYY-MM-DD. */

@@ -1,5 +1,5 @@
 import type { AiScope } from '../ai-scope';
-import type { AiTool, AiToolContext } from './common';
+import { clip, type AiTool, type AiToolContext } from './common';
 import type { AiToolDeps } from './deps';
 import { AI_TOOLS } from './index';
 import { customerDebtsTool } from './customer-debts.tool';
@@ -482,5 +482,14 @@ describe('AI tools', () => {
       expect.objectContaining({ tab: 'quotes', status: ['sent'] }),
       scope.quoteActor,
     );
+  });
+});
+
+describe('clip', () => {
+  it('không cắt đôi emoji (để lại nửa cặp surrogate)', () => {
+    const out = clip('ab😀cd', 4)!;
+    expect(out).toBe('ab…');
+    expect(JSON.stringify(out)).not.toMatch(/\\ud83d/i);
+    expect(clip('ab😀cd', 5)).toBe('ab😀…');
   });
 });
