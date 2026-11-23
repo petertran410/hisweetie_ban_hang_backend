@@ -1,5 +1,6 @@
 import {
   buildDailyCard,
+  channelLabel,
   DailyReportService,
   findDiscrepancies,
   type DailyReport,
@@ -100,14 +101,47 @@ const REPORT: DailyReport = {
   tokens: 1,
 };
 
+describe('channelLabel', () => {
+  it('loại kênh + tên kênh', () => {
+    expect(channelLabel({ platform: 'facebook', name: 'LerMao - Sành Ăn Như Gấu' })).toBe('Facebook · LerMao - Sành Ăn Như Gấu');
+    expect(channelLabel({ platform: 'zaloweb', name: 'Diệp Trà - Ms Mai Phương' })).toBe('Zalo cá nhân · Diệp Trà - Ms Mai Phương');
+    expect(channelLabel({ platform: 'tiktokweb', name: 'Gấu LerMao' })).toBe('TikTok · Gấu LerMao');
+    expect(channelLabel({ platform: 'shopee', name: 'LerMao Official' })).toBe('Shopee · LerMao Official');
+  });
+});
+
 describe('buildDailyCard', () => {
-  it('tiêu đề ngày, các mục có số lượng, mục rỗng ghi "Không có."', () => {
-    const card = JSON.stringify(buildDailyCard(REPORT));
-    expect(card).toContain('BÁO CÁO CHAT CUỐI NGÀY 22/11/2026');
-    expect(card).toContain('Phàn nàn / khiếu nại (1)');
-    expect(card).toContain('**chưa xử lý**');
-    expect(card).toContain('Báo giá lệch cho cùng sản phẩm (0)');
-    expect(card).toContain('Không có.');
+  const texts = (card: any): string[] => card.body.elements.filter((e: any) => e.tag === 'markdown').map((e: any) => e.content);
+
+  it('card JSON 2.0 theo mẫu: tiêu đề + ngày, tổng quan, 3 mục ưu tiên, việc cần làm', () => {
+    const card: any = buildDailyCard(REPORT);
+    expect(card.schema).toBe('2.0');
+    expect(card.header.title.content).toBe('📊 BÁO CÁO CHAT CUỐI NGÀY');
+    expect(card.header.subtitle.content).toBe('22/11/2026 · Báo cáo tự động');
+    const all = texts(card).join('\n');
+    expect(all).toContain('**86** hội thoại  ·  **900** tin nhắn');
+    expect(all).toContain('### 🔴 ƯU TIÊN 1 · KHIẾU NẠI CHƯA XỬ LÝ (1)');
+    expect(all).toContain('<font color="grey">(Ms Mai Phương)</font> — Trái cây có sâu.');
+    expect(all).toContain('**Tiệm bánh Hazen** <font color="grey">(Ms Mai Phương)</font> · **09:10** — Chưa nhận được hàng.');
+    expect(all).toContain('### 💰 ƯU TIÊN 3 · CẢNH BÁO GIÁ (0)\nKhông có.');
+    // Không có cảnh báo giá → bỏ việc "Đối chiếu", đánh số liền
+    const todo = texts(card).find((t) => t.startsWith('### ✅ VIỆC CẦN LÀM'))!;
+    expect(todo).toContain('2. Phân loại 1 mục');
+    expect(todo).toContain('3. Loại tin xác nhận đơn giản');
+    expect(todo).not.toContain('Đối chiếu');
+  });
+
+  it('nhiều mục: 10 dòng mới nhất trước + "Còn N mục khác"', () => {
+    const pending = Array.from({ length: 13 }, (_, i) => ({
+      ...REPORT.pending[0],
+      request: `Yêu cầu ${i}`,
+      since: `${String(8 + i).padStart(2, '0')}:00`,
+    }));
+    const section = texts(buildDailyCard({ ...REPORT, pending })).find((t) => t.includes('ƯU TIÊN 2'))!;
+    const lines = section.split('\n');
+    expect(lines[1]).toContain('· **20:00**');
+    expect(lines).toHaveLength(1 + 10 + 1);
+    expect(lines.at(-1)).toBe('_Còn 3 mục khác — xem danh sách đầy đủ trong hệ thống._');
   });
 });
 

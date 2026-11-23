@@ -19,7 +19,8 @@ const MAX_THREADS = 400;
 const MAX_LINES = 40;
 const CHUNK = 12;
 const CONCURRENCY = 5;
-const SECTION_LIMIT = 15;
+/** Số dòng tối đa mỗi mục trong card Lark. */
+const ITEM_LIMIT = 10;
 
 export type DailyReport = {
   day: string;
@@ -45,6 +46,22 @@ export type DailyReport = {
 };
 
 type ThreadText = { customer: string; channel: string; lines: string[] };
+
+// Loại kênh Smax (page.platform), cùng tên gọi như trên POS
+const PLATFORM_LABEL: Record<string, string> = {
+  zaloweb: 'Zalo cá nhân',
+  zalo: 'Zalo OA',
+  facebook: 'Facebook',
+  instagram: 'Instagram',
+  tiktok: 'TikTok',
+  tiktokweb: 'TikTok',
+  shopee: 'Shopee',
+  custom: 'Website',
+};
+
+/** "Facebook · LerMao - Sành Ăn Như Gấu" — loại kênh + tên kênh. */
+export const channelLabel = (page: { name: string; platform: string }) =>
+  [PLATFORM_LABEL[page.platform] ?? page.platform, page.name].filter(Boolean).join(' · ');
 
 const money = (n: number) => `${Math.round(n).toLocaleString('vi-VN')}đ`;
 const dmy = (day: string) =>
@@ -94,66 +111,111 @@ export function findDiscrepancies(
   );
 }
 
-/** Card Lark (lark_md) cho báo cáo cuối ngày. */
+/**
+ * Card Lark JSON 2.0 cho báo cáo cuối ngày (theo mẫu user gửi): tổng quan · ưu tiên 1 khiếu nại chưa
+ * xử lý · ưu tiên 2 yêu cầu cần rà soát · ưu tiên 3 cảnh báo giá · việc cần làm.
+ */
 export function buildDailyCard(report: DailyReport): Record<string, unknown> {
-  const list = <T>(items: T[], fmt: (x: T) => string, empty: string) =>
-    items.length
-      ? [
-          ...items.slice(0, SECTION_LIMIT).map(fmt),
-          ...(items.length > SECTION_LIMIT
-            ? [`_… và ${items.length - SECTION_LIMIT} mục khác_`]
-            : []),
-        ].join('\n')
-      : empty;
-  const section = (title: string, body: string) => [
-    { tag: 'hr' },
-    { tag: 'div', text: { tag: 'lark_md', content: `**${title}**\n${body}` } },
-  ];
+  const md = (content: string) => ({ tag: 'markdown', content });
+  const hr = { tag: 'hr' };
+  const num = (n: number) => n.toLocaleString('vi-VN');
+  // Kênh ngay sau tên hội thoại, chữ xám cho đỡ rối
+  const via = (channel: string) => `<font color="grey">(${channel})</font>`;
+  const sentence = (s: string) => (/[.!?…]$/.test(s.trim()) ? s.trim() : `${s.trim()}.`);
+  const rest = (n: number, total: number) =>
+    total > n ? [`_Còn ${num(total - n)} mục khác — xem danh sách đầy đủ trong hệ thống._`] : [];
+  const { complaints, pending, discrepancies } = report;
+  const open = complaints.filter((c) => !c.handled);
+  const handled = complaints.length - open.length;
+  // Yêu cầu mới nhất trước (giờ HH:mm), không có giờ xếp cuối
+  const latest = [...pending].sort((a, b) => (b.since ?? '').localeCompare(a.since ?? ''));
+
+  const todo = [
+    open.length && `Xác minh và xử lý ${num(open.length)} khiếu nại chưa có phản hồi.`,
+    pending.length && `Phân loại ${num(pending.length)} mục theo: quá hạn / đang chờ / đã xử lý.`,
+    discrepancies.length && `Đối chiếu ${num(discrepancies.length)} cảnh báo giá.`,
+    'Loại tin xác nhận đơn giản (ok, dạ, cảm ơn...) nếu không phát sinh yêu cầu mới.',
+  ].filter((x): x is string => !!x);
+
   return {
-    config: { wide_screen_mode: true },
+    schema: '2.0',
+    config: { update_multi: true },
     header: {
-      title: {
-        tag: 'plain_text',
-        content: `BÁO CÁO CHAT CUỐI NGÀY ${dmy(report.day)}`,
-      },
+      title: { tag: 'plain_text', content: '📊 BÁO CÁO CHAT CUỐI NGÀY' },
+      subtitle: { tag: 'plain_text', content: `${dmy(report.day)} · Báo cáo tự động` },
       template: 'orange',
     },
-    elements: [
-      {
-        tag: 'div',
-        text: {
-          tag: 'lark_md',
-          content: `${report.stats.threads} hội thoại có tin trên ${report.stats.channels} kênh Smax · ${report.stats.messages} tin. AI tổng hợp — kiểm tra lại trên hội thoại trước khi xử lý.`,
-        },
-      },
-      ...section(
-        `Phàn nàn / khiếu nại (${report.complaints.length})`,
-        list(
-          report.complaints,
-          (c) =>
-            `• **${c.customer}** (${c.channel}): ${c.issue}${c.handled ? ' — _đã phản hồi_' : ' — **chưa xử lý**'}`,
-          'Không có.',
+    body: {
+      direction: 'vertical',
+      padding: '12px 16px 12px 16px',
+      elements: [
+        md(
+          [
+            '**TỔNG QUAN**',
+            `**${num(report.stats.threads)}** hội thoại  ·  **${num(report.stats.messages)}** tin nhắn`,
+            `🔴 **${num(complaints.length)}** khiếu nại  ·  🟠 **${num(pending.length)}** yêu cầu cần rà soát  ·  💰 **${num(discrepancies.length)}** cảnh báo giá`,
+          ].join('\n'),
         ),
-      ),
-      ...section(
-        `Khách nhắc / yêu cầu chưa được xử lý (${report.pending.length})`,
-        list(
-          report.pending,
-          (p) =>
-            `• **${p.customer}** (${p.channel})${p.since ? ` từ ${p.since}` : ''}: ${p.request}`,
-          'Không có.',
+        hr,
+        md(
+          [
+            `### 🔴 ƯU TIÊN 1 · KHIẾU NẠI CHƯA XỬ LÝ (${num(open.length)})`,
+            ...(open.length
+              ? [
+                  ...open
+                    .slice(0, ITEM_LIMIT)
+                    .map((c) => `**${c.customer}** ${via(c.channel)} — ${sentence(c.issue)}`),
+                  ...rest(ITEM_LIMIT, open.length),
+                ]
+              : ['Không có.']),
+          ].join('\n'),
         ),
-      ),
-      ...section(
-        `Báo giá lệch cho cùng sản phẩm (${report.discrepancies.length})`,
-        list(
-          report.discrepancies,
-          (d) =>
-            `• **${d.product}**: ${d.prices.map((p) => `${money(p.price)} (${p.customer} · ${p.channel})`).join(' / ')}`,
-          'Không có.',
+        ...(handled
+          ? [
+              md(
+                `**Khiếu nại đã phản hồi:** ${num(handled)} trường hợp. Cần đối soát kết quả thực tế, không đồng nghĩa với đã giải quyết xong.`,
+              ),
+            ]
+          : []),
+        hr,
+        md(
+          [
+            `### 🟠 ƯU TIÊN 2 · YÊU CẦU CẦN RÀ SOÁT (${num(pending.length)})`,
+            ...(pending.length
+              ? [
+                  ...latest
+                    .slice(0, ITEM_LIMIT)
+                    .map(
+                      (p) =>
+                        `**${p.customer}** ${via(p.channel)}${p.since ? ` · **${p.since}**` : ''} — ${sentence(p.request)}`,
+                    ),
+                  ...rest(ITEM_LIMIT, pending.length),
+                ]
+              : ['Không có.']),
+          ].join('\n'),
         ),
-      ),
-    ],
+        hr,
+        md(
+          [
+            `### 💰 ƯU TIÊN 3 · CẢNH BÁO GIÁ (${num(discrepancies.length)})`,
+            ...(discrepancies.length
+              ? [
+                  ...discrepancies
+                    .slice(0, ITEM_LIMIT)
+                    .map((d) => `**${d.product}** — Ghi nhận **${d.prices.map((p) => money(p.price)).join(' / ')}**.`),
+                  ...rest(ITEM_LIMIT, discrepancies.length),
+                  '_Cần đối chiếu quy cách, kênh bán và bảng giá trước khi kết luận có sai lệch._',
+                ]
+              : ['Không có.']),
+          ].join('\n'),
+        ),
+        hr,
+        md(['### ✅ VIỆC CẦN LÀM', ...todo.map((t, i) => `${i + 1}. ${t}`)].join('\n')),
+        md(
+          '<font color="grey">⚠️ AI tổng hợp tự động. Trạng thái và số liệu cần được đối chiếu với hội thoại gốc.</font>',
+        ),
+      ],
+    },
   };
 }
 
@@ -197,7 +259,7 @@ export class DailyReportService {
             pagePid: t.pagePid,
             tid: t.tid,
             name: t.name,
-            channel: page.name,
+            channel: channelLabel(page),
           });
       }
     }
