@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -175,6 +176,20 @@ export class AiComposeController {
   @RequirePermissions('ai_assistant:use')
   dailyPreview() {
     return this.daily.getPreview();
+  }
+
+  /** Báo cáo chat cuối ngày đã gửi: danh sách ngày, và nội dung một ngày (bản lưu lúc gửi Lark). */
+  @Get('daily-report/saved')
+  @RequirePermissions('ai_assistant:use')
+  dailySavedDays() {
+    return this.daily.savedDays();
+  }
+
+  @Get('daily-report/saved/:day')
+  @RequirePermissions('ai_assistant:use')
+  async dailySaved(@Param('day') day: string) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new BadRequestException('Ngày không hợp lệ');
+    return (await this.daily.savedReport(day)) ?? { sentAt: null, report: null };
   }
 
   /** Sửa nhãn phân loại hội thoại tay. */

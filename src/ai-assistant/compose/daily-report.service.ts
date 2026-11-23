@@ -63,6 +63,18 @@ const PLATFORM_LABEL: Record<string, string> = {
 export const channelLabel = (page: { name: string; platform: string }) =>
   [PLATFORM_LABEL[page.platform] ?? page.platform, page.name].filter(Boolean).join(' · ');
 
+/**
+ * Link xem báo cáo trên POS. Địa chỉ POS công khai: POS_PUBLIC_URL (máy chạy cron có FRONTEND_URL là
+ * localhost), không có thì FRONTEND_URL. Chỉ gắn khi là https — không đưa link localhost vào Lark.
+ */
+export function dailyReportUrl(
+  day: string,
+  base = process.env.POS_PUBLIC_URL || process.env.FRONTEND_URL,
+) {
+  const origin = base?.split(',')[0]?.trim().replace(/\/+$/, '');
+  return origin && /^https:\/\//.test(origin) ? `${origin}/bao-cao/smax?tab=cuoi-ngay&ngay=${day}` : null;
+}
+
 const money = (n: number) => `${Math.round(n).toLocaleString('vi-VN')}đ`;
 const dmy = (day: string) =>
   `${day.slice(8, 10)}/${day.slice(5, 7)}/${day.slice(0, 4)}`;
@@ -115,7 +127,7 @@ export function findDiscrepancies(
  * Card Lark JSON 2.0 cho báo cáo cuối ngày (theo mẫu user gửi): tổng quan · ưu tiên 1 khiếu nại chưa
  * xử lý · ưu tiên 2 yêu cầu cần rà soát · ưu tiên 3 cảnh báo giá · việc cần làm.
  */
-export function buildDailyCard(report: DailyReport): Record<string, unknown> {
+export function buildDailyCard(report: DailyReport, posUrl?: string | null): Record<string, unknown> {
   const md = (content: string) => ({ tag: 'markdown', content });
   const hr = { tag: 'hr' };
   const num = (n: number) => n.toLocaleString('vi-VN');
@@ -123,7 +135,11 @@ export function buildDailyCard(report: DailyReport): Record<string, unknown> {
   const via = (channel: string) => `<font color="grey">(${channel})</font>`;
   const sentence = (s: string) => (/[.!?…]$/.test(s.trim()) ? s.trim() : `${s.trim()}.`);
   const rest = (n: number, total: number) =>
-    total > n ? [`_Còn ${num(total - n)} mục khác — xem danh sách đầy đủ trong hệ thống._`] : [];
+    total > n
+      ? [
+          `_Còn ${num(total - n)} mục khác — ${posUrl ? `[xem danh sách đầy đủ trên POS](${posUrl})` : 'xem danh sách đầy đủ trên POS (Báo cáo › Smax chat › Báo cáo chat cuối ngày)'}._`,
+        ]
+      : [];
   const { complaints, pending, discrepancies } = report;
   const open = complaints.filter((c) => !c.handled);
   const handled = complaints.length - open.length;
@@ -380,6 +396,45 @@ export class DailyReportService {
     return this.preview ?? { status: 'idle' as const };
   }
 
+  /** Các ngày đã gửi báo cáo (mới nhất trước), kèm số liệu tóm tắt. */
+  async savedDays(limit = 90) {
+    const rows = await this.prisma.auditLog.findMany({
+      where: { actionCode: AUDIT_DAILY_REPORT },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      select: { entityId: true, createdAt: true, metadata: true },
+    });
+    const seen = new Set<string>();
+    return rows.flatMap((r) => {
+      if (!r.entityId || seen.has(r.entityId)) return [];
+      seen.add(r.entityId);
+      const m = (r.metadata ?? {}) as Record<string, unknown>;
+      return [
+        {
+          day: r.entityId,
+          sentAt: r.createdAt,
+          // Báo cáo gửi trước khi lưu chi tiết: chỉ có số liệu tóm tắt
+          detail: m.detail === true,
+          threads: Number(m.threads ?? 0),
+          complaints: Number(m.complaints ?? 0),
+          pending: Number(m.pending ?? 0),
+          discrepancies: Number(m.discrepancies ?? 0),
+        },
+      ];
+    });
+  }
+
+  /** Báo cáo đã gửi của một ngày (bản lưu lúc gửi Lark); null nếu chưa gửi / không lưu chi tiết. */
+  async savedReport(day: string) {
+    const row = await this.prisma.auditLog.findFirst({
+      where: { actionCode: AUDIT_DAILY_REPORT, entityId: day },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true, snapshot: true },
+    });
+    if (!row?.snapshot) return null;
+    return { sentAt: row.createdAt, report: row.snapshot as unknown as DailyReport };
+  }
+
   /** Gửi báo cáo của ngày vào nhóm Lark — mỗi ngày một lần (kiểm audit, chống chạy trùng nhiều instance). */
   async send(day = vnDayKey(new Date())) {
     const already = await this.prisma.auditLog.count({
@@ -392,7 +447,7 @@ export class DailyReportService {
       data: {
         receive_id: this.chatId,
         msg_type: 'interactive',
-        content: JSON.stringify(buildDailyCard(report)),
+        content: JSON.stringify(buildDailyCard(report, dailyReportUrl(day))),
       },
     });
     if (res?.code && res.code !== 0)
@@ -428,7 +483,10 @@ export class DailyReportService {
         discrepancies: report.discrepancies.length,
         model: report.model,
         tokens: report.tokens,
+        detail: true,
       },
+      // Toàn bộ báo cáo để xem lại trên POS (Báo cáo › Smax chat › Báo cáo chat cuối ngày)
+      snapshot: report,
       userName: 'System',
     });
     return { sent: true, report };

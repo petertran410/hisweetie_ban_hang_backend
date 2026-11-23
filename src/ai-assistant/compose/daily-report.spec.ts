@@ -1,6 +1,7 @@
 import {
   buildDailyCard,
   channelLabel,
+  dailyReportUrl,
   DailyReportService,
   findDiscrepancies,
   type DailyReport,
@@ -101,6 +102,19 @@ const REPORT: DailyReport = {
   tokens: 1,
 };
 
+describe('dailyReportUrl', () => {
+  it('chỉ gắn link khi địa chỉ POS là https', () => {
+    expect(dailyReportUrl('2026-11-23', 'https://pos.example/')).toBe('https://pos.example/bao-cao/smax?tab=cuoi-ngay&ngay=2026-11-23');
+    expect(dailyReportUrl('2026-11-23', 'http://localhost:3050')).toBeNull();
+    expect(dailyReportUrl('2026-11-23', '')).toBeNull();
+  });
+  it('card: "Còn N mục khác" trỏ link POS', () => {
+    const pending = Array.from({ length: 12 }, () => REPORT.pending[0]);
+    const card = JSON.stringify(buildDailyCard({ ...REPORT, pending }, 'https://pos.example/x'));
+    expect(card).toContain('[xem danh sách đầy đủ trên POS](https://pos.example/x)');
+  });
+});
+
 describe('channelLabel', () => {
   it('loại kênh + tên kênh', () => {
     expect(channelLabel({ platform: 'facebook', name: 'LerMao - Sành Ăn Như Gấu' })).toBe('Facebook · LerMao - Sành Ăn Như Gấu');
@@ -141,7 +155,7 @@ describe('buildDailyCard', () => {
     const lines = section.split('\n');
     expect(lines[1]).toContain('· **20:00**');
     expect(lines).toHaveLength(1 + 10 + 1);
-    expect(lines.at(-1)).toBe('_Còn 3 mục khác — xem danh sách đầy đủ trong hệ thống._');
+    expect(lines.at(-1)).toBe('_Còn 3 mục khác — xem danh sách đầy đủ trên POS (Báo cáo › Smax chat › Báo cáo chat cuối ngày)._');
   });
 });
 
