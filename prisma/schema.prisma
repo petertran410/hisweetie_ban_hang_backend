@@ -2993,6 +2993,9 @@ model Vehicle {
   driverId            Int?
   costPerKmMin        Decimal? @db.Decimal(18, 2)
   costPerKmMax        Decimal? @db.Decimal(18, 2)
+  /// Định mức tiêu hao chuẩn (L/100km); lệch quá ±FUEL_NORM_TOLERANCE thì phiếu xăng "Bất thường".
+  /// Cột DB vẫn tên "fuelNormMax" (tên cũ khi định mức còn là mức tối đa).
+  fuelNorm            Decimal? @map("fuelNormMax") @db.Decimal(6, 2)
   oilChangeIntervalKm Int?
   isActive            Boolean  @default(true)
   note                String?

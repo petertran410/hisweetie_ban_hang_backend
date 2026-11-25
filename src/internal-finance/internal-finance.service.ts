@@ -2253,7 +2253,12 @@ export class InternalFinanceService {
       const metrics = await this.vehicles.fuelMetrics(vehicleIds);
       const matched: number[] = [];
       for (const [entryId, item] of metrics) {
-        const checks = [item.consumptionCheck, item.costCheck];
+        // Phiếu ODO lệch thứ tự / nhảy xa cũng tính là bất thường.
+        const checks = [
+          item.consumptionCheck,
+          item.costCheck,
+          item.odoCheck ? VEHICLE_CHECK.ABNORMAL : null,
+        ];
         const abnormal = checks.includes(VEHICLE_CHECK.ABNORMAL);
         const normal = checks.includes(VEHICLE_CHECK.NORMAL);
         if (

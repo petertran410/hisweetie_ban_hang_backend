@@ -17,22 +17,22 @@ import {
   formatFieldValue,
   type FinanceAuditEntry,
 } from '../finance-audit';
-import { fundDayStart } from '../internal-fund/internal-fund-ledger.service';
 import {
   CreateVehicleDto,
   UpdateVehicleDto,
   VehicleQueryDto,
 } from './dto/vehicle.dto';
 import {
-  FUEL_NORM_BASELINE_FROM,
   VEHICLE_SCOPES,
   VEHICLE_SERVICE,
   type VehiclePermissionAction,
 } from './vehicles.constants';
 import {
+  analyzeFuel,
   computeFuelMetrics,
-  type CostThreshold,
   type FuelMetrics,
+  type FuelRow,
+  type VehicleThreshold,
 } from './vehicle-metrics';
 
 const NOT_CANCELLED = { not: 'CANCELLED' };
@@ -50,6 +50,7 @@ const VEHICLE_LINE_FIELDS = [
   'driverId',
   'costPerKmMin',
   'costPerKmMax',
+  'fuelNorm',
   'oilChangeIntervalKm',
   'note',
 ] as const;
@@ -147,7 +148,7 @@ export class VehiclesService {
       category: 'VEHICLE_CARE',
       status: NOT_CANCELLED,
     };
-    const [odoRows, registrationRows, insuranceRows, oilRows] =
+    const [odoRows, registrationRows, insuranceRows, oilRows, fuel] =
       await Promise.all([
         this.prisma.internalFinanceEntry.groupBy({
           by: ['vehicleId'],
@@ -182,7 +183,9 @@ export class VehiclesService {
           },
           _max: { vehicleOdo: true },
         }),
+        this.loadFuel(ids),
       ]);
+    const consumption = analyzeFuel(fuel.rows, fuel.thresholds).vehicles;
     const odo = new Map(
       odoRows.map((row) => [row.vehicleId, row._max.vehicleOdo]),
     );
@@ -214,6 +217,10 @@ export class VehiclesService {
           vehicle.oilChangeIntervalKm && kmSinceOilChange !== null
             ? kmSinceOilChange >= vehicle.oilChangeIntervalKm
             : false,
+        // L/100km thực tế gần đây, để đối chiếu khi đặt định mức.
+        recentLitersPer100Km:
+          consumption.get(vehicle.id)?.litersPer100Km ?? null,
+        recentFuelSamples: consumption.get(vehicle.id)?.samples ?? 0,
       };
     });
   }
@@ -241,6 +248,7 @@ export class VehiclesService {
           driverId: dto.driverId || null,
           costPerKmMin: dto.costPerKmMin ?? null,
           costPerKmMax: dto.costPerKmMax ?? null,
+          fuelNorm: dto.fuelNorm ?? null,
           oilChangeIntervalKm: dto.oilChangeIntervalKm ?? null,
           note: dto.note?.trim() || null,
           createdBy: user.id,
@@ -295,6 +303,7 @@ export class VehiclesService {
           driverId: dto.driverId,
           costPerKmMin: dto.costPerKmMin,
           costPerKmMax: dto.costPerKmMax,
+          fuelNorm: dto.fuelNorm,
           oilChangeIntervalKm: dto.oilChangeIntervalKm,
           note: dto.note !== undefined ? dto.note?.trim() || null : undefined,
           isActive: dto.isActive,
@@ -390,6 +399,15 @@ export class VehiclesService {
   async fuelMetrics(vehicleIds: number[]): Promise<Map<number, FuelMetrics>> {
     const ids = Array.from(new Set(vehicleIds.filter(Boolean)));
     if (!ids.length) return new Map();
+    const { rows, thresholds } = await this.loadFuel(ids);
+    return computeFuelMetrics(rows, thresholds);
+  }
+
+  /** Phiếu xăng chưa hủy và ngưỡng (đ/km, định mức L/100km) của các xe. */
+  private async loadFuel(ids: number[]): Promise<{
+    rows: FuelRow[];
+    thresholds: Map<number, VehicleThreshold>;
+  }> {
     const [rows, vehicles] = await Promise.all([
       this.prisma.internalFinanceEntry.findMany({
         where: {
@@ -408,20 +426,16 @@ export class VehiclesService {
       }),
       this.prisma.vehicle.findMany({
         where: { id: { in: ids } },
-        select: { id: true, costPerKmMin: true, costPerKmMax: true },
+        select: {
+          id: true,
+          costPerKmMin: true,
+          costPerKmMax: true,
+          fuelNorm: true,
+        },
       }),
     ]);
-    const thresholds = new Map<number, CostThreshold>(
-      vehicles.map((vehicle) => [
-        vehicle.id,
-        {
-          min: toNumber(vehicle.costPerKmMin),
-          max: toNumber(vehicle.costPerKmMax),
-        },
-      ]),
-    );
-    return computeFuelMetrics(
-      rows.map((row) => ({
+    return {
+      rows: rows.map((row) => ({
         id: row.id,
         vehicleId: row.vehicleId as number,
         odo: toNumber(row.vehicleOdo),
@@ -429,9 +443,17 @@ export class VehiclesService {
         liters: toNumber(row.vehicleLiters),
         occurredAt: row.occurredAt,
       })),
-      thresholds,
-      fundDayStart(FUEL_NORM_BASELINE_FROM),
-    );
+      thresholds: new Map(
+        vehicles.map((vehicle) => [
+          vehicle.id,
+          {
+            min: toNumber(vehicle.costPerKmMin),
+            max: toNumber(vehicle.costPerKmMax),
+            fuelNorm: toNumber(vehicle.fuelNorm),
+          },
+        ]),
+      ),
+    };
   }
 
   private assertThresholds(min?: number | null, max?: number | null) {

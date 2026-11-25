@@ -432,6 +432,7 @@ export const FINANCE_FIELD_LABELS: Record<
     driverId: 'Tài xế',
     costPerKmMin: 'Định mức tối thiểu/km',
     costPerKmMax: 'Định mức tối đa/km',
+    fuelNorm: 'Định mức (L/100km)',
     oilChangeIntervalKm: 'Thay dầu sau (km)',
     note: 'Ghi chú',
   },
@@ -473,6 +474,7 @@ const NUMBER_FIELDS = new Set([
   'vehicleOdo',
   'vehicleLiters',
   'oilChangeIntervalKm',
+  'fuelNorm',
 ]);
 const DATE_FIELDS = new Set(['occurredAt', 'vehicleDueAt']);
 
