@@ -92,3 +92,117 @@ describe('OrderPaymentsService create', () => {
     expect(auditLogsService.create).not.toHaveBeenCalled();
   });
 });
+
+describe('OrderPaymentsService remove → hủy kèm bản sao trên hóa đơn', () => {
+  const AT = new Date('2026-11-20T09:32:58.277Z');
+  const payment = {
+    id: 10,
+    code: 'TTDH130121-1',
+    orderId: 130121,
+    amount: 3099000,
+    paymentDate: AT,
+    status: 1,
+    order: { code: 'DH130121', customer: { code: 'KH052214', name: 'Khách' } },
+    creator: null,
+  };
+
+  const setup = (mirrors: Record<string, unknown>[]) => {
+    const tx: any = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      orderPayment: {
+        findUnique: jest.fn().mockResolvedValue(payment),
+        // Tìm bản sao: phiếu khác của đơn (orderId.in); sau hủy: phiếu còn lại.
+        findMany: jest.fn(({ where }: any) =>
+          Promise.resolve(where.orderId?.in ? [payment] : []),
+        ),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      invoicePayment: {
+        findMany: jest.fn(({ where }: any) =>
+          Promise.resolve(where.code ? mirrors : []),
+        ),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      cashFlow: { updateMany: jest.fn().mockResolvedValue({ count: 1 }) },
+      invoice: {
+        findUnique: jest.fn().mockResolvedValue({
+          grandTotal: 1315000,
+          status: 1,
+        }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      returnOrder: { findMany: jest.fn().mockResolvedValue([]) },
+      order: {
+        findUnique: jest.fn().mockResolvedValue({
+          grandTotal: 1315000,
+          customerId: 5,
+          branchId: 1,
+        }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      user: { findUnique: jest.fn().mockResolvedValue({ name: 'Kế toán' }) },
+    };
+    const prisma = { $transaction: jest.fn(async (cb: any) => cb(tx)) };
+    const auditLogsService = { create: jest.fn().mockResolvedValue(undefined) };
+    const service = new OrderPaymentsService(
+      prisma as any,
+      auditLogsService as any,
+    );
+    jest
+      .spyOn(service as any, 'recalculateCustomerDebt')
+      .mockResolvedValue(undefined);
+    return { service, tx };
+  };
+
+  it('hủy TTTUHD137790-1 + phiếu thu của nó và tính lại HD137790', async () => {
+    const { service, tx } = setup([
+      {
+        id: 1,
+        invoiceId: 116,
+        cashFlowId: 901,
+        code: 'TTTUHD137790-1',
+        amount: 3099000,
+        paymentDate: AT,
+        invoice: { orderId: 130121 },
+      },
+    ]);
+
+    await service.remove(10, 9);
+
+    expect(tx.invoicePayment.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: [1] } },
+      data: { status: 2, statusValue: 'Đã hủy' },
+    });
+    expect(tx.cashFlow.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: [901] }, status: { not: 2 } },
+      data: { status: 2, statusValue: 'Đã hủy' },
+    });
+    expect(tx.invoice.update).toHaveBeenCalledWith({
+      where: { id: 116 },
+      data: {
+        paidAmount: 0,
+        debtAmount: 1315000,
+        status: 7,
+        statusValue: 'Giao thành công',
+      },
+    });
+    // Phiếu gốc vẫn bị hủy như trước.
+    expect(tx.cashFlow.updateMany).toHaveBeenCalledWith({
+      where: { code: 'TTDH130121-1', status: { not: 2 } },
+      data: { status: 2, statusValue: 'Đã hủy' },
+    });
+  });
+
+  it('đơn chưa có hóa đơn thì không đụng tới hóa đơn', async () => {
+    const { service, tx } = setup([]);
+
+    await service.remove(10, 9);
+
+    expect(tx.invoicePayment.updateMany).not.toHaveBeenCalled();
+    expect(tx.invoice.update).not.toHaveBeenCalled();
+    expect(tx.orderPayment.update).toHaveBeenCalledWith({
+      where: { id: 10 },
+      data: { status: 2, statusValue: 'Đã hủy' },
+    });
+  });
+});

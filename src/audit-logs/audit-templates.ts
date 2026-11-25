@@ -70,6 +70,12 @@ export const AUDIT_TEMPLATES: Record<
     category: 'payment',
     severity: 'warning',
   },
+  INVOICE_PAYMENT_MIRROR_CANCEL: {
+    template:
+      'Hủy phiếu {paymentCode} ({amount}) trên hóa đơn {invoiceCode}: phiếu gốc {sourceCode} của đơn {orderCode} đã hủy',
+    category: 'payment',
+    severity: 'warning',
+  },
 
   ORDER_PAYMENT_CREATE: {
     template:

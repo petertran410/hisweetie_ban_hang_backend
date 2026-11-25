@@ -9,6 +9,8 @@ import {
   renderAuditMessage,
 } from '../audit-logs/audit-templates';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
+import { recalcInvoicePaidTotals } from 'src/common/invoice-paid-totals.util';
+import { findInvoiceMirrorsOfOrderPayments } from './order-payment-mirror.util';
 
 type PendingAuditLog = Parameters<AuditLogsService['create']>[0];
 
@@ -212,6 +214,40 @@ export class OrderPaymentsService {
 
       if (!payment) {
         throw new Error('Không tìm thấy thanh toán');
+      }
+
+      // Bản sao TTTU<mã HĐ>-n của phiếu này trên hóa đơn lập từ đơn: hủy kèm,
+      // nếu không hóa đơn vẫn hiện "Khách đã trả" khoản đã hủy.
+      const mirrors =
+        payment.status === 2
+          ? []
+          : await findInvoiceMirrorsOfOrderPayments(tx, [payment]);
+      const mirrorInvoiceIds = [
+        ...new Set(mirrors.map((m) => m.invoiceId)),
+      ].sort((a, b) => a - b);
+      if (mirrorInvoiceIds.length > 0) {
+        await tx.$queryRaw`
+          SELECT id FROM invoices
+          WHERE id IN (${Prisma.join(mirrorInvoiceIds)})
+          ORDER BY id
+          FOR UPDATE
+        `;
+        await tx.invoicePayment.updateMany({
+          where: { id: { in: mirrors.map((m) => m.id) } },
+          data: { status: 2, statusValue: 'Đã hủy' },
+        });
+        const mirrorCashFlowIds = mirrors
+          .map((m) => m.cashFlowId)
+          .filter((v): v is number => v != null);
+        if (mirrorCashFlowIds.length > 0) {
+          await tx.cashFlow.updateMany({
+            where: { id: { in: mirrorCashFlowIds }, status: { not: 2 } },
+            data: { status: 2, statusValue: 'Đã hủy' },
+          });
+        }
+        for (const invoiceId of mirrorInvoiceIds) {
+          await recalcInvoicePaidTotals(tx, invoiceId);
+        }
       }
 
       // Soft-cancel cashFlow tương ứng (OrderPayment không có cashFlowId → chỉ match theo code)
