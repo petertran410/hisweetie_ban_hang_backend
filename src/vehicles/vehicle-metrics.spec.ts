@@ -166,10 +166,30 @@ describe('analyzeFuel', () => {
     expect(metrics.get(32)?.prevOdo).toBeNull();
   });
 
-  it('L/100km thực tế của xe = tổng lít ÷ tổng km các lần đổ gần nhất', () => {
-    const { vehicles } = analyzeFuel(rows, new Map());
-
+  it('L/100km thực tế của xe = tổng lít ÷ tổng km các lần đổ trong 2 tháng gần nhất', () => {
+    // Tới 25/11: từ 25/09 → kỳ 16/10, 19/10, 20/10 (23/10 chưa có lần sau).
+    const all = analyzeFuel(
+      rows,
+      new Map(),
+      new Date('2026-11-25T12:00:00+07:00'),
+    ).vehicles;
     // (18.5 + 7.4 + 18.5) ÷ (182 + 85 + 210) × 100.
-    expect(vehicles.get(9)).toEqual({ litersPer100Km: 9.31, samples: 3 });
+    expect(all.get(9)).toEqual({ litersPer100Km: 9.31, samples: 3 });
+
+    // Tới 19/12: từ 19/10 → chỉ kỳ 19/10, 20/10: (7.4 + 18.5) ÷ (85 + 210).
+    const recent = analyzeFuel(
+      rows,
+      new Map(),
+      new Date('2026-12-19T00:00:00+07:00'),
+    ).vehicles;
+    expect(recent.get(9)).toEqual({ litersPer100Km: 8.78, samples: 2 });
+
+    // Không có lần đổ nào trong 2 tháng → không có số.
+    const none = analyzeFuel(
+      rows,
+      new Map(),
+      new Date('2027-03-01T00:00:00+07:00'),
+    ).vehicles;
+    expect(none.has(9)).toBe(false);
   });
 });

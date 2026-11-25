@@ -34,7 +34,12 @@ export const VEHICLE_SCOPES = [
   { key: 'sg', branchIds: [1] },
 ] as const;
 
-export type VehiclePermissionAction = 'view' | 'create' | 'update' | 'manage';
+export type VehiclePermissionAction =
+  | 'view'
+  | 'create'
+  | 'update'
+  | 'manage'
+  | 'export';
 
 export const VEHICLE_CHECK = {
   NORMAL: 'NORMAL',
@@ -55,5 +60,5 @@ export const FUEL_MAX_KM_BETWEEN_FILLS = 2000;
 /** Chênh lệch cho phép (L/100km) quanh định mức của xe, cả hai chiều. */
 export const FUEL_NORM_TOLERANCE = 1;
 
-/** Số lần đổ gần nhất dùng để tính "L/100km thực tế" trong Danh sách xe. */
-export const FUEL_RECENT_FILLS = 10;
+/** Số tháng gần nhất dùng để tính "L/100km thực tế" trong Danh sách xe. */
+export const FUEL_RECENT_MONTHS = 2;

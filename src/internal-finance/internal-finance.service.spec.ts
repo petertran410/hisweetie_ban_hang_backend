@@ -3656,6 +3656,64 @@ describe('InternalFinanceService', () => {
     });
   });
 
+  describe('export vehicle entries permission', () => {
+    const setup = (byAction: Record<string, number[]>) => {
+      const ctx = makeService({
+        internalFinanceAttachment: {
+          groupBy: jest.fn().mockResolvedValue([]),
+        },
+      });
+      ctx.prisma.internalFinanceEntry.groupBy = jest.fn().mockResolvedValue([]);
+      ctx.vehicles.allowedBranches.mockImplementation(
+        (_user: any, actions: string[]) =>
+          Promise.resolve(byAction[actions[0]] || []),
+      );
+      const res: any = { setHeader: jest.fn() };
+      return { ...ctx, res };
+    };
+    const user = { id: 7, roles: [] };
+
+    it('refuses users who can view but not export', async () => {
+      const { service, res } = setup({ view: [6, 1], export: [] });
+      await expect(
+        service.exportVehicleEntries({ category: 'FUEL' } as any, user, res),
+      ).rejects.toThrow('Không có quyền xuất file phiếu xe');
+      expect(res.setHeader).not.toHaveBeenCalled();
+    });
+
+    it('refuses a branch filter without export permission there', async () => {
+      const { service, res } = setup({ view: [6, 1], export: [1] });
+      await expect(
+        service.exportVehicleEntries(
+          { category: 'FUEL', branchId: 6 } as any,
+          user,
+          res,
+        ),
+      ).rejects.toThrow('Không có quyền xuất file phiếu xe của chi nhánh này');
+      expect(res.setHeader).not.toHaveBeenCalled();
+    });
+
+    it('limits "all branches" to branches with both view and export', async () => {
+      // Kho SG xem + xuất; Kho HN chỉ xem; chi nhánh 4 xuất mà không xem.
+      const { service } = setup({ view: [6, 1], export: [1, 4] });
+      const { where } = await (service as any).vehicleEntryWhere(
+        { category: 'FUEL' },
+        user,
+        'export',
+      );
+      expect(where.AND).toContainEqual({ branchId: { in: [1] } });
+    });
+
+    it('listing still only needs view', async () => {
+      const { service } = setup({ view: [6, 1], export: [] });
+      const { where } = await (service as any).vehicleEntryWhere(
+        { category: 'FUEL' },
+        user,
+      );
+      expect(where.AND).toContainEqual({ branchId: { in: [6, 1] } });
+    });
+  });
+
   describe('finance audit log (Cài đặt → Lịch sử)', () => {
     const user = { id: 7, name: 'Kế toán A', roles: [] };
     const rowsOf = (auditWrite: jest.SpyInstance, call = 0): any[] => {
