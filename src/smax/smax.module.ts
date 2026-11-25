@@ -10,6 +10,8 @@ import { SmaxService } from './smax.service';
 import { SmaxApiService } from './smax-api.service';
 import { SmaxChatController } from './smax-chat.controller';
 import { SmaxChatService } from './smax-chat.service';
+import { SmaxArchiveService } from './smax-archive.service';
+import { SmaxArchiveSyncService } from './smax-archive-sync.service';
 import { QuickRepliesController } from './quick-replies.controller';
 import { QuickRepliesService } from './quick-replies.service';
 import { SmaxReportsController } from './smax-reports/smax-reports.controller';
@@ -29,7 +31,9 @@ import { SmaxReportsService } from './smax-reports/smax-reports.service';
     SmaxChatService,
     QuickRepliesService,
     SmaxReportsService,
+    SmaxArchiveService,
+    SmaxArchiveSyncService,
   ],
-  exports: [SmaxService, SmaxApiService, SmaxChatService],
+  exports: [SmaxService, SmaxApiService, SmaxChatService, SmaxArchiveService],
 })
 export class SmaxModule {}

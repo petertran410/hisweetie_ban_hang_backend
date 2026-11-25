@@ -206,4 +206,70 @@ describe('smax_chats', () => {
     expect(JSON.stringify(result).length).toBeLessThanOrEqual(11_000);
     expect(result.threads[0].olderNotRead).toBeGreaterThan(0);
   });
+
+  it('kênh đã lưu đủ tin trong DB: đọc DB, không gọi Smax, không giới hạn hội thoại', async () => {
+    const deps = makeDeps();
+    const dbThreads = Array.from({ length: 150 }, (_, i) => ({
+      tid: `zlw${i}`,
+      pagePid: 'zlwB',
+      lastMessageAt: '2026-11-22T02:00:00Z',
+    }));
+    const archive = {
+      covered: jest.fn((pagePid: string) =>
+        Promise.resolve(pagePid === 'zlwB'),
+      ),
+      threadsInRange: jest.fn().mockResolvedValue(dbThreads),
+      messagesInRange: jest.fn().mockResolvedValue({
+        name: 'Khách DB',
+        messages: [msg('d1', '2026-11-22T01:30:00Z', 'Tin trong DB')],
+      }),
+    };
+    deps.smaxChat.recentChats.mockImplementation(
+      (
+        _u: number,
+        _p: string,
+        _l: number,
+        _q: unknown,
+        _f: unknown,
+        pre: typeof dbThreads = [],
+      ) =>
+        Promise.resolve({
+          items: pre.map((t) => ({ ...t, name: t.tid, match: null })),
+        }),
+    );
+    const res = await run(
+      { ...deps, smaxArchive: archive } as unknown as ReturnType<
+        typeof makeDeps
+      >,
+      { action: 'messages', channel: 'Diệp Trà Cs' },
+    );
+    expect(archive.threadsInRange).toHaveBeenCalledWith(
+      'zlwB',
+      new Date('2026-11-21T17:00:00Z').getTime(),
+      expect.any(Number),
+    );
+    // DB không cắt 100 hội thoại như Smax
+    expect(res.threadsActive).toBe(150);
+    expect(res.nextPage).toBe(2);
+    expect(res.listCapped).toBeUndefined();
+    expect(deps.smaxChat.getThreadMessages).not.toHaveBeenCalled();
+    expect(res.threads[0].messages[0]).toContain('Tin trong DB');
+  });
+
+  it('Smax trả đủ 100 hội thoại vẫn trong khoảng ngày → báo listCapped', async () => {
+    const deps = makeDeps();
+    deps.smaxChat.recentChats.mockResolvedValue({
+      items: Array.from({ length: 100 }, (_, i) => ({
+        tid: `zlw${i}`,
+        pagePid: 'zlwB',
+        name: `K${i}`,
+        lastMessage: 'ok',
+        lastMessageAt: '2026-11-22T02:00:00Z',
+        match: null,
+      })),
+    });
+    const res = await run(deps, { action: 'threads', channel: 'Diệp Trà Cs' });
+    expect(res.total).toBe(100);
+    expect(res.listCapped).toBe(true);
+  });
 });
