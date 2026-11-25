@@ -177,3 +177,107 @@ describe('DailyReportService.send', () => {
     expect(create).not.toHaveBeenCalled();
   });
 });
+
+describe('DailyReportService.sendPreview', () => {
+  const make = () => {
+    const create = jest.fn().mockResolvedValue({ code: 0 });
+    const audit = { create: jest.fn().mockResolvedValue({}) };
+    const service = new DailyReportService(
+      {} as any,
+      audit as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      { im: { message: { create } } } as any,
+    );
+    return { service, create, audit };
+  };
+
+  it('chưa có bản xem trước xong → báo lỗi, không gửi', async () => {
+    const { service, create } = make();
+    await expect(service.sendPreview({ id: 7, name: 'An' })).rejects.toThrow('Chưa có bản xem trước');
+    (service as any).preview = { status: 'running', day: '2026-11-24' };
+    await expect(service.sendPreview({ id: 7, name: 'An' })).rejects.toThrow('Chưa có bản xem trước');
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it('gửi đúng bản đang xem, ghi audit dưới người bấm; bấm lần 2 không gửi lại', async () => {
+    const { service, create, audit } = make();
+    (service as any).preview = { status: 'done', day: REPORT.day, report: REPORT };
+    const res = await service.sendPreview({ id: 7, name: 'An' });
+    expect(res).toMatchObject({ sent: true, day: REPORT.day });
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(create.mock.calls[0][0].data.content).header.subtitle.content).toContain('22/11/2026');
+    expect(audit.create).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 7, userName: 'An', entityId: REPORT.day, snapshot: REPORT }),
+    );
+    expect(audit.create.mock.calls[0][0].metadata).toMatchObject({ detail: true, manual: true });
+    await expect(service.sendPreview({ id: 7, name: 'An' })).rejects.toThrow('đã gửi');
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('DailyReportService.savePreview / savedReports', () => {
+  it('lưu bản xem trước: audit AI_DAILY_REPORT_SAVED dưới người bấm, không gửi Lark; lưu lần 2 báo lỗi', async () => {
+    const create = jest.fn();
+    const audit = { create: jest.fn().mockResolvedValue({}) };
+    const service = new DailyReportService({} as any, audit as any, {} as any, {} as any, {} as any, {
+      im: { message: { create } },
+    } as any);
+    await expect(service.savePreview({ id: 7, name: 'An' })).rejects.toThrow('Chưa có bản xem trước');
+    (service as any).preview = { status: 'done', day: REPORT.day, report: REPORT };
+    await expect(service.savePreview({ id: 7, name: 'An' })).resolves.toMatchObject({ saved: true, day: REPORT.day });
+    expect(create).not.toHaveBeenCalled();
+    expect(audit.create).toHaveBeenCalledWith(
+      expect.objectContaining({ actionCode: 'AI_DAILY_REPORT_SAVED', userId: 7, entityId: REPORT.day, snapshot: REPORT }),
+    );
+    await expect(service.savePreview({ id: 7, name: 'An' })).rejects.toThrow('đã lưu');
+  });
+
+  it('danh sách gộp bản đã gửi + đã lưu, đánh dấu sent', async () => {
+    const findMany = jest.fn().mockResolvedValue([
+      { id: 2, actionCode: 'AI_DAILY_REPORT_SAVED', entityId: '2026-11-24', createdAt: new Date(), metadata: { detail: true, threads: 3 }, userName: 'An' },
+      { id: 1, actionCode: 'AI_DAILY_REPORT', entityId: '2026-11-23', createdAt: new Date(), metadata: { threads: 9 }, userName: 'System' },
+    ]);
+    const service = new DailyReportService({ auditLog: { findMany } } as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+    const list = await service.savedReports();
+    expect(list.map((r) => [r.id, r.day, r.sent, r.detail, r.by])).toEqual([
+      [2, '2026-11-24', false, true, 'An'],
+      [1, '2026-11-23', true, false, 'System'],
+    ]);
+  });
+});
+
+describe('DailyReportService.sendSaved', () => {
+  const make = (saved: unknown, sentBefore: unknown = null) => {
+    const create = jest.fn().mockResolvedValue({ code: 0 });
+    const audit = { create: jest.fn().mockResolvedValue({}) };
+    const findFirst = jest.fn().mockImplementation(({ where }: any) =>
+      Promise.resolve(where.actionCode === 'AI_DAILY_REPORT_SAVED' ? saved : sentBefore),
+    );
+    const service = new DailyReportService({ auditLog: { findFirst } } as any, audit as any, {} as any, {} as any, {} as any, {
+      im: { message: { create } },
+    } as any);
+    return { service, create, audit };
+  };
+
+  it('gửi đúng nội dung bản đã lưu, audit ghi fromSaved + người bấm', async () => {
+    const { service, create, audit } = make({ snapshot: REPORT });
+    await expect(service.sendSaved(5, { id: 7, name: 'An' })).resolves.toEqual({ sent: true, day: REPORT.day });
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(audit.create.mock.calls[0][0]).toMatchObject({
+      actionCode: 'AI_DAILY_REPORT',
+      userId: 7,
+      metadata: { fromSaved: 5, manual: true },
+    });
+  });
+
+  it('không có bản lưu / bản lưu đã gửi → báo lỗi, không gửi', async () => {
+    const a = make(null);
+    await expect(a.service.sendSaved(5, { id: 7, name: 'An' })).rejects.toThrow('Không tìm thấy');
+    const b = make({ snapshot: REPORT }, { createdAt: new Date() });
+    await expect(b.service.sendSaved(5, { id: 7, name: 'An' })).rejects.toThrow('đã gửi');
+    expect(a.create).not.toHaveBeenCalled();
+    expect(b.create).not.toHaveBeenCalled();
+  });
+});

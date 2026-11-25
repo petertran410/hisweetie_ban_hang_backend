@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
 import * as lark from '@larksuiteoapi/node-sdk';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditLogsService } from '../../audit-logs/audit-logs.service';
@@ -12,6 +12,8 @@ import { clip, vnDayKey } from '../tools/common';
 import { foldVi, matchProducts, parseJsonReply } from './product-matcher';
 
 export const AUDIT_DAILY_REPORT = 'AI_DAILY_REPORT';
+/** Bản xem trước lưu lại trên POS (không gửi Lark, không chặn cron 18:00). */
+export const AUDIT_DAILY_REPORT_SAVED = 'AI_DAILY_REPORT_SAVED';
 /** Nhóm Lark nhận báo cáo (user chốt); đổi bằng env LARK_AI_DAILY_CHAT_ID. */
 const DEFAULT_CHAT_ID = 'oc_92ea2a2bbcca2116111809a3461f5795';
 const THREADS_PER_PAGE = 150;
@@ -62,6 +64,19 @@ const PLATFORM_LABEL: Record<string, string> = {
 /** "Facebook · LerMao - Sành Ăn Như Gấu" — loại kênh + tên kênh. */
 export const channelLabel = (page: { name: string; platform: string }) =>
   [PLATFORM_LABEL[page.platform] ?? page.platform, page.name].filter(Boolean).join(' · ');
+
+/** Số liệu tóm tắt lưu kèm audit (danh sách bản đã gửi / đã lưu); detail: có snapshot đầy đủ. */
+function reportSummary(report: DailyReport) {
+  return {
+    threads: report.stats.threads,
+    complaints: report.complaints.length,
+    pending: report.pending.length,
+    discrepancies: report.discrepancies.length,
+    model: report.model,
+    tokens: report.tokens,
+    detail: true,
+  };
+}
 
 /**
  * Link xem báo cáo trên POS. Địa chỉ POS công khai: POS_PUBLIC_URL (máy chạy cron có FRONTEND_URL là
@@ -373,6 +388,10 @@ export class DailyReportService {
     report?: DailyReport;
     card?: Record<string, unknown>;
     error?: string;
+    /** Đã gửi bản xem trước này vào Lark (chống bấm gửi 2 lần). */
+    sentAt?: string;
+    /** Đã lưu bản xem trước này (chống lưu 2 lần). */
+    savedAt?: string;
   } | null = null;
 
   startPreview(day = vnDayKey(new Date())) {
@@ -396,23 +415,35 @@ export class DailyReportService {
     return this.preview ?? { status: 'idle' as const };
   }
 
-  /** Các ngày đã gửi báo cáo (mới nhất trước), kèm số liệu tóm tắt. */
-  async savedDays(limit = 90) {
+  /**
+   * Báo cáo đã gửi Lark hoặc đã lưu từ bản xem trước (mới nhất trước), kèm số liệu tóm tắt.
+   * Mỗi lần gửi / lưu là một mục (cùng ngày có thể nhiều bản).
+   */
+  async savedReports(limit = 90) {
     const rows = await this.prisma.auditLog.findMany({
-      where: { actionCode: AUDIT_DAILY_REPORT },
+      where: { actionCode: { in: [AUDIT_DAILY_REPORT, AUDIT_DAILY_REPORT_SAVED] } },
       orderBy: { createdAt: 'desc' },
       take: limit,
-      select: { entityId: true, createdAt: true, metadata: true },
+      select: { id: true, actionCode: true, entityId: true, createdAt: true, metadata: true, userName: true },
     });
-    const seen = new Set<string>();
+    // Bản đã lưu được gửi sau đó: mục gửi ghi metadata.fromSaved = id bản lưu
+    const sentFrom = new Map<number, Date>();
+    for (const r of rows) {
+      const from = (r.metadata as { fromSaved?: unknown } | null)?.fromSaved;
+      if (r.actionCode === AUDIT_DAILY_REPORT && typeof from === 'number') sentFrom.set(from, r.createdAt);
+    }
     return rows.flatMap((r) => {
-      if (!r.entityId || seen.has(r.entityId)) return [];
-      seen.add(r.entityId);
+      if (!r.entityId) return [];
       const m = (r.metadata ?? {}) as Record<string, unknown>;
       return [
         {
+          id: r.id,
           day: r.entityId,
-          sentAt: r.createdAt,
+          at: r.createdAt,
+          sent: r.actionCode === AUDIT_DAILY_REPORT,
+          /** Bản đã lưu này đã được gửi Lark lúc nào (null: chưa). */
+          sentLaterAt: sentFrom.get(r.id) ?? null,
+          by: r.userName,
           // Báo cáo gửi trước khi lưu chi tiết: chỉ có số liệu tóm tắt
           detail: m.detail === true,
           threads: Number(m.threads ?? 0),
@@ -424,15 +455,70 @@ export class DailyReportService {
     });
   }
 
-  /** Báo cáo đã gửi của một ngày (bản lưu lúc gửi Lark); null nếu chưa gửi / không lưu chi tiết. */
-  async savedReport(day: string) {
+  /** Nội dung một bản đã gửi / đã lưu (theo id mục trong savedReports); null nếu không có chi tiết. */
+  async savedReport(id: number) {
     const row = await this.prisma.auditLog.findFirst({
-      where: { actionCode: AUDIT_DAILY_REPORT, entityId: day },
-      orderBy: { createdAt: 'desc' },
-      select: { createdAt: true, snapshot: true },
+      where: { id, actionCode: { in: [AUDIT_DAILY_REPORT, AUDIT_DAILY_REPORT_SAVED] } },
+      select: { createdAt: true, snapshot: true, actionCode: true, userName: true },
     });
     if (!row?.snapshot) return null;
-    return { sentAt: row.createdAt, report: row.snapshot as unknown as DailyReport };
+    return {
+      at: row.createdAt,
+      sent: row.actionCode === AUDIT_DAILY_REPORT,
+      by: row.userName,
+      sentLaterAt: row.actionCode === AUDIT_DAILY_REPORT ? null : await this.savedSentAt(id),
+      report: row.snapshot as unknown as DailyReport,
+    };
+  }
+
+  /** Lúc bản đã lưu `id` được gửi Lark (mục gửi có metadata.fromSaved = id); null nếu chưa gửi. */
+  private async savedSentAt(id: number) {
+    const sent = await this.prisma.auditLog.findFirst({
+      where: { actionCode: AUDIT_DAILY_REPORT, metadata: { path: ['fromSaved'], equals: id } },
+      select: { createdAt: true },
+    });
+    return sent?.createdAt ?? null;
+  }
+
+  /**
+   * Gửi một bản đã lưu (đúng nội dung lúc lưu) vào nhóm Lark, ghi audit dưới người bấm. Mỗi bản lưu
+   * chỉ gửi một lần. Gửi ngày hôm nay trước 18:00 thì cron 18:00 bỏ qua ngày đó.
+   */
+  async sendSaved(id: number, actor: { id: number; name: string }) {
+    const row = await this.prisma.auditLog.findFirst({
+      where: { id, actionCode: AUDIT_DAILY_REPORT_SAVED },
+      select: { snapshot: true },
+    });
+    if (!row?.snapshot) throw new BadRequestException('Không tìm thấy bản đã lưu');
+    if (await this.savedSentAt(id)) throw new BadRequestException('Bản đã lưu này đã gửi vào Lark');
+    const report = row.snapshot as unknown as DailyReport;
+    await this.deliver(report, actor, true, { fromSaved: id });
+    return { sent: true, day: report.day };
+  }
+
+  /**
+   * Lưu bản xem trước đang có (không gửi Lark) để xem lại trên POS sau này. Không tính là "đã gửi":
+   * cron 18:00 vẫn gửi bình thường.
+   */
+  async savePreview(actor: { id: number; name: string }) {
+    const job = this.preview;
+    if (!job || job.status !== 'done' || !job.report)
+      throw new BadRequestException('Chưa có bản xem trước để lưu');
+    if (job.savedAt) throw new BadRequestException('Bản xem trước này đã lưu');
+    await this.audit.create({
+      userId: actor.id,
+      userName: actor.name,
+      actionType: 'POST',
+      actionCode: AUDIT_DAILY_REPORT_SAVED,
+      entityType: 'ai_daily_report',
+      entityId: job.day,
+      category: 'ai_assistant',
+      message: `Lưu bản xem trước báo cáo chat cuối ngày ${dmy(job.day)} (chưa gửi Lark)`,
+      metadata: reportSummary(job.report),
+      snapshot: job.report,
+    });
+    job.savedAt = new Date().toISOString();
+    return { saved: true, day: job.day, savedAt: job.savedAt };
   }
 
   /** Gửi báo cáo của ngày vào nhóm Lark — mỗi ngày một lần (kiểm audit, chống chạy trùng nhiều instance). */
@@ -442,16 +528,6 @@ export class DailyReportService {
     });
     if (already) return { sent: false, reason: 'already_sent' };
     const report = await this.build(day);
-    const res = await this.lark.im.message.create({
-      params: { receive_id_type: 'chat_id' },
-      data: {
-        receive_id: this.chatId,
-        msg_type: 'interactive',
-        content: JSON.stringify(buildDailyCard(report, dailyReportUrl(day))),
-      },
-    });
-    if (res?.code && res.code !== 0)
-      throw new Error(`Lark lỗi ${res.code}: ${res.msg}`);
     // Job hệ thống: ghi audit dưới tài khoản Admin đầu tiên (audit bắt buộc có người dùng)
     const admin = await this.prisma.user.findFirst({
       where: {
@@ -462,34 +538,62 @@ export class DailyReportService {
       orderBy: { id: 'asc' },
       select: { id: true },
     });
-    if (!admin) {
+    await this.deliver(report, admin ? { id: admin.id, name: 'System' } : null);
+    return { sent: true, report };
+  }
+
+  /**
+   * Gửi bản xem trước đang có (đúng nội dung đã xem, không chạy AI lại) vào nhóm Lark, ghi audit dưới
+   * người bấm. Ngày đã gửi vẫn gửi lại được (nhân viên xác nhận ở POS); gửi ngày hôm nay trước 18:00
+   * thì cron 18:00 bỏ qua ngày đó (đã có audit).
+   */
+  async sendPreview(actor: { id: number; name: string }) {
+    const job = this.preview;
+    if (!job || job.status !== 'done' || !job.report)
+      throw new BadRequestException('Chưa có bản xem trước để gửi');
+    if (job.sentAt) throw new BadRequestException('Bản xem trước này đã gửi vào Lark');
+    await this.deliver(job.report, actor, true);
+    job.sentAt = new Date().toISOString();
+    return { sent: true, day: job.day, sentAt: job.sentAt };
+  }
+
+  /** Gửi card vào nhóm Lark và lưu toàn bộ báo cáo vào audit (xem lại trên POS). */
+  private async deliver(
+    report: DailyReport,
+    actor: { id: number; name: string } | null,
+    manual = false,
+    extra: Record<string, unknown> = {},
+  ) {
+    const { day } = report;
+    const res = await this.lark.im.message.create({
+      params: { receive_id_type: 'chat_id' },
+      data: {
+        receive_id: this.chatId,
+        msg_type: 'interactive',
+        content: JSON.stringify(buildDailyCard(report, dailyReportUrl(day))),
+      },
+    });
+    if (res?.code && res.code !== 0)
+      throw new Error(`Lark lỗi ${res.code}: ${res.msg}`);
+    if (!actor) {
       this.logger.warn(
         'Không có tài khoản Admin để ghi audit báo cáo cuối ngày',
       );
-      return { sent: true, report };
+      return;
     }
     await this.audit.create({
-      userId: admin.id,
+      userId: actor.id,
       actionType: 'POST',
       actionCode: AUDIT_DAILY_REPORT,
       entityType: 'ai_daily_report',
       entityId: day,
       category: 'ai_assistant',
-      message: `Gửi báo cáo chat cuối ngày ${dmy(day)} vào Lark`,
-      metadata: {
-        threads: report.stats.threads,
-        complaints: report.complaints.length,
-        pending: report.pending.length,
-        discrepancies: report.discrepancies.length,
-        model: report.model,
-        tokens: report.tokens,
-        detail: true,
-      },
+      message: `Gửi báo cáo chat cuối ngày ${dmy(day)} vào Lark${manual ? ' (gửi tay từ bản xem trước)' : ''}`,
+      metadata: { ...reportSummary(report), ...(manual ? { manual: true } : {}), ...extra },
       // Toàn bộ báo cáo để xem lại trên POS (Báo cáo › Smax chat › Báo cáo chat cuối ngày)
       snapshot: report,
-      userName: 'System',
+      userName: actor.name,
     });
-    return { sent: true, report };
   }
 
   /** Tin trong ngày của một hội thoại (tối đa 3 trang Smax), dạng dòng có tên người gửi. */

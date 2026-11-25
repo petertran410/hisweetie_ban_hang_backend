@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Get,
@@ -178,18 +177,41 @@ export class AiComposeController {
     return this.daily.getPreview();
   }
 
-  /** Báo cáo chat cuối ngày đã gửi: danh sách ngày, và nội dung một ngày (bản lưu lúc gửi Lark). */
-  @Get('daily-report/saved')
+  /** Gửi bản xem trước đang có vào nhóm Lark (nhân viên bấm "Gửi vào Lark" ở POS). */
+  @Post('daily-report/preview/send')
   @RequirePermissions('ai_assistant:use')
-  dailySavedDays() {
-    return this.daily.savedDays();
+  sendDailyPreview(@Req() req: ComposeRequest) {
+    const { id, name } = this.actor(req);
+    return this.daily.sendPreview({ id, name });
   }
 
-  @Get('daily-report/saved/:day')
+  /** Báo cáo chat cuối ngày đã gửi Lark / đã lưu: danh sách các bản, và nội dung một bản (theo id). */
+  @Get('daily-report/saved')
   @RequirePermissions('ai_assistant:use')
-  async dailySaved(@Param('day') day: string) {
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new BadRequestException('Ngày không hợp lệ');
-    return (await this.daily.savedReport(day)) ?? { sentAt: null, report: null };
+  dailySavedReports() {
+    return this.daily.savedReports();
+  }
+
+  @Get('daily-report/saved/:id')
+  @RequirePermissions('ai_assistant:use')
+  async dailySaved(@Param('id', ParseIntPipe) id: number) {
+    return (await this.daily.savedReport(id)) ?? { at: null, sent: false, by: null, report: null };
+  }
+
+  /** Gửi một bản đã lưu vào nhóm Lark (mỗi bản lưu gửi một lần). */
+  @Post('daily-report/saved/:id/send')
+  @RequirePermissions('ai_assistant:use')
+  sendDailySaved(@Param('id', ParseIntPipe) id: number, @Req() req: ComposeRequest) {
+    const { id: userId, name } = this.actor(req);
+    return this.daily.sendSaved(id, { id: userId, name });
+  }
+
+  /** Lưu bản xem trước đang có (không gửi Lark) để xem lại trên POS. */
+  @Post('daily-report/preview/save')
+  @RequirePermissions('ai_assistant:use')
+  saveDailyPreview(@Req() req: ComposeRequest) {
+    const { id, name } = this.actor(req);
+    return this.daily.savePreview({ id, name });
   }
 
   /** Sửa nhãn phân loại hội thoại tay. */
