@@ -5,6 +5,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Max,
   MaxLength,
   Min,
 } from 'class-validator';
@@ -61,6 +62,13 @@ export class CreateVehicleDto {
   costPerKmMax?: number | null;
 
   @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.1)
+  @Max(100)
+  @Type(() => Number)
+  fuelNorm?: number | null;
+
+  @IsOptional()
   @IsInt()
   @Min(0)
   @Type(() => Number)
@@ -106,6 +114,13 @@ export class UpdateVehicleDto {
   @Min(0)
   @Type(() => Number)
   costPerKmMax?: number | null;
+
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.1)
+  @Max(100)
+  @Type(() => Number)
+  fuelNorm?: number | null;
 
   @IsOptional()
   @IsInt()
