@@ -22,7 +22,7 @@ const CONFIG: AiChatConfig = {
   assistantModels: ['claude-sonnet-5-5', 'ocg/deepseek-v4.1-flash'],
   maxToolRounds: 5,
   timeoutMs: 10_000,
-  rateLimitPerDay: 100,
+  rateLimitPerHour: 20,
   retentionDays: 90,
   historyMessages: 12,
 };
@@ -308,8 +308,8 @@ describe('AiChatService.ask', () => {
     expect(events.at(-1)).toMatchObject({ code: 'llm_unavailable' });
   });
 
-  it('hết lượt hỏi trong ngày thì báo rate_limited và không gọi model', async () => {
-    const store = fakeStore({ asked: 100 });
+  it('hết lượt hỏi trong 1 giờ thì báo rate_limited và không gọi model', async () => {
+    const store = fakeStore({ asked: 20 });
     const llm = scriptedLlm([]);
     const events = await ask(makeService(store, llm), SCOPE, {
       question: 'Chào',
@@ -320,19 +320,17 @@ describe('AiChatService.ask', () => {
     expect(store.messages).toHaveLength(0);
   });
 
-  it('đếm lượt hỏi từ 00:00 hôm nay theo giờ Việt Nam', async () => {
+  it('đếm lượt hỏi trong 60 phút gần nhất (cửa sổ trượt)', async () => {
     const store = fakeStore();
     const service = makeService(store, scriptedLlm([]));
-    // 10:00 ngày 22/11 giờ VN → từ 00:00 22/11 VN = 17:00Z ngày 21/11
-    await service.askedToday(7, NOW);
-    // 01:00 ngày 23/11 giờ VN (18:00Z ngày 22/11) → đã sang ngày mới
-    await service.askedToday(7, new Date('2026-11-22T18:00:00.000Z'));
+    await service.askedLastHour(7, NOW);
+    await service.askedLastHour(7, new Date('2026-11-22T03:25:00.000Z'));
     const since = store.prisma.auditLog.count.mock.calls.map((call: any[]) =>
       (call[0] as Row).where.createdAt.gte.toISOString(),
     );
     expect(since).toEqual([
-      '2026-11-21T17:00:00.000Z',
-      '2026-11-22T17:00:00.000Z',
+      '2026-11-22T02:00:00.000Z',
+      '2026-11-22T02:25:00.000Z',
     ]);
     expect(store.prisma.auditLog.count).toHaveBeenCalledWith({
       where: expect.objectContaining({ userId: 7, actionCode: AUDIT_ASK }),

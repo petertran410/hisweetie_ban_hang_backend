@@ -33,7 +33,7 @@ const TITLE_CHARS = 60;
 
 export const ERROR_MESSAGES: Record<string, string> = {
   rate_limited:
-    'Bạn đã hỏi hết số câu cho phép trong hôm nay. Vui lòng quay lại vào ngày mai.',
+    'Bạn đã hỏi hết số câu cho phép trong 1 giờ. Vui lòng thử lại sau ít phút.',
   conversation_not_found: 'Không tìm thấy cuộc trò chuyện này.',
   invalid_question: `Câu hỏi cần có nội dung và không dài quá ${MAX_QUESTION_CHARS} ký tự.`,
   timeout: 'Trợ lý phản hồi quá lâu. Vui lòng thử lại.',
@@ -138,13 +138,13 @@ export class AiChatService {
     return Boolean(this.config.enabled && this.config.configured && this.llm);
   }
 
-  /** Số câu đã hỏi trong hôm nay theo giờ VN (đếm audit AI_CHAT_ASK từ 00:00). */
-  askedToday(userId: number, now = new Date()): Promise<number> {
+  /** Số câu đã hỏi trong 60 phút gần nhất (đếm audit AI_CHAT_ASK). */
+  askedLastHour(userId: number, now = new Date()): Promise<number> {
     return this.prisma.auditLog.count({
       where: {
         userId,
         actionCode: AUDIT_ASK,
-        createdAt: { gte: new Date(`${vnDayKey(now)}T00:00:00+07:00`) },
+        createdAt: { gte: new Date(now.getTime() - 3_600_000) },
       },
     });
   }
@@ -240,8 +240,8 @@ export class AiChatService {
       return fail('invalid_question');
     if (!llm) return fail('llm_unavailable');
 
-    const asked = await this.askedToday(scope.userId, now);
-    if (asked >= config.rateLimitPerDay) return fail('rate_limited');
+    const asked = await this.askedLastHour(scope.userId, now);
+    if (asked >= config.rateLimitPerHour) return fail('rate_limited');
 
     let conversation = input.conversationId
       ? await prisma.aiChatConversation.findFirst({
