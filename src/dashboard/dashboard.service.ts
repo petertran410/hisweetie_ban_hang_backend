@@ -994,6 +994,8 @@ export class DashboardService {
     limit: number = 20,
     status?: string,
   ) {
+    // limit = 0: lấy hết (trang Tổng quan phân trang / tìm / sắp xếp phía client)
+    const take = limit > 0 ? limit : undefined;
     if (type === 'orders') {
       const orders = await this.prisma.order.findMany({
         where: {
@@ -1009,7 +1011,7 @@ export class DashboardService {
           customer: { is: { isActive: true } },
           branchId: branchId ?? { in: TASK_BRANCH_IDS },
         },
-        take: limit,
+        take,
         orderBy: { orderDate: 'desc' },
         include: {
           customer: { select: { name: true } },
@@ -1052,7 +1054,7 @@ export class DashboardService {
           ...ageFilter,
           branchId: branchId ?? { in: TASK_BRANCH_IDS },
         },
-        take: limit,
+        take,
         orderBy: { purchaseDate: 'asc' },
         include: {
           customer: { select: { name: true } },
@@ -1091,7 +1093,7 @@ export class DashboardService {
           customer: { is: { isActive: true } },
           branchId: branchId ?? { in: TASK_BRANCH_IDS },
         },
-        take: limit,
+        take,
         orderBy: { purchaseDate: 'desc' },
         include: {
           customer: { select: { name: true } },
@@ -1139,7 +1141,7 @@ export class DashboardService {
         ${stockFilter}
         ${branchId ? Prisma.sql`AND i."branchId" = ${branchId}` : Prisma.sql`AND i."branchId" IN (${Prisma.join(TASK_BRANCH_IDS)})`}
       ORDER BY i."onHand" ASC
-      LIMIT ${limit}
+      ${take ? Prisma.sql`LIMIT ${take}` : Prisma.empty}
     `;
     return rows.map((r) => ({
       code: r.productCode,

@@ -227,7 +227,8 @@ export class DashboardController {
     return this.dashboardService.getTasks(
       type || 'orders',
       branchId,
-      limit || 20,
+      // 0 = không giới hạn (trang Tổng quan)
+      limit ?? 20,
       status,
     );
   }
