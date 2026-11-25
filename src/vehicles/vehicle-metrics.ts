@@ -12,6 +12,8 @@ export interface FuelRow {
   odo: number | null;
   amount: number;
   liters: number | null;
+  /** Đơn giá trên phiếu (đ/lít); thiếu thì lấy số tiền ÷ số lít. */
+  unitPrice?: number | null;
   occurredAt: Date;
 }
 
@@ -46,6 +48,10 @@ export interface ConsumptionStats {
   litersPer100Km: number | null;
   /** Số lần đổ đã dùng để tính. */
   samples: number;
+  /** Tổng km của các lần đổ đó (mỗi lần: km tới lần đổ kế tiếp). */
+  km: number;
+  /** Tổng lít của các lần đổ đó. */
+  liters: number;
 }
 
 export interface FuelAnalysis {
@@ -61,7 +67,23 @@ const pick = (value: number | null | undefined) =>
     ? value
     : null;
 
-const round2 = (value: number) => Math.round(value * 100) / 100;
+export const round2 = (value: number) => Math.round(value * 100) / 100;
+
+/**
+ * So L/100km với định mức, cho phép lệch ±FUEL_NORM_TOLERANCE cả hai chiều.
+ * So số đã làm tròn 2 số lẻ như cột hiển thị (và làm tròn cả độ lệch để tránh
+ * sai số dấu phẩy động), nên lệch đúng 1.00 vẫn "Bình thường". Thiếu một trong
+ * hai số thì không kết luận (null).
+ */
+export function normCheck(
+  litersPer100Km: number | null,
+  norm: number | null,
+): string | null {
+  if (litersPer100Km === null || norm === null) return null;
+  return round2(Math.abs(round2(litersPer100Km) - norm)) <= FUEL_NORM_TOLERANCE
+    ? VEHICLE_CHECK.NORMAL
+    : VEHICLE_CHECK.ABNORMAL;
+}
 
 /** Một lần dừng đổ: các phiếu liên tiếp cùng ODO gộp làm một. */
 interface FillEvent {
@@ -85,11 +107,10 @@ export function monthsAgo(now: Date, months: number) {
   return from;
 }
 
-const sumRate = (segments: Segment[], scale: number) => {
-  const km = segments.reduce((sum, item) => sum + item.km, 0);
-  const value = segments.reduce((sum, item) => sum + item.value, 0);
-  return km > 0 ? (value / km) * scale : null;
-};
+const sumSegments = (segments: Segment[]) => ({
+  km: segments.reduce((sum, item) => sum + item.km, 0),
+  value: segments.reduce((sum, item) => sum + item.value, 0),
+});
 
 /**
  * Vị trí các phiếu thuộc dãy ODO không giảm dài nhất (theo thứ tự ngày).
@@ -245,15 +266,7 @@ export function analyzeFuel(
         litersPer100Km,
         norm,
         odoCheck: jump ? VEHICLE_ODO_CHECK.JUMP : null,
-        // So số đã làm tròn 2 số lẻ như cột hiển thị (và làm tròn cả độ lệch để
-        // tránh sai số dấu phẩy động), nên lệch đúng 1.00 vẫn "Bình thường".
-        consumptionCheck:
-          litersPer100Km === null || norm === null
-            ? null
-            : round2(Math.abs(round2(litersPer100Km) - norm)) <=
-                FUEL_NORM_TOLERANCE
-              ? VEHICLE_CHECK.NORMAL
-              : VEHICLE_CHECK.ABNORMAL,
+        consumptionCheck: normCheck(litersPer100Km, norm),
         costCheck:
           costPerKm === null || costMin === null || costMax === null
             ? null
@@ -265,11 +278,13 @@ export function analyzeFuel(
     });
 
     const recent = literSegments.filter((item) => item.at >= recentFrom);
-    const recentRate = sumRate(recent, 100);
-    if (recentRate !== null) {
+    const total = sumSegments(recent);
+    if (total.km > 0) {
       vehicles.set(vehicleId, {
-        litersPer100Km: round2(recentRate),
+        litersPer100Km: round2((total.value / total.km) * 100),
         samples: recent.length,
+        km: round2(total.km),
+        liters: round2(total.value),
       });
     }
   }

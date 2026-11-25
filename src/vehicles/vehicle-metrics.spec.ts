@@ -174,7 +174,12 @@ describe('analyzeFuel', () => {
       new Date('2026-11-25T12:00:00+07:00'),
     ).vehicles;
     // (18.5 + 7.4 + 18.5) ÷ (182 + 85 + 210) × 100.
-    expect(all.get(9)).toEqual({ litersPer100Km: 9.31, samples: 3 });
+    expect(all.get(9)).toEqual({
+      litersPer100Km: 9.31,
+      samples: 3,
+      km: 477,
+      liters: 44.4,
+    });
 
     // Tới 19/12: từ 19/10 → chỉ kỳ 19/10, 20/10: (7.4 + 18.5) ÷ (85 + 210).
     const recent = analyzeFuel(
@@ -182,7 +187,12 @@ describe('analyzeFuel', () => {
       new Map(),
       new Date('2026-12-19T00:00:00+07:00'),
     ).vehicles;
-    expect(recent.get(9)).toEqual({ litersPer100Km: 8.78, samples: 2 });
+    expect(recent.get(9)).toEqual({
+      litersPer100Km: 8.78,
+      samples: 2,
+      km: 295,
+      liters: 25.9,
+    });
 
     // Không có lần đổ nào trong 2 tháng → không có số.
     const none = analyzeFuel(

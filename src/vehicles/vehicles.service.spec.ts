@@ -183,3 +183,49 @@ describe('VehiclesService audit log', () => {
     ]);
   });
 });
+
+describe('VehiclesService fuel summary', () => {
+  function summaryFixture(viewBranches: number[]) {
+    const prisma: any = {
+      vehicle: { findMany: jest.fn().mockResolvedValue([]) },
+      internalFinanceEntry: { findMany: jest.fn().mockResolvedValue([]) },
+    };
+    const access: any = {
+      branchesFor: jest.fn(async (_user: any, permissions: string[]) =>
+        permissions.includes('vehicles:view') ? viewBranches : [],
+      ),
+    };
+    const service = new VehiclesService(
+      prisma,
+      access,
+      new FinanceAuditService(),
+    );
+    return { service, prisma, access };
+  }
+
+  it('chỉ cần quyền xem xe, không có quyền thì từ chối', async () => {
+    const f = summaryFixture([]);
+    await expect(f.service.fuelSummary({}, user)).rejects.toThrow(
+      'Không có quyền xem báo cáo xăng dầu',
+    );
+    expect(f.access.branchesFor.mock.calls[0][1]).toEqual(['vehicles:view']);
+  });
+
+  it('từ chối lọc kho không có quyền xem', async () => {
+    const f = summaryFixture([6]);
+    await expect(f.service.fuelSummary({ branchId: 1 }, user)).rejects.toThrow(
+      'Không có quyền xem báo cáo xăng dầu của chi nhánh này',
+    );
+    expect(f.prisma.vehicle.findMany).not.toHaveBeenCalled();
+  });
+
+  it('tất cả kho: chỉ lấy xe của các kho được xem', async () => {
+    const f = summaryFixture([6]);
+    const result = await f.service.fuelSummary({}, user);
+    expect(f.prisma.vehicle.findMany.mock.calls[0][0].where).toEqual({
+      branchId: { in: [6] },
+    });
+    expect(result.groups).toEqual([]);
+    expect(f.prisma.internalFinanceEntry.findMany).not.toHaveBeenCalled();
+  });
+});
