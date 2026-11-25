@@ -111,6 +111,8 @@ export interface SmaxRecentThread {
   isGroup: boolean;
   lastMessage: string;
   lastMessageAt: string | null;
+  // Lần cuối khách nhắn (Smax last_message_by_customer_at); trùng lastMessageAt = tin cuối là của khách
+  lastCustomerAt: string | null;
   unread: boolean;
   // Tổng số tin của thread (Smax reply_count) — client tính "tin mới" theo chênh lệch
   messageCount: number;
@@ -559,6 +561,30 @@ export class SmaxApiService {
   }
 
   /**
+   * Đếm hội thoại của các kênh (đọc `total`, lấy 1 dòng). `dateRange` của Smax: mặc định lọc theo
+   * tin cuối hiện tại của thread; `byCreatedAt` → lọc theo ngày tạo thread. `groupOnly` → chỉ nhóm
+   * (Smax bỏ qua `is_group: false`, nên số trực tiếp = tổng − nhóm).
+   */
+  async countThreads(
+    pagePids: string[],
+    opts: { from: Date; to: Date; byCreatedAt?: boolean; groupOnly?: boolean },
+  ): Promise<number> {
+    const res = (await this.request(
+      'POST',
+      `/partner/bizs/${this.bizAlias}/threads/threads`,
+      {
+        page_pids: pagePids,
+        limit: 1,
+        dateRange: [opts.from.toISOString(), opts.to.toISOString()],
+        ...(opts.byCreatedAt ? { sort_by_created_at: true } : {}),
+        ...(opts.groupOnly ? { is_group: true } : {}),
+      },
+      { timeout: 20000 },
+    )) as { total?: number } | null;
+    return Number(res?.total ?? 0);
+  }
+
+  /**
    * Các nhóm Zalo kênh đang tham gia, kèm thành viên. Smax không phân trang
    * được (cursor/before bị bỏ qua) → chỉ lấy tối đa 500 nhóm có tin gần nhất.
    * Response rất nặng (~20KB/nhóm, ~15s cho 470 nhóm) — nơi gọi nên cache.
@@ -622,6 +648,7 @@ export class SmaxApiService {
         // Tin cuối: "attach" = tệp/ảnh
         lastMessage: typeof t.message === 'string' ? t.message : '',
         lastMessageAt: t.last_message_at ?? null,
+        lastCustomerAt: t.last_message_by_customer_at ?? null,
         unread: t.read === false,
         messageCount: Number(t.reply_count ?? 0),
         avatar: t.customer?.picture ?? t.customer?.zaloweb?.picture ?? null,

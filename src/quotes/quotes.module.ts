@@ -13,5 +13,6 @@ import { QuoteExcelService } from './quote-excel.service';
   imports: [PrismaModule, AuditLogsModule],
   controllers: [QuotesController, QuoteTemplatesController],
   providers: [QuotesService, QuoteTemplatesService, QuoteExcelService],
+  exports: [QuotesService],
 })
 export class QuotesModule {}

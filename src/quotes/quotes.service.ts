@@ -159,11 +159,17 @@ export class QuotesService {
   }
 
   async update(id: number, dto: QuotePayloadDto, actor: QuoteActor) {
-    const current = await this.editable(id, actor);
+    const current = await this.editable(id, actor, { allowLibrary: true });
     if (FINAL.includes(current.status))
       throw new BadRequestException(
         `Báo giá đã ở trạng thái "${QUOTE_STATUS_LABEL[current.status as QuoteStatus]}", không sửa được — hãy nhân bản để tạo bản mới`,
       );
+    // Mẫu thư viện: không gắn khách / nguồn thư viện, bắt buộc ngành hàng
+    if (current.isLibrary) {
+      if (!dto.category)
+        throw new BadRequestException('Mẫu thư viện cần chọn ngành hàng');
+      dto = { ...dto, customer: null, sourceLibraryId: null };
+    }
     await this.validate(dto);
     await this.prisma.$transaction(
       async (tx) => {
@@ -174,7 +180,12 @@ export class QuotesService {
       },
       { timeout: TX_TIMEOUT },
     );
-    await this.log(actor, 'QUOTE_UPDATE', id, `Sửa báo giá ${current.code}`);
+    await this.log(
+      actor,
+      'QUOTE_UPDATE',
+      id,
+      `Sửa ${current.isLibrary ? 'mẫu thư viện' : 'báo giá'} ${current.code}`,
+    );
     return this.get(id, actor);
   }
 
@@ -227,9 +238,59 @@ export class QuotesService {
     return this.create(payload, actor);
   }
 
+  /** Nhân bản mẫu thư viện thành mẫu thư viện mới (TV…), chỉ người sửa được mẫu thư viện. */
+  async duplicateLibrary(id: number, actor: QuoteActor) {
+    const src = await this.load(id, actor);
+    if (!src.isLibrary)
+      throw new BadRequestException('Chỉ nhân bản được mẫu thư viện');
+    if (actor.ownOnly)
+      throw new ForbiddenException(
+        'Chỉ Trưởng Bộ Phận Sale nhân bản được mẫu thư viện',
+      );
+    const payload = {
+      ...this.toQuote(src),
+      title: `${src.title} (bản sao)`,
+      customer: null,
+      sourceLibraryId: null,
+    } as unknown as QuotePayloadDto;
+    const created = await this.prisma.$transaction(
+      async (tx) => {
+        const q = await tx.quote.create({
+          data: {
+            ...this.header(payload),
+            isLibrary: true,
+            status: 'draft',
+            code: `TMP-${Date.now()}-${actor.id}`,
+            createdById: actor.id,
+          },
+        });
+        await this.writeItems(tx, q.id, payload);
+        return tx.quote.update({
+          where: { id: q.id },
+          data: { code: `TV${String(q.id).padStart(4, '0')}` },
+        });
+      },
+      { timeout: TX_TIMEOUT },
+    );
+    await this.log(
+      actor,
+      'QUOTE_CREATE',
+      created.id,
+      `Nhân bản mẫu thư viện ${src.code} thành ${created.code}`,
+    );
+    return this.get(created.id, actor);
+  }
+
   // ── Hỗ trợ ─────────────────────────────────────────────────────────
-  /** Báo giá sửa được bởi actor: không phải thư viện; Sale chỉ sửa của mình. */
-  private async editable(id: number, actor: QuoteActor) {
+  /**
+   * Báo giá sửa được bởi actor: Sale chỉ sửa của mình. Mẫu thư viện chỉ sửa nội dung (allowLibrary),
+   * và chỉ người xem mọi báo giá (quotes:view_all — Trưởng Bộ Phận Sale) mới sửa được.
+   */
+  private async editable(
+    id: number,
+    actor: QuoteActor,
+    opts: { allowLibrary?: boolean } = {},
+  ) {
     const row = await this.prisma.quote.findUnique({
       where: { id },
       select: {
@@ -241,10 +302,17 @@ export class QuotesService {
       },
     });
     if (!row) throw new NotFoundException('Không tìm thấy báo giá');
-    if (row.isLibrary)
-      throw new ForbiddenException(
-        'Mẫu thư viện chỉ cập nhật bằng file báo giá tổng hợp',
-      );
+    if (row.isLibrary) {
+      if (!opts.allowLibrary)
+        throw new ForbiddenException(
+          'Mẫu thư viện không xoá / đổi trạng thái được',
+        );
+      if (actor.ownOnly)
+        throw new ForbiddenException(
+          'Chỉ Trưởng Bộ Phận Sale sửa được mẫu thư viện',
+        );
+      return row;
+    }
     if (actor.ownOnly && row.createdById !== actor.id)
       throw new ForbiddenException('Bạn chỉ sửa được báo giá của mình');
     return row;

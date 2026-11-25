@@ -101,6 +101,13 @@ export class QuotesController {
     return this.service.duplicate(id, this.actor(req));
   }
 
+  /** Nhân bản mẫu thư viện thành mẫu thư viện mới. */
+  @Post(':id/duplicate-library')
+  @RequirePermissions('quotes:update')
+  duplicateLibrary(@Param('id', ParseIntPipe) id: number, @Req() req: AuthReq) {
+    return this.service.duplicateLibrary(id, this.actor(req));
+  }
+
   @Put(':id')
   @RequirePermissions('quotes:update')
   update(

@@ -13,6 +13,7 @@ import { privateUploadsGuard } from './upload/private-uploads.middleware';
 import { selectPublicationDisplayName } from './upload/publication-pdf-title';
 import { startEventLoopMonitor } from './common/monitoring/event-loop-monitor';
 import { isCorsOriginAllowed } from './common/cors-origin.util';
+import { compressUnlessAiStream } from './ai-assistant/ai-stream.util';
 
 (BigInt.prototype as any).toJSON = function () {
   return this.toString();
@@ -44,7 +45,8 @@ async function bootstrap() {
   // Nén response (gzip/deflate). Login trả về permissions[]/roles[] khá lớn;
   // nén giúp client mạng yếu / latency cao nhận đủ body nhanh hơn, giảm rủi ro
   // đứt giữa chừng trên chuỗi proxy nhiều hop.
-  app.use(compression());
+  // Trừ stream trợ lý AI (SSE): nén sẽ dồn sự kiện lại, chữ không chạy dần.
+  app.use(compression({ filter: compressUnlessAiStream }));
   // Đọc cookie refresh token (hs_rt) cho /api/auth/refresh, /logout.
   app.use(cookieParser());
 

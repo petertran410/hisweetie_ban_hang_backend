@@ -12,11 +12,24 @@ import { SmaxChatController } from './smax-chat.controller';
 import { SmaxChatService } from './smax-chat.service';
 import { QuickRepliesController } from './quick-replies.controller';
 import { QuickRepliesService } from './quick-replies.service';
+import { SmaxReportsController } from './smax-reports/smax-reports.controller';
+import { SmaxReportsService } from './smax-reports/smax-reports.service';
 
 @Module({
   imports: [PrismaModule, HttpModule, AuditLogsModule, UploadModule, LarkSyncModule, LeadLinkModule],
-  controllers: [SmaxController, SmaxChatController, QuickRepliesController],
-  providers: [SmaxService, SmaxApiService, SmaxChatService, QuickRepliesService],
+  controllers: [
+    SmaxController,
+    SmaxChatController,
+    QuickRepliesController,
+    SmaxReportsController,
+  ],
+  providers: [
+    SmaxService,
+    SmaxApiService,
+    SmaxChatService,
+    QuickRepliesService,
+    SmaxReportsService,
+  ],
   exports: [SmaxService, SmaxApiService, SmaxChatService],
 })
 export class SmaxModule {}

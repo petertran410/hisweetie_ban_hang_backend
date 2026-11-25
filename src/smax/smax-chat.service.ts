@@ -23,6 +23,18 @@ import { LeadLinkService } from '../leads/lead-link/lead-link.service';
 import { repairUploadedFilename } from '../common/uploaded-filename.util';
 import { normalizeVnPhone } from '../common/phone.util';
 import {
+  isAckOnly,
+  isCommunityGroup,
+  isStaffName,
+  looksUpset,
+  WAIT_ALERT_MINUTES,
+  WAIT_LOOKBACK_DAYS,
+  workingMinutes,
+} from './wait-alerts';
+
+/** Audit: nhân viên bỏ qua cảnh báo "Cần trả lời gấp" (metadata.since = tin khách đã bỏ qua). */
+const AUDIT_WAIT_SKIP = 'SMAX_WAIT_SKIP';
+import {
   GROUP_SCAN_LIMIT,
   SmaxApiService,
   SmaxGroupThread,
@@ -233,6 +245,9 @@ export class SmaxChatService {
   private readonly sendLog = new Map<number, number[]>();
   // Chỉ mục nhóm theo kênh (quét Smax ~15s) — dùng chung giữa các khách
   private readonly recentCache = new Map<string, { at: number; threads: Promise<SmaxRecentThread[]> }>();
+  // Nhóm Zalo: Smax coi tin của nhân viên ở kênh khác trong nhóm là "của khách" → kiểm người gửi tin cuối
+  // (chạy nền, cache theo thời điểm tin cuối; null = đang kiểm)
+  private readonly groupLastSender = new Map<string, { at: string; fromCustomer: boolean | null }>();
   private readonly aliasCache = new Map<string, { at: number; map: Promise<Map<string, string>> }>();
   private readonly groupIndex = new Map<
     string,
@@ -603,6 +618,26 @@ export class SmaxChatService {
       userId: actor.id,
       userName: actor.name,
       metadata: { pagePid: channel.pid, tid, pid: dto.pid, reaction: dto.reaction },
+    });
+    return { ok: true };
+  }
+
+  /**
+   * Bỏ qua cảnh báo "Cần trả lời gấp" của 1 hội thoại (vd tin khách không cần trả lời). Ghi audit
+   * kèm thời điểm tin khách đang chờ; khách nhắn tin mới (thời điểm khác) thì cảnh báo hiện lại.
+   */
+  async skipWait(actor: ChatActor, dto: { pagePid: string; tid: string; since: string }) {
+    const tid = this.assertTid(dto.tid);
+    const channel = await this.assertOwnChannel(actor.id, dto.pagePid);
+    await this.auditLogs.create({
+      actionType: 'POST',
+      actionCode: AUDIT_WAIT_SKIP,
+      entityType: 'smax_threads',
+      entityId: `${channel.pid}:${tid}`,
+      message: `Bỏ qua cảnh báo khách chờ (kênh "${channel.name}")`,
+      userId: actor.id,
+      userName: actor.name,
+      metadata: { pagePid: channel.pid, tid, since: dto.since },
     });
     return { ok: true };
   }
@@ -1594,6 +1629,52 @@ export class SmaxChatService {
     // Smax khớp cả thành viên nhóm & nội dung tin → chỉ giữ hội thoại khớp tên Zalo / tên nhóm
     if (keyword) threads = threads.filter((t) => foldVi(t.name).includes(foldVi(keyword)));
 
+    const waiting = this.waitingAlerts(threads);
+    // Nhân viên đã bấm "Bỏ qua" cho đúng tin khách đang chờ → không báo nữa
+    if (waiting.size) {
+      const skips = await this.prisma.auditLog
+        .findMany({
+          where: {
+            actionCode: AUDIT_WAIT_SKIP,
+            entityId: { in: [...waiting.keys()] },
+            createdAt: { gte: new Date(Date.now() - WAIT_LOOKBACK_DAYS * 86_400_000) },
+          },
+          select: { entityId: true, metadata: true },
+        })
+        .catch(() => []);
+      for (const s of skips) {
+        const since = (s.metadata as { since?: string } | null)?.since;
+        if (s.entityId && since && waiting.get(s.entityId)?.since === since) waiting.delete(s.entityId);
+      }
+    }
+    // Nhãn phân loại (AI khi nhân viên bấm "Phân loại", hoặc gắn tay) — lỗi đọc nhãn không chặn danh sách
+    const labels: {
+      pagePid: string;
+      tid: string;
+      label: string;
+      reason: string | null;
+      pending: boolean;
+      lastMessageAt: Date | null;
+      manual: boolean;
+    }[] = await this.prisma.aiThreadLabel
+      .findMany({
+        where: { tid: { in: threads.map((t) => t.tid) } },
+        select: { pagePid: true, tid: true, label: true, reason: true, pending: true, lastMessageAt: true, manual: true },
+      })
+      .catch(() => []);
+    const labelOf = (t: SmaxRecentThread) => {
+      const l = labels.find((x) => x.tid === t.tid && x.pagePid === t.pagePid);
+      if (!l) return null;
+      return {
+        label: l.label,
+        reason: l.reason,
+        pending: l.pending,
+        manual: l.manual,
+        // Có tin mới sau lúc gắn nhãn → nhãn cũ
+        stale: !!t.lastMessageAt && !!l.lastMessageAt && new Date(t.lastMessageAt).getTime() > l.lastMessageAt.getTime() + 1_000,
+      };
+    };
+
     // ID đã lưu: số Zalo (Zalo cá nhân) hoặc tid (kênh khác)
     const zalowebTid = (t: SmaxRecentThread) => /^zlw\d+$/.test(t.tid);
     const idOf = (t: SmaxRecentThread) => (zalowebTid(t) ? t.tid.slice(ZALOWEB_PREFIX.length) : t.tid);
@@ -1695,6 +1776,9 @@ export class SmaxChatService {
           lastMessage: t.lastMessage === 'attach' ? '[Tệp/ảnh]' : t.lastMessage,
           lastMessageAt: t.lastMessageAt,
           unread: t.unread,
+          // Khách chờ quá 30 phút giờ làm (không tắt được; hết khi bên mình trả lời)
+          waiting: waiting.get(`${t.pagePid}:${t.tid}`) ?? null,
+          aiLabel: labelOf(t),
           messageCount: t.messageCount,
           avatar: t.avatar,
           memberPreview: t.memberPreview,
@@ -1716,6 +1800,69 @@ export class SmaxChatService {
         };
       }),
     };
+  }
+
+  /**
+   * Hội thoại có khách chờ lâu: tin cuối là của khách (Smax last_message_by_customer_at trùng tin cuối),
+   * trong 3 ngày, quá 30 phút giờ làm, không phải tin chỉ để xác nhận (wait-alerts.ts). Nhóm Zalo: kiểm thêm
+   * người gửi tin cuối không phải nhân viên (kênh Smax của công ty / Zalo cá nhân tên thương hiệu) — kiểm nền
+   * (tối đa 5 nhóm/lượt), có kết quả mới báo ở lượt tải sau.
+   */
+  private waitingAlerts(threads: SmaxRecentThread[], now = new Date()) {
+    const out = new Map<string, { minutes: number; since: string; upset: boolean }>();
+    const oldest = now.getTime() - WAIT_LOOKBACK_DAYS * 86_400_000;
+    const toCheck: SmaxRecentThread[] = [];
+    for (const t of threads) {
+      if (!t.lastMessageAt || !t.lastCustomerAt || t.isComment) continue;
+      const last = new Date(t.lastMessageAt).getTime();
+      if (Math.abs(last - new Date(t.lastCustomerAt).getTime()) > 2_000 || last < oldest) continue;
+      if (isAckOnly(t.lastMessage) || (t.isGroup && isCommunityGroup(t.name))) continue;
+      const minutes = workingMinutes(new Date(t.lastCustomerAt), now);
+      if (minutes < WAIT_ALERT_MINUTES) continue;
+      if (t.isGroup) {
+        const hit = this.groupLastSender.get(`${t.pagePid}:${t.tid}`);
+        if (!hit || hit.at !== t.lastMessageAt) {
+          toCheck.push(t);
+          continue;
+        }
+        if (!hit.fromCustomer) continue;
+      }
+      out.set(`${t.pagePid}:${t.tid}`, { minutes, since: t.lastCustomerAt, upset: looksUpset(t.lastMessage) });
+    }
+    if (toCheck.length) void this.checkGroupSenders(toCheck.slice(0, 5));
+    return out;
+  }
+
+  private async checkGroupSenders(threads: SmaxRecentThread[]) {
+    if (this.groupLastSender.size > 2_000) this.groupLastSender.clear();
+    const pending = threads.filter((t) => {
+      const key = `${t.pagePid}:${t.tid}`;
+      if (this.groupLastSender.get(key)?.at === t.lastMessageAt) return false;
+      this.groupLastSender.set(key, { at: t.lastMessageAt!, fromCustomer: null });
+      return true;
+    });
+    if (!pending.length) return;
+    const ours = new Set((await this.smaxApi.listPages().catch(() => [])).map((p) => p.pid));
+    await Promise.all(
+      pending.map(async (t) => {
+        const key = `${t.pagePid}:${t.tid}`;
+        const [messages, thread] = await Promise.all([
+          this.smaxApi.getMessages(t.pagePid, t.tid).catch(() => null),
+          this.smaxApi.getThread(t.pagePid, t.tid).catch(() => null),
+        ]);
+        if (!messages) return this.groupLastSender.delete(key);
+        const last = messages
+          .filter((m) => m.type !== 'system')
+          .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+          .at(-1);
+        const sender = last?.sender_pid;
+        // Nhân viên: kênh Smax của công ty, hoặc Zalo cá nhân mang tên thương hiệu
+        this.groupLastSender.set(key, {
+          at: t.lastMessageAt!,
+          fromCustomer: !!sender && !ours.has(sender) && !isStaffName(thread?.members?.[sender]),
+        });
+      }),
+    );
   }
 
   async lookupByPhone(actorId: number, pagePid: string, phone: string) {

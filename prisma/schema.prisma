@@ -70,6 +70,7 @@ model User {
   soldInvoices                                              Invoice[]                         @relation("InvoiceSeller")
   notifications                                             Notification[]
   pushDevices                                               PushDevice[]
+  aiChatConversations                                       AiChatConversation[]
   createdOrderPaymentNotes                                  OrderPaymentNote[]                @relation("OrderPaymentNoteCreator")
   createdPayments                                           OrderPayment[]                    @relation("PaymentCreator")
   createdOrderSuppliers                                     OrderSupplier[]                   @relation("OrderSupplierCreator")
@@ -6417,4 +6418,71 @@ model QuoteItemTier {
 
   @@index([quoteItemId])
   @@map("quote_item_tiers")
+}
+
+/// Hội thoại với Trợ lý AI — riêng của từng người, tự xoá sau AI_CHAT_RETENTION_DAYS ngày không dùng.
+model AiChatConversation {
+  id        Int             @id @default(autoincrement())
+  userId    Int             @map("user_id")
+  title     String
+  createdAt DateTime        @default(now()) @map("created_at")
+  updatedAt DateTime        @updatedAt @map("updated_at")
+  user      User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages  AiChatMessage[]
+  share     AiChatShare?
+
+  @@index([userId, updatedAt])
+  @@index([updatedAt])
+  @@map("ai_chat_conversations")
+}
+
+/// Một tin trong hội thoại (câu hỏi / câu trả lời). Không lưu kết quả thô của công cụ.
+model AiChatMessage {
+  id             Int                @id @default(autoincrement())
+  conversationId Int                @map("conversation_id")
+  role           String
+  content        String
+  toolNames      String[]           @default([]) @map("tool_names")
+  model          String?
+  createdAt      DateTime           @default(now()) @map("created_at")
+  conversation   AiChatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@index([createdAt])
+  @@map("ai_chat_messages")
+}
+
+/// Link chia sẻ chỉ đọc một hội thoại Trợ lý AI cho người dùng POS đã đăng nhập. Một link / hội thoại.
+model AiChatShare {
+  id             Int                @id @default(autoincrement())
+  token          String             @unique
+  conversationId Int                @unique @map("conversation_id")
+  /// Bản chụp lúc chia sẻ: chỉ hiện tin có id <= mốc này
+  lastMessageId  Int                @map("last_message_id")
+  createdAt      DateTime           @default(now()) @map("created_at")
+  updatedAt      DateTime           @updatedAt @map("updated_at")
+  conversation   AiChatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@map("ai_chat_shares")
+}
+
+/// Nhãn phân loại hội thoại Smax: AI gắn khi nhân viên bấm "Phân loại", nhân viên sửa tay được.
+model AiThreadLabel {
+  id            Int       @id @default(autoincrement())
+  pagePid       String    @map("page_pid")
+  tid           String
+  /// order | price | complaint | delivery | other
+  label         String
+  reason        String?
+  /// Khách đang chờ bên bán phản hồi / xử lý
+  pending       Boolean   @default(false)
+  /// Tin cuối lúc gắn nhãn — có tin mới hơn thì nhãn là "cũ"
+  lastMessageAt DateTime? @map("last_message_at")
+  manual        Boolean   @default(false)
+  labeledById   Int?      @map("labeled_by_id")
+  labeledAt     DateTime  @default(now()) @map("labeled_at")
+
+  @@unique([pagePid, tid])
+  @@index([tid])
+  @@map("ai_thread_labels")
 }
