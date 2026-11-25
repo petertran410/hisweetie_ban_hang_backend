@@ -11,14 +11,12 @@ const fill = (
   odo: number | null,
   liters: number | null,
   amount: number,
-  unitPrice: number | null = null,
 ): FuelRow => ({
   id,
   vehicleId,
   odo,
   liters,
   amount,
-  unitPrice,
   occurredAt: day(date),
 });
 
@@ -48,21 +46,22 @@ const vehicles = [
     isActive: false,
   }),
   vehicle(13, { label: 'Z' }),
+  vehicle(14, { label: 'Y', isActive: false }),
 ];
 
 const rows: FuelRow[] = [
   // Xe 9: phiếu 01/07 ODO sai (ngoài kỳ), 4 lần đổ tháng 10 trong kỳ.
   fill(1, 9, '2026-07-01', 59465, 19.8113, 420000),
-  fill(2, 9, '2026-10-16', 59170, 18.5, 500000, 27000),
-  fill(3, 9, '2026-10-19', 59352, 7.4, 200000, 27000),
-  fill(4, 9, '2026-10-20', 59437, 18.5, 500000, 27000),
-  fill(5, 9, '2026-10-23', 59647, 24.99, 700000, 28000),
-  // Xe 12 ngừng dùng nhưng có một lần đổ trong kỳ (chưa có km), không ghi đơn giá.
+  fill(2, 9, '2026-10-16', 59170, 18.5, 500000),
+  fill(3, 9, '2026-10-19', 59352, 7.4, 200000),
+  fill(4, 9, '2026-10-20', 59437, 18.5, 500000),
+  fill(5, 9, '2026-10-23', 59647, 24.99, 700000),
+  // Xe 12 ngừng dùng nhưng có một lần đổ trong kỳ (chưa có km).
   fill(6, 12, '2026-11-01', 1000, 2, 50000),
-  // Xe 13 chỉ đổ trước kỳ: có đơn giá hiện tại, không có đơn giá trung bình.
-  fill(7, 13, '2026-08-01', 5000, 10, 240000, 24000),
-  // Phiếu sau thời điểm báo cáo không được tính.
-  fill(8, 13, '2026-12-01', 5300, 10, 300000, 30000),
+  // Xe 13 chỉ đổ trước kỳ.
+  fill(7, 13, '2026-08-01', 5000, 10, 240000),
+  // Xe 14 ngừng dùng, chỉ có phiếu sau thời điểm báo cáo: không tính là đổ trong kỳ.
+  fill(8, 14, '2026-12-01', 5300, 10, 300000),
 ];
 
 describe('summarizeFuel', () => {
@@ -82,6 +81,7 @@ describe('summarizeFuel', () => {
 
   it('bỏ xe ngừng dùng không đổ trong kỳ, giữ xe ngừng dùng có đổ; Ô tô trước Xe máy', () => {
     expect(row(10)).toBeUndefined();
+    expect(row(14)).toBeUndefined();
     expect(summary.groups[0].rows.map((item) => item.vehicleId)).toEqual([
       9, 13,
     ]);
@@ -102,68 +102,36 @@ describe('summarizeFuel', () => {
     });
   });
 
-  it('đơn giá TB theo lít trong kỳ, đơn giá hiện tại = lần đổ gần nhất, chênh lệch theo tháng', () => {
-    // (27000 × 44.4 + 28000 × 24.99) ÷ 69.39 = 27360.
-    expect(row(9)).toMatchObject({
-      avgUnitPrice: 27360,
-      currentUnitPrice: 28000,
-      currentPriceAt: day('2026-10-23'),
-      priceDiff: 640,
-      // 640 × 44.4 lít ÷ 2 tháng.
-      monthlyExtraCost: 14208,
-    });
-  });
-
-  it('thiếu đơn giá thì lấy số tiền ÷ số lít; chưa có km thì không có tiền chênh lệch', () => {
+  it('chưa có km (một lần đổ, hoặc chỉ đổ trước kỳ) thì để trống, không kết luận', () => {
     expect(row(12)).toMatchObject({
       km: null,
       liters: null,
       litersPer100Km: null,
       samples: 0,
-      avgUnitPrice: 25000,
-      currentUnitPrice: 25000,
-      priceDiff: 0,
-      monthlyExtraCost: null,
-    });
-  });
-
-  it('chỉ đổ trước kỳ: có đơn giá hiện tại nhưng không có trung bình; bỏ phiếu sau thời điểm báo cáo', () => {
-    expect(row(13)).toMatchObject({
-      avgUnitPrice: null,
-      currentUnitPrice: 24000,
-      priceDiff: null,
-      monthlyExtraCost: null,
-    });
-    expect(row(11)).toMatchObject({
-      km: null,
-      avgUnitPrice: null,
-      currentUnitPrice: null,
       consumptionCheck: null,
     });
+    expect(row(13)).toMatchObject({ km: null, samples: 0 });
+    expect(row(11)).toMatchObject({ km: null, consumptionCheck: null });
   });
 
-  it('dòng tổng: cộng km, lít, tiền; L/100km và đơn giá tính lại từ tổng', () => {
+  it('dòng tổng: cộng km, lít; L/100km tính lại từ tổng', () => {
     expect(summary.groups[0].total).toEqual({
       vehicles: 2,
       km: 477,
       liters: 44.4,
       litersPer100Km: 9.31,
-      avgUnitPrice: 27360,
-      monthlyExtraCost: 14208,
     });
     expect(summary.groups[1].total).toEqual({
       vehicles: 2,
       km: null,
       liters: null,
       litersPer100Km: null,
-      avgUnitPrice: 25000,
-      monthlyExtraCost: null,
     });
-    // (27000 × 44.4 + 28000 × 24.99 + 25000 × 2) ÷ 71.39 = 27294.
-    expect(summary.total).toMatchObject({
+    expect(summary.total).toEqual({
       vehicles: 4,
-      avgUnitPrice: 27294,
-      monthlyExtraCost: 14208,
+      km: 477,
+      liters: 44.4,
+      litersPer100Km: 9.31,
     });
   });
 });

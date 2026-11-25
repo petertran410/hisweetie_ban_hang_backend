@@ -38,7 +38,7 @@ export class VehiclesController {
   @Get('fuel-summary')
   @ApiOperation({
     summary:
-      'Fuel summary per vehicle: norm, km, liters, L/100km and unit price change over the recent months',
+      'Fuel summary per vehicle: current norm, km, liters and L/100km over the recent months',
   })
   fuelSummary(
     @Query() query: VehicleFuelSummaryQueryDto,

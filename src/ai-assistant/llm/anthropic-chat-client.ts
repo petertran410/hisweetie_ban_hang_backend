@@ -9,11 +9,18 @@ import {
 
 type MessageParam = Anthropic.Beta.Messages.BetaMessageParam;
 type ContentBlockParam = Anthropic.Beta.Messages.BetaContentBlockParam;
+type TextBlockParam = Anthropic.Beta.Messages.BetaTextBlockParam;
+export type CacheTtl = '5m' | '1h';
 
 export type AnthropicChatClientConfig = {
   apiKey: string;
   /** "low" | "medium" | "high": how hard Claude thinks before answering and between lookups. */
   effort: 'low' | 'medium' | 'high';
+  /**
+   * Lifetime of the cached fixed prefix (tools + system blocks marked `cache`). "1h" costs 2× base
+   * input to write instead of 1.25×, reads stay 0.1×: worth it when questions are > 5 min apart.
+   */
+  cacheTtl?: CacheTtl;
   maxTokens?: number;
   /** For tests: a stand-in for the SDK's `beta.messages.stream`. */
   stream?: (
@@ -33,12 +40,24 @@ const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
  * API request. An assistant turn that came from Claude carries its original content blocks
  * (`anthropicContent`, thinking blocks included) and goes back verbatim; tool results of one turn
  * go back together in a single user message.
+ *
+ * Prompt caching is a byte-exact prefix match, so every message renders the same way each time it
+ * is sent: system messages become system text blocks, user text is always a block array, and a
+ * user text that follows tool results joins their message. `cache` marks a breakpoint (1h only
+ * for system blocks when asked: a 1h entry must come before 5m ones); `context` goes after it.
  */
-export function toAnthropicMessages(messages: readonly ChatMessage[]): {
-  system: string;
+export function toAnthropicMessages(
+  messages: readonly ChatMessage[],
+  options: { cacheTtl?: CacheTtl } = {},
+): {
+  system: TextBlockParam[];
   messages: MessageParam[];
 } {
-  const system: string[] = [];
+  const systemCache: Anthropic.Beta.Messages.BetaCacheControlEphemeral =
+    options.cacheTtl === '1h'
+      ? { type: 'ephemeral', ttl: '1h' }
+      : { type: 'ephemeral' };
+  const system: TextBlockParam[] = [];
   const out: MessageParam[] = [];
   for (const message of messages) {
     if (message.role === 'tool') {
@@ -82,32 +101,46 @@ export function toAnthropicMessages(messages: readonly ChatMessage[]): {
       });
       continue;
     }
-    if (message.role === 'system') system.push(message.content);
-    else if (message.images?.length)
-      // Ảnh trước chữ (Claude đọc ảnh tốt hơn khi ảnh đứng trước câu hỏi)
-      out.push({
-        role: 'user',
-        content: [
-          ...message.images.map(
-            (image): ContentBlockParam => ({
-              type: 'image',
-              source: {
-                type: 'base64',
-                media_type: image.mediaType as
-                  | 'image/jpeg'
-                  | 'image/png'
-                  | 'image/gif'
-                  | 'image/webp',
-                data: image.data,
-              },
-            }),
-          ),
-          { type: 'text', text: message.content },
-        ],
+    if (message.role === 'system') {
+      system.push({
+        type: 'text',
+        text: message.content,
+        ...(message.cache ? { cache_control: systemCache } : {}),
       });
-    else out.push({ role: 'user', content: message.content });
+      continue;
+    }
+    const blocks: ContentBlockParam[] = [
+      // Ảnh trước chữ (Claude đọc ảnh tốt hơn khi ảnh đứng trước câu hỏi)
+      ...(message.images ?? []).map(
+        (image): ContentBlockParam => ({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: image.mediaType as
+              | 'image/jpeg'
+              | 'image/png'
+              | 'image/gif'
+              | 'image/webp',
+            data: image.data,
+          },
+        }),
+      ),
+      {
+        type: 'text',
+        text: message.content,
+        ...(message.cache ? { cache_control: { type: 'ephemeral' } } : {}),
+      },
+      ...(message.context
+        ? [{ type: 'text', text: message.context } as ContentBlockParam]
+        : []),
+    ];
+    const last = out.at(-1);
+    // Text after tool results (e.g. "answer now") joins their message, after the tool_result blocks.
+    if (last?.role === 'user' && Array.isArray(last.content))
+      last.content.push(...blocks);
+    else out.push({ role: 'user', content: blocks });
   }
-  return { system: system.join('\n\n'), messages: out };
+  return { system, messages: out };
 }
 
 function parseArguments(raw: string): Record<string, unknown> {
@@ -149,17 +182,20 @@ export function createAnthropicChatClient(
 
   return {
     async complete(request) {
-      const { system, messages } = toAnthropicMessages(request.messages);
+      const { system, messages } = toAnthropicMessages(request.messages, {
+        cacheTtl: config.cacheTtl,
+      });
       const params: Anthropic.Beta.Messages.MessageCreateParamsStreaming = {
         model: request.model,
         max_tokens: config.maxTokens ?? 16_000,
-        system,
+        ...(system.length ? { system } : {}),
         messages,
         ...(request.tools?.length
           ? { tools: toTools(request.tools), tool_choice: { type: 'auto' } }
           : {}),
         output_config: { effort: config.effort },
-        // The system prompt and tools repeat on every round and every question: read them from cache.
+        // Automatic breakpoint on the last block: the next tool round (same prefix + new blocks)
+        // reads everything so far from cache. With the `cache` breakpoints that makes at most 3 of 4.
         cache_control: { type: 'ephemeral' },
         betas: [FALLBACK_BETA],
         fallbacks: 'default',
@@ -214,16 +250,17 @@ export function createAnthropicChatClient(
           },
         }));
       const usage = message.usage;
+      const cacheRead = usage.cache_read_input_tokens ?? 0;
+      const cacheWrite = usage.cache_creation_input_tokens ?? 0;
       return {
         content: text,
         toolCalls,
         finishReason: message.stop_reason,
         usage: {
-          promptTokens:
-            (usage.input_tokens ?? 0) +
-            (usage.cache_read_input_tokens ?? 0) +
-            (usage.cache_creation_input_tokens ?? 0),
+          promptTokens: (usage.input_tokens ?? 0) + cacheRead + cacheWrite,
           completionTokens: usage.output_tokens ?? 0,
+          cacheReadTokens: cacheRead,
+          cacheWriteTokens: cacheWrite,
         },
         model: message.model,
         providerContent: message.content,

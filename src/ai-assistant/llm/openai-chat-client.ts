@@ -13,9 +13,21 @@ export type ToolCall = {
 /** Ảnh gửi kèm tin user (base64, không có tiền tố data:). */
 export type ChatImage = { mediaType: string; data: string };
 
+/**
+ * `cache` (Claude only): put a prompt-cache breakpoint right after this system block / this
+ * user text, so a later request that starts with the same bytes reads it from cache.
+ * `context` (user only): per-request facts (open page, chat customer) sent right after the
+ * question — after its breakpoint and never stored, so history replays stay byte-identical.
+ */
 export type ChatMessage =
-  | { role: 'system'; content: string }
-  | { role: 'user'; content: string; images?: ChatImage[] }
+  | { role: 'system'; content: string; cache?: boolean }
+  | {
+      role: 'user';
+      content: string;
+      images?: ChatImage[];
+      context?: string;
+      cache?: boolean;
+    }
   /** `anthropicContent`: Claude's original content blocks of this turn, sent back as is to Claude only. */
   | {
       role: 'assistant';
@@ -35,8 +47,12 @@ export type ToolDefinition = {
 };
 
 export type CompletionUsage = {
+  /** Every input token, cached or not. */
   promptTokens: number;
   completionTokens: number;
+  /** Claude: input tokens read from cache (0.1× price) and written to it — both already in promptTokens. */
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
 };
 
 export type CompletionResult = {
@@ -106,6 +122,50 @@ function usageOf(chunk: StreamChunk): CompletionUsage | null {
     : null;
 }
 
+/**
+ * The shared conversation in OpenAI chat shape: Claude-only fields dropped (`anthropicContent`,
+ * `cache`), adjacent system messages joined into one, a user message's `context` appended to
+ * its text, images as `image_url` data URIs.
+ */
+export function toOpenAiMessages(
+  messages: readonly ChatMessage[],
+): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  for (const message of messages) {
+    if (message.role === 'system') {
+      const last = out.at(-1);
+      if (last?.role === 'system')
+        last.content = `${String(last.content)}\n\n${message.content}`;
+      else out.push({ role: 'system', content: message.content });
+    } else if (message.role === 'user') {
+      const text = message.context
+        ? `${message.content}\n\n${message.context}`
+        : message.content;
+      out.push(
+        message.images?.length
+          ? {
+              role: 'user',
+              content: [
+                ...message.images.map((image) => ({
+                  type: 'image_url',
+                  image_url: {
+                    url: `data:${image.mediaType};base64,${image.data}`,
+                  },
+                })),
+                { type: 'text', text },
+              ],
+            }
+          : { role: 'user', content: text },
+      );
+    } else if (message.role === 'assistant') {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { anthropicContent: _omit, ...rest } = message;
+      out.push(rest);
+    } else out.push(message);
+  }
+  return out;
+}
+
 export function createOpenAiChatClient(
   config: OpenAiChatClientConfig,
 ): LlmClient {
@@ -116,27 +176,7 @@ export function createOpenAiChatClient(
     async complete(request) {
       const body = {
         model: request.model,
-        // Claude's own blocks mean nothing to an OpenAI-compatible gateway.
-        messages: request.messages.map((message) =>
-          message.role === 'assistant' && 'anthropicContent' in message
-            ? // eslint-disable-next-line @typescript-eslint/no-unused-vars
-              (({ anthropicContent: _omit, ...rest }) => rest)(message)
-            : message.role === 'user' && message.images?.length
-              ? // Ảnh theo dạng OpenAI: image_url là data URI
-                {
-                  role: 'user',
-                  content: [
-                    ...message.images.map((image) => ({
-                      type: 'image_url',
-                      image_url: {
-                        url: `data:${image.mediaType};base64,${image.data}`,
-                      },
-                    })),
-                    { type: 'text', text: message.content },
-                  ],
-                }
-              : message,
-        ),
+        messages: toOpenAiMessages(request.messages),
         ...(request.tools?.length
           ? { tools: request.tools, tool_choice: 'auto' }
           : {}),

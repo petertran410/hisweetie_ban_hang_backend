@@ -10,6 +10,7 @@ import { ordersSummaryTool } from './orders-summary.tool';
 import { quotesSummaryTool } from './quotes-summary.tool';
 import { revenueSummaryTool } from './revenue-summary.tool';
 import { stockLevelsTool } from './stock-levels.tool';
+import { limiter, TOOL_QUERY_CONCURRENCY } from './tool-helpers';
 
 const NOW = new Date('2026-11-22T03:00:00Z');
 
@@ -253,6 +254,19 @@ const run = (
 
 const text = (value: unknown) => JSON.stringify(value);
 
+/** Hàm giả chậm 5ms, đếm số lượt đang chạy cùng lúc. */
+function concurrencyProbe<T>(value: T) {
+  const state = { active: 0, max: 0 };
+  const fn = jest.fn(async () => {
+    state.active += 1;
+    state.max = Math.max(state.max, state.active);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    state.active -= 1;
+    return value;
+  });
+  return { fn, state };
+}
+
 describe('AI tools', () => {
   it('có đủ 9 công cụ, tên không trùng', () => {
     const names = AI_TOOLS.map((tool) => tool.name);
@@ -482,6 +496,44 @@ describe('AI tools', () => {
       expect.objectContaining({ tab: 'quotes', status: ['sent'] }),
       scope.quoteActor,
     );
+  });
+});
+
+describe('giới hạn truy vấn đồng thời', () => {
+  it('limiter không vượt max, chạy đủ việc theo thứ tự, việc lỗi vẫn trả chỗ', async () => {
+    const gate = limiter(2);
+    const probe = concurrencyProbe('ok');
+    const order: number[] = [];
+    const results = await Promise.allSettled(
+      [0, 1, 2, 3, 4, 5].map((i) =>
+        gate(async () => {
+          order.push(i);
+          if (i === 1) throw new Error('lỗi');
+          return probe.fn();
+        }),
+      ),
+    );
+    expect(probe.state.max).toBe(2);
+    expect(order).toEqual([0, 1, 2, 3, 4, 5]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(5);
+  });
+
+  it('leads_summary đếm 5 trạng thái + 8 nguồn nhưng chỉ 2 lời gọi cùng lúc', async () => {
+    const deps = makeDeps();
+    const probe = concurrencyProbe({ data: [], total: 1 });
+    deps.leads.list = probe.fn as unknown as typeof deps.leads.list;
+    await run(leadsSummaryTool, makeScope(['leads:view']), deps);
+    expect(probe.fn).toHaveBeenCalledTimes(1 + 5 + 8);
+    expect(probe.state.max).toBe(TOOL_QUERY_CONCURRENCY);
+  });
+
+  it('quotes_summary đếm 5 trạng thái nhưng chỉ 2 lời gọi cùng lúc', async () => {
+    const deps = makeDeps();
+    const probe = concurrencyProbe({ data: [], total: 0 });
+    deps.quotes.list = probe.fn as unknown as typeof deps.quotes.list;
+    await run(quotesSummaryTool, makeScope(['quotes:view']), deps);
+    expect(probe.fn).toHaveBeenCalledTimes(1 + 5);
+    expect(probe.state.max).toBe(TOOL_QUERY_CONCURRENCY);
   });
 });
 
