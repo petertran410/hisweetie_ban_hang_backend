@@ -23,6 +23,13 @@ export class VehicleQueryDto {
   includeInactive?: string;
 }
 
+export class VehicleFuelSummaryQueryDto {
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  branchId?: number;
+}
+
 export class CreateVehicleDto {
   @IsInt()
   @Type(() => Number)

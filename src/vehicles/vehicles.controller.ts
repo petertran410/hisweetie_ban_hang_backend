@@ -15,6 +15,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import {
   CreateVehicleDto,
   UpdateVehicleDto,
+  VehicleFuelSummaryQueryDto,
   VehicleQueryDto,
 } from './dto/vehicle.dto';
 import { VehiclesService } from './vehicles.service';
@@ -32,6 +33,18 @@ export class VehiclesController {
   })
   list(@Query() query: VehicleQueryDto, @CurrentUser() user: any) {
     return this.service.list(query, user);
+  }
+
+  @Get('fuel-summary')
+  @ApiOperation({
+    summary:
+      'Fuel summary per vehicle: norm, km, liters, L/100km and unit price change over the recent months',
+  })
+  fuelSummary(
+    @Query() query: VehicleFuelSummaryQueryDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.service.fuelSummary(query, user);
   }
 
   @Post()

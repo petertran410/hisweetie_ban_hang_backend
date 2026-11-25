@@ -20,6 +20,7 @@ import {
 import {
   CreateVehicleDto,
   UpdateVehicleDto,
+  VehicleFuelSummaryQueryDto,
   VehicleQueryDto,
 } from './dto/vehicle.dto';
 import {
@@ -34,6 +35,7 @@ import {
   type FuelRow,
   type VehicleThreshold,
 } from './vehicle-metrics';
+import { summarizeFuel } from './vehicle-fuel-summary';
 
 const NOT_CANCELLED = { not: 'CANCELLED' };
 
@@ -225,6 +227,56 @@ export class VehiclesService {
     });
   }
 
+  /**
+   * Báo cáo tổng hợp xăng dầu theo xe (sheet "Tổng hợp"): định mức, km, lít,
+   * L/100km thực tế FUEL_RECENT_MONTHS tháng gần nhất và chênh lệch đơn giá.
+   */
+  async fuelSummary(query: VehicleFuelSummaryQueryDto, user: any) {
+    const allowed = await this.allowedBranches(user, ['view']);
+    if (!allowed.length) {
+      throw new ForbiddenException('Không có quyền xem báo cáo xăng dầu');
+    }
+    if (query.branchId !== undefined && !allowed.includes(query.branchId)) {
+      throw new ForbiddenException(
+        'Không có quyền xem báo cáo xăng dầu của chi nhánh này',
+      );
+    }
+    const branchIds = query.branchId ? [query.branchId] : allowed;
+    const vehicles = await this.prisma.vehicle.findMany({
+      where: { branchId: { in: branchIds } },
+      select: {
+        id: true,
+        branchId: true,
+        label: true,
+        plate: true,
+        vehicleType: true,
+        fuelType: true,
+        isActive: true,
+        fuelNorm: true,
+        branch: { select: { id: true, name: true } },
+      },
+    });
+    const { rows } = await this.loadFuel(vehicles.map((vehicle) => vehicle.id));
+    const summary = summarizeFuel(
+      vehicles.map((vehicle) => ({
+        ...vehicle,
+        fuelNorm: toNumber(vehicle.fuelNorm),
+      })),
+      rows,
+      VEHICLE_SCOPES.flatMap((scope) => [...scope.branchIds]),
+    );
+    const branchNames = new Map(
+      vehicles.map((vehicle) => [vehicle.branchId, vehicle.branch?.name]),
+    );
+    return {
+      ...summary,
+      groups: summary.groups.map((group) => ({
+        ...group,
+        branchName: branchNames.get(group.branchId) || null,
+      })),
+    };
+  }
+
   async create(dto: CreateVehicleDto, user: any) {
     await this.assertPermission(user, dto.branchId, 'manage');
     this.assertThresholds(dto.costPerKmMin, dto.costPerKmMax);
@@ -408,6 +460,7 @@ export class VehiclesService {
     rows: FuelRow[];
     thresholds: Map<number, VehicleThreshold>;
   }> {
+    if (!ids.length) return { rows: [], thresholds: new Map() };
     const [rows, vehicles] = await Promise.all([
       this.prisma.internalFinanceEntry.findMany({
         where: {
@@ -421,6 +474,7 @@ export class VehiclesService {
           vehicleOdo: true,
           amount: true,
           vehicleLiters: true,
+          vehicleUnitPrice: true,
           occurredAt: true,
         },
       }),
@@ -441,6 +495,7 @@ export class VehiclesService {
         odo: toNumber(row.vehicleOdo),
         amount: Number(row.amount),
         liters: toNumber(row.vehicleLiters),
+        unitPrice: toNumber(row.vehicleUnitPrice),
         occurredAt: row.occurredAt,
       })),
       thresholds: new Map(
