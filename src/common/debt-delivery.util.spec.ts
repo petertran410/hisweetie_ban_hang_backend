@@ -10,20 +10,16 @@ import {
 
 const asTx = (db: unknown) => db as Prisma.TransactionClient;
 
-type MockPayment = { code: string; orderId: number; amount: number };
+type MockPayment = { code: string; amount: number };
 
 /**
  * Mock các truy vấn của customerDebtForOrderPrepaidCheck: HĐ còn hiệu lực của
- * đơn (aggregate), lần thanh toán đang gắn đơn, phiếu thu theo mã, HĐ của các
- * đơn khác. Phiếu thu sinh từ chính danh sách thanh toán (cùng mã, cùng tiền).
+ * đơn (aggregate), các lần thanh toán của CHÍNH đơn, phiếu thu theo mã. Phiếu
+ * thu sinh từ chính danh sách thanh toán (cùng mã, cùng tiền).
  * Hành vi đầy đủ trên sổ cái giả: prepaid-rule.ledger.spec.ts.
  */
 const debtQueries = (
-  opts: {
-    thisOrderInvoices?: number;
-    payments?: MockPayment[];
-    otherInvoices?: Array<{ orderId: number; grandTotal: number }>;
-  } = {},
+  opts: { thisOrderInvoices?: number; payments?: MockPayment[] } = {},
 ) => {
   const payments = opts.payments ?? [];
   return {
@@ -31,76 +27,59 @@ const debtQueries = (
       aggregate: jest.fn().mockResolvedValue({
         _sum: { grandTotal: opts.thisOrderInvoices ?? 0 },
       }),
-      findMany: jest.fn().mockResolvedValue(opts.otherInvoices ?? []),
     },
     orderPayment: {
       findMany: jest
         .fn()
-        .mockResolvedValue(
-          payments.map(({ code, orderId }) => ({ code, orderId })),
-        ),
+        .mockResolvedValue(payments.map(({ code }) => ({ code }))),
     },
     cashFlow: {
       findMany: jest
         .fn()
-        .mockResolvedValue(
-          payments.map(({ code, amount }) => ({ code, amount })),
-        ),
+        .mockResolvedValue(payments.map(({ amount }) => ({ amount }))),
     },
   };
 };
 
 describe('customerDebtForOrderPrepaidCheck', () => {
-  it('bỏ phần của chính đơn + tiền đơn khác đang xử lý, đúng điều kiện truy vấn', async () => {
+  it('chỉ bỏ phần của chính đơn, đúng điều kiện truy vấn', async () => {
     const db = debtQueries({
-      payments: [
-        { code: 'TTDH1-1', orderId: 1, amount: 500000 },
-        { code: 'TTDH2-1', orderId: 2, amount: 1000000 },
-      ],
+      payments: [{ code: 'TTDH1-1', amount: 500000 }],
     });
 
     // Công nợ −1,5M = 500k trả trên đơn này + 1M trả trên đơn B chưa ra HĐ.
+    // Tiền của đơn B là tiền dư của khách, không giữ riêng cho đơn B.
     await expect(
       customerDebtForOrderPrepaidCheck(asTx(db), {
         orderId: 1,
         customerId: 3,
         totalDebt: -1500000,
       }),
-    ).resolves.toBe(0);
+    ).resolves.toBe(-1000000);
 
     expect(db.invoice.aggregate).toHaveBeenCalledWith({
       where: { orderId: 1, customerId: 3, status: { not: 2 } },
       _sum: { grandTotal: true },
     });
     expect(db.orderPayment.findMany).toHaveBeenCalledWith({
-      where: {
-        status: { not: 2 },
-        OR: [
-          { orderId: 1 },
-          { order: { customerId: 3, status: { in: [1, 5, 6] } } },
-        ],
-      },
-      select: { code: true, orderId: true },
+      where: { orderId: 1, status: { not: 2 } },
+      select: { code: true },
     });
     expect(db.cashFlow.findMany).toHaveBeenCalledWith({
       where: {
-        code: { in: ['TTDH1-1', 'TTDH2-1'] },
+        code: { in: ['TTDH1-1'] },
         partnerType: 'C',
         partnerId: 3,
         isReceipt: true,
         status: { not: 2 },
       },
-      select: { code: true, amount: true },
-    });
-    expect(db.invoice.findMany).toHaveBeenCalledWith({
-      where: { orderId: { in: [2] }, customerId: 3, status: { not: 2 } },
-      select: { orderId: true, grandTotal: true },
+      select: { amount: true },
     });
   });
 
   it('giữ tiền trả trước tự do (không gắn đơn nào)', async () => {
     const db = debtQueries({
-      payments: [{ code: 'TTDH1-1', orderId: 1, amount: 500000 }],
+      payments: [{ code: 'TTDH1-1', amount: 500000 }],
     });
     await expect(
       customerDebtForOrderPrepaidCheck(asTx(db), {
@@ -115,7 +94,7 @@ describe('customerDebtForOrderPrepaidCheck', () => {
     // Đơn 1M đã trả đủ, HĐ 1 là 600k → công nợ = 600k − 1M = −400k.
     const db = debtQueries({
       thisOrderInvoices: 600000,
-      payments: [{ code: 'TTDH1-1', orderId: 1, amount: 1000000 }],
+      payments: [{ code: 'TTDH1-1', amount: 1000000 }],
     });
     await expect(
       customerDebtForOrderPrepaidCheck(asTx(db), {
@@ -126,26 +105,21 @@ describe('customerDebtForOrderPrepaidCheck', () => {
     ).resolves.toBe(0);
   });
 
-  it('đơn khác đã ra 1 phần: chỉ phần trả vượt số đã ra HĐ là tiền đơn đó giữ', async () => {
-    // Đơn B trả 1M, mới ra HĐ 600k → công nợ −400k, cả 400k là của đơn B.
-    const db = debtQueries({
-      payments: [{ code: 'TTDH2-1', orderId: 2, amount: 1000000 }],
-      otherInvoices: [{ orderId: 2, grandTotal: 600000 }],
-    });
+  it('đơn khác đã ra 1 phần: phần trả dư của đơn đó là tiền dư của khách', async () => {
+    // KH000579: DH126770 trả 2.158.000, mới ra HĐ 1.458.000 → công nợ −700k.
+    // Đơn mới chưa trả gì → 700k dùng được cho đơn mới.
+    const db = debtQueries();
     await expect(
       customerDebtForOrderPrepaidCheck(asTx(db), {
-        orderId: 1,
+        orderId: 129303,
         customerId: 3,
-        totalDebt: -400000,
+        totalDebt: -700000,
       }),
-    ).resolves.toBe(0);
+    ).resolves.toBe(-700000);
   });
 
-  it('đơn khác còn nợ (HĐ > tiền trả): không được xóa nợ đó để tăng tiền tự do', async () => {
-    const db = debtQueries({
-      payments: [{ code: 'TTDH2-1', orderId: 2, amount: 200000 }],
-      otherInvoices: [{ orderId: 2, grandTotal: 600000 }],
-    });
+  it('đơn khác còn nợ (HĐ > tiền trả): nợ đó vẫn tính, không thành tiền dư', async () => {
+    const db = debtQueries();
     await expect(
       customerDebtForOrderPrepaidCheck(asTx(db), {
         orderId: 1,
@@ -165,7 +139,6 @@ describe('customerDebtForOrderPrepaidCheck', () => {
       }),
     ).resolves.toBe(-200000);
     expect(db.cashFlow.findMany).not.toHaveBeenCalled();
-    expect(db.invoice.findMany).not.toHaveBeenCalled();
   });
 });
 
@@ -225,6 +198,18 @@ describe('assertPrepaidPolicySatisfied', () => {
 
   it('chặn khách không công nợ chưa trả đủ', () => {
     expect(() => assertPrepaidPolicySatisfied(base)).toThrow('Không cho nợ.');
+  });
+
+  it('thông báo nêu đã trả, tiền dư của khách và số còn thiếu', () => {
+    expect(() =>
+      assertPrepaidPolicySatisfied({
+        ...base,
+        paidAmount: 30000,
+        currentCustomerDebt: -20000,
+      }),
+    ).toThrow(
+      'Không cho nợ. Đã trả: 30.000 đ. Tiền dư của khách: 20.000 đ. Cần thanh toán: 100.000 đ. Còn thiếu: 50.000 đ.',
+    );
   });
 
   it('cho qua khi trả đủ (trong sai số 1đ)', () => {
@@ -312,7 +297,7 @@ describe('assertCanConfirmOrder', () => {
         customer: prepaidCustomer(-30000),
       }),
       null,
-      { payments: [{ code: 'TTDH1-2', orderId: 1, amount: 30000 }] },
+      { payments: [{ code: 'TTDH1-2', amount: 30000 }] },
     );
     await expect(assertCanConfirmOrder(db, 1)).rejects.toThrow(
       'chưa được thanh toán đủ nên không thể xác nhận',
@@ -328,7 +313,7 @@ describe('assertCanConfirmOrder', () => {
         customer: prepaidCustomer(-500000),
       }),
       null,
-      { payments: [{ code: 'TTDH1-1', orderId: 1, amount: 500000 }] },
+      { payments: [{ code: 'TTDH1-1', amount: 500000 }] },
     );
     await expect(assertCanConfirmOrder(db, 1)).rejects.toThrow(
       'chưa được thanh toán đủ nên không thể xác nhận',
@@ -343,12 +328,13 @@ describe('assertCanConfirmOrder', () => {
         customer: prepaidCustomer(-1100000),
       }),
       null,
-      { payments: [{ code: 'TTDH1-1', orderId: 1, amount: 500000 }] },
+      { payments: [{ code: 'TTDH1-1', amount: 500000 }] },
     );
     await expect(assertCanConfirmOrder(db, 1)).resolves.toBeUndefined();
   });
 
-  it('không dùng tiền đã trả trên đơn khác chưa ra hóa đơn', async () => {
+  it('dùng được tiền đã trả trên đơn khác chưa ra hóa đơn (kiểm tra ở cấp khách)', async () => {
+    // Công nợ −1,5M = 500k trên đơn này + 1M trên đơn B chưa ra HĐ.
     const db = buildDb(
       order({
         grandTotal: 1000000,
@@ -356,16 +342,16 @@ describe('assertCanConfirmOrder', () => {
         customer: prepaidCustomer(-1500000),
       }),
       null,
-      {
-        payments: [
-          { code: 'TTDH1-1', orderId: 1, amount: 500000 },
-          { code: 'TTDH2-1', orderId: 2, amount: 1000000 },
-        ],
-      },
+      { payments: [{ code: 'TTDH1-1', amount: 500000 }] },
     );
-    await expect(assertCanConfirmOrder(db, 1)).rejects.toThrow(
-      'chưa được thanh toán đủ nên không thể xác nhận',
+    await expect(assertCanConfirmOrder(db, 1)).resolves.toBeUndefined();
+  });
+
+  it('KH000579: chưa trả trên đơn, tiền dư 700k của đơn cũ ra 1 phần đủ đơn 700k', async () => {
+    const db = buildDb(
+      order({ grandTotal: 700000, customer: prepaidCustomer(-700000) }),
     );
+    await expect(assertCanConfirmOrder(db, 129303)).resolves.toBeUndefined();
   });
 
   it('cho qua khách không công nợ khi phiếu thu gần nhất là tiền mặt', async () => {

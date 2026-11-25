@@ -6,9 +6,11 @@ import { ORDER_STATUS } from '../orders/dto/order-status.constants';
 /**
  * Quy tắc của chủ hệ thống (2026-11-20): khách "không công nợ", đơn 1.000.000
  * chỉ được XÁC NHẬN và RA HÓA ĐƠN khi khách đã thanh toán đủ (>= 1.000.000).
- * - "Đã thanh toán" = tiền trả trên chính đơn + tiền trả trước tự do
- *   (không gắn với đơn nào).
- * - Tiền đã trả trên ĐƠN KHÁC chưa ra hóa đơn KHÔNG được tính.
+ * - "Đã thanh toán" = tiền trả trên chính đơn + tiền dư của khách (phần âm
+ *   của công nợ sau khi bỏ HĐ và phiếu thu của chính đơn).
+ * - 2026-11-25: kiểm tra ở cấp khách — tiền đã trả trên ĐƠN KHÁC chưa ra hết
+ *   hóa đơn cũng là tiền dư, dùng được cho đơn này (không giữ riêng cho đơn
+ *   kia). Nợ cũ dương không chặn đơn đã trả đủ trên chính nó.
  * - Ngoại lệ giữ nguyên: đơn ghi Tiền mặt (TM, thu tiền khi giao) được miễn.
  *
  * Công nợ khách không gõ tay: mọi nghiệp vụ ghi vào sổ cái giả bên dưới, rồi
@@ -538,11 +540,11 @@ describe('Quy tắc khách không công nợ — đơn 1.000.000 (sổ cái gi�
   });
 
   describe('tiền nằm trên đơn khác', () => {
-    it('trả 500.000, còn 1.000.000 nằm trên đơn B chưa ra HĐ → chặn', async () => {
+    it('trả 500.000, còn 1.000.000 nằm trên đơn B chưa ra HĐ → tiền B là tiền dư → được', async () => {
       const donB = ledger.order(khach, 1000000);
       await ledger.pay(don, 500000);
       await ledger.pay(donB, 1000000);
-      await expectRule(ledger, don, false);
+      await expectRule(ledger, don, true);
     });
 
     it('đơn B bị hủy nhưng giữ thanh toán → tiền B thành tiền trả trước → được', async () => {
@@ -567,12 +569,12 @@ describe('Quy tắc khách không công nợ — đơn 1.000.000 (sổ cái gi�
       await expectRule(ledger, don, true);
     });
 
-    it('đơn B trả đủ 1.000.000 nhưng mới ra HĐ 600.000 → 400.000 còn lại vẫn là của đơn B → đơn A (400.000) bị chặn', async () => {
+    it('đơn B trả đủ 1.000.000 nhưng mới ra HĐ 600.000 (như KH000579) → 400.000 còn lại là tiền dư → đơn A (400.000) được', async () => {
       const donB = ledger.order(khach, 1000000);
       const donA = ledger.order(khach, 400000);
       await ledger.pay(donB, 1000000);
       await ledger.invoiceFromOrder(donB, 600000);
-      await expectRule(ledger, donA, false);
+      await expectRule(ledger, donA, true);
     });
 
     it('đơn B trả 600.000 = đúng HĐ 1 600.000 (còn hàng chưa trả) + nộp trước 500.000 → đơn A 500.000 được', async () => {
@@ -606,23 +608,32 @@ describe('Quy tắc khách không công nợ — đơn 1.000.000 (sổ cái gi�
       await expectRule(ledger, donA, true);
     });
 
-    it('cả chuỗi: không có cách nào để khách không công nợ phát sinh nợ', async () => {
-      // B 1M trả đủ, HĐ 1 600k. A 400k chưa trả bị chặn → B ra nốt HĐ 2.
+    it('đánh đổi đã chấp nhận: đơn A dùng tiền dư của B rồi B ra nốt HĐ 2 → khách nợ 400.000', async () => {
+      // B 1M trả đủ, HĐ 1 600k → 400k dư. A 400k chưa trả dùng 400k đó.
       const donB = ledger.order(khach, 1000000);
       const donA = ledger.order(khach, 400000);
       await ledger.pay(donB, 1000000);
       await ledger.invoiceFromOrder(donB, 600000);
-      // Giả sử đơn A lọt qua bước xác nhận (vd. xác nhận từ trước khi có quy
-      // tắc): cửa ra hóa đơn vẫn phải chặn.
-      ledger.orderById(donA).status = ORDER_STATUS.CONFIRMED;
-      await expect(createInvoice(ledger, donA)).rejects.toThrow(
-        INVOICE_BLOCKED,
-      );
+      await expectRule(ledger, donA, true);
+      await ledger.invoiceFromOrder(donA, 400000);
+      // B đã trả đủ trên chính đơn nên HĐ 2 vẫn qua kiểm tra (kiểm tra ở cấp
+      // khách, không giữ tiền theo đơn) → cùng 400k bị dùng 2 lần.
       await expect(createInvoice(ledger, donB)).rejects.toThrow(
         INVOICE_PASSED_CHECK,
       );
       await ledger.invoiceFromOrder(donB, 400000);
-      expect(ledger.customerById(khach).totalDebt).toBe(0);
+      expect(ledger.customerById(khach).totalDebt).toBe(400000);
+    });
+
+    it('khi đó đơn C mới chưa trả thì bị chặn (khách đang nợ, không còn tiền dư)', async () => {
+      const donB = ledger.order(khach, 1000000);
+      const donA = ledger.order(khach, 400000);
+      const donC = ledger.order(khach, 100000);
+      await ledger.pay(donB, 1000000);
+      await ledger.invoiceFromOrder(donB, 600000);
+      await ledger.invoiceFromOrder(donA, 400000);
+      await ledger.invoiceFromOrder(donB, 400000);
+      await expectRule(ledger, donC, false);
     });
   });
 

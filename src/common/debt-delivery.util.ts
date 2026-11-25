@@ -5,7 +5,6 @@ import {
   DEBT_TICKET_OPEN_STATUSES,
   DEBT_TICKET_TYPE,
 } from '../debt-tracking/debt-tracking.constants';
-import { ORDER_STATUS } from '../orders/dto/order-status.constants';
 
 export const STOP_DELIVERY_INVOICE_MESSAGE =
   'Khách hàng đang có phiếu ngừng đi hàng chưa kết thúc nên không thể tạo hóa đơn. Vui lòng thanh toán đủ số tiền cần thu hoặc kết thúc phiếu ngừng đi hàng trước.';
@@ -141,27 +140,19 @@ export function assertPrepaidPolicySatisfied(input: PrepaidPolicyInput): void {
   const advanceCredit = Math.max(0, -(input.currentCustomerDebt ?? 0));
   const effectivePaid = input.paidAmount + advanceCredit;
   if (effectivePaid + PREPAID_PAYMENT_EPSILON < input.grandTotal) {
+    const vnd = (value: number) =>
+      `${Math.round(value).toLocaleString('vi-VN')} đ`;
     throw new BadRequestException(
-      `${input.message} Đã thanh toán: ${Math.round(
-        input.paidAmount,
-      ).toLocaleString('vi-VN')} đ (gồm trả trước chưa phân bổ: ${Math.round(
-        advanceCredit,
-      ).toLocaleString('vi-VN')} đ) / Cần thanh toán: ${Math.round(
-        input.grandTotal,
-      ).toLocaleString('vi-VN')} đ.`,
+      `${input.message} Đã trả: ${vnd(input.paidAmount)}. ` +
+        `Tiền dư của khách: ${vnd(advanceCredit)}. ` +
+        `Cần thanh toán: ${vnd(input.grandTotal)}. ` +
+        `Còn thiếu: ${vnd(input.grandTotal - effectivePaid)}.`,
     );
   }
 }
 
 /** Trạng thái "đã hủy" của hóa đơn, phiếu thanh toán đơn và phiếu thu. */
 const CANCELLED_DOCUMENT_STATUS = 2;
-
-/** Đơn còn đang xử lý (còn hàng chưa ra hóa đơn) → có thể đang giữ tiền. */
-const OPEN_ORDER_STATUSES: number[] = [
-  ORDER_STATUS.PENDING,
-  ORDER_STATUS.CONFIRMED,
-  ORDER_STATUS.PARTIALLY_INVOICED,
-];
 
 /**
  * Công nợ dùng cho kiểm tra "khách không công nợ phải trả đủ" của MỘT ĐƠN
@@ -172,16 +163,13 @@ const OPEN_ORDER_STATUSES: number[] = [
  * giảm công nợ ngay cả khi đơn chưa ra hóa đơn. Phép kiểm tra lại cộng riêng
  * tiền đã trả trên đơn (paidAmount), nên dùng thẳng totalDebt sẽ tính 2 lần.
  *
- * Trả về công nợ đã:
- * - bỏ toàn bộ phần của chính đơn này: HĐ còn hiệu lực của đơn và phiếu thu
- *   các lần thanh toán đơn (đã được tính riêng qua paidAmount);
- * - bỏ tiền đang gắn với ĐƠN KHÁC còn đang xử lý (Phiếu tạm / Đã xác nhận /
- *   Đã ra 1 phần HĐ): phần đã trả vượt quá số đã ra HĐ của đơn đó,
- *   max(0, phiếu thu − HĐ). Tiền đó để dành cho hàng chưa giao của đơn kia,
- *   không tính là trả trước cho đơn này. Đơn đã hủy / hoàn thành không giữ
- *   tiền: phần dư (nếu có) là tiền trả trước tự do.
- * Phần âm còn lại mới là tiền trả trước tự do của khách. Phiếu thu được ghép
- * với lần thanh toán đơn theo mã (orderPayment.code = cashFlow.code).
+ * Trả về công nợ đã bỏ toàn bộ phần của chính đơn này: HĐ còn hiệu lực của
+ * đơn và phiếu thu các lần thanh toán đơn (đã được tính riêng qua paidAmount).
+ * Phần âm còn lại là tiền dư của khách và dùng được cho BẤT KỲ đơn nào, kể cả
+ * tiền đang nằm trên đơn cũ còn đang xử lý: kiểm tra ở cấp khách, không giữ
+ * tiền riêng cho từng đơn. Đánh đổi đã chấp nhận: đơn cũ ra hóa đơn tiếp phần
+ * hàng đã giao ở đơn khác thì cùng một khoản tiền dư bị dùng 2 lần.
+ * Phiếu thu được ghép với lần thanh toán đơn theo mã (orderPayment.code = cashFlow.code).
  */
 export async function customerDebtForOrderPrepaidCheck(
   db: Prisma.TransactionClient,
@@ -201,19 +189,8 @@ export async function customerDebtForOrderPrepaidCheck(
     input.totalDebt - Number(thisOrderInvoices._sum.grandTotal || 0);
 
   const payments = await db.orderPayment.findMany({
-    where: {
-      status: { not: CANCELLED_DOCUMENT_STATUS },
-      OR: [
-        { orderId },
-        {
-          order: {
-            customerId,
-            status: { in: OPEN_ORDER_STATUSES },
-          },
-        },
-      ],
-    },
-    select: { code: true, orderId: true },
+    where: { orderId, status: { not: CANCELLED_DOCUMENT_STATUS } },
+    select: { code: true },
   });
   if (payments.length === 0) return debtWithoutThisOrderInvoices;
 
@@ -226,50 +203,12 @@ export async function customerDebtForOrderPrepaidCheck(
       isReceipt: true,
       status: { not: CANCELLED_DOCUMENT_STATUS },
     },
-    select: { code: true, amount: true },
+    select: { amount: true },
   });
-  const orderIdByCode = new Map(payments.map((p) => [p.code, p.orderId]));
-  const receivedByOrder = new Map<number, number>();
-  for (const receipt of receipts) {
-    const id = orderIdByCode.get(receipt.code);
-    if (id == null) continue;
-    receivedByOrder.set(
-      id,
-      (receivedByOrder.get(id) ?? 0) + Number(receipt.amount),
-    );
-  }
-
-  const otherOrderIds = [...receivedByOrder.keys()].filter(
-    (id) => id !== orderId,
+  return (
+    debtWithoutThisOrderInvoices +
+    receipts.reduce((sum, receipt) => sum + Number(receipt.amount), 0)
   );
-  const otherInvoices = otherOrderIds.length
-    ? await db.invoice.findMany({
-        where: {
-          orderId: { in: otherOrderIds },
-          customerId,
-          status: { not: CANCELLED_DOCUMENT_STATUS },
-        },
-        select: { orderId: true, grandTotal: true },
-      })
-    : [];
-  const invoicedByOrder = new Map<number, number>();
-  for (const invoice of otherInvoices) {
-    if (invoice.orderId == null) continue;
-    invoicedByOrder.set(
-      invoice.orderId,
-      (invoicedByOrder.get(invoice.orderId) ?? 0) + Number(invoice.grandTotal),
-    );
-  }
-
-  let adjusted =
-    debtWithoutThisOrderInvoices + (receivedByOrder.get(orderId) ?? 0);
-  for (const id of otherOrderIds) {
-    adjusted += Math.max(
-      0,
-      (receivedByOrder.get(id) ?? 0) - (invoicedByOrder.get(id) ?? 0),
-    );
-  }
-  return adjusted;
 }
 
 /** Dữ liệu đơn mà assertCanConfirmOrder đọc (đúng phần `select` bên dưới). */
