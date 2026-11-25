@@ -1,7 +1,7 @@
 import {
   FUEL_MAX_KM_BETWEEN_FILLS,
   FUEL_NORM_TOLERANCE,
-  FUEL_RECENT_FILLS,
+  FUEL_RECENT_MONTHS,
   VEHICLE_CHECK,
   VEHICLE_ODO_CHECK,
 } from './vehicles.constants';
@@ -42,7 +42,7 @@ export interface FuelMetrics {
 }
 
 export interface ConsumptionStats {
-  /** Tổng lít ÷ tổng km × 100 của các lần đổ gần nhất. */
+  /** Tổng lít ÷ tổng km × 100 của các lần đổ trong FUEL_RECENT_MONTHS tháng gần nhất. */
   litersPer100Km: number | null;
   /** Số lần đổ đã dùng để tính. */
   samples: number;
@@ -71,10 +71,18 @@ interface FillEvent {
   rows: FuelRow[];
 }
 
-/** Một cặp (số lít của lần đổ, km tới lần đổ kế tiếp). */
+/** Một cặp (số lít của lần đổ, km tới lần đổ kế tiếp) và ngày đổ. */
 interface Segment {
   km: number;
   value: number;
+  at: Date;
+}
+
+/** Mốc bắt đầu của "N tháng gần nhất" tính từ `now`. */
+export function monthsAgo(now: Date, months: number) {
+  const from = new Date(now);
+  from.setMonth(from.getMonth() - months);
+  return from;
 }
 
 const sumRate = (segments: Segment[], scale: number) => {
@@ -135,11 +143,15 @@ const emptyMetrics = (norm: number | null): FuelMetrics => ({
  *   (`fuelNorm`), lệch quá ±FUEL_NORM_TOLERANCE (cao hơn hoặc thấp hơn) là bất
  *   thường. Xe chưa đặt định mức thì không kết luận. đ/km của từng phiếu so với
  *   ngưỡng đ/km đặt trên xe.
+ * - "L/100km thực tế" của xe = tổng lít ÷ tổng km của các lần đổ trong
+ *   FUEL_RECENT_MONTHS tháng gần nhất (tính tới `now`).
  */
 export function analyzeFuel(
   rows: FuelRow[],
   thresholds: Map<number, VehicleThreshold>,
+  now: Date = new Date(),
 ): FuelAnalysis {
+  const recentFrom = monthsAgo(now, FUEL_RECENT_MONTHS);
   const metrics = new Map<number, FuelMetrics>();
   const vehicles = new Map<number, ConsumptionStats>();
   const byVehicle = new Map<number, FuelRow[]>();
@@ -212,7 +224,11 @@ export function analyzeFuel(
       const hasLiters = usable && event.liters !== null;
       const hasAmount = usable && event.amount > 0;
       if (hasLiters) {
-        literSegments.push({ km: km, value: event.liters as number });
+        literSegments.push({
+          km: km,
+          value: event.liters as number,
+          at: event.rows[0].occurredAt,
+        });
       }
       const litersPer100Km = hasLiters
         ? ((event.liters as number) / (km as number)) * 100
@@ -248,7 +264,7 @@ export function analyzeFuel(
       for (const row of event.rows) metrics.set(row.id, value);
     });
 
-    const recent = literSegments.slice(-FUEL_RECENT_FILLS);
+    const recent = literSegments.filter((item) => item.at >= recentFrom);
     const recentRate = sumRate(recent, 100);
     if (recentRate !== null) {
       vehicles.set(vehicleId, {

@@ -479,6 +479,18 @@ export class InternalFinanceController {
     return this.service.listVehicleEntries(query, user);
   }
 
+  @Get('vehicle-entries/export')
+  @ApiOperation({
+    summary: 'Xuất Excel phiếu xe (xăng dầu / chăm sóc xe) theo bộ lọc',
+  })
+  async exportVehicleEntries(
+    @Query() query: VehicleEntryQueryDto,
+    @CurrentUser() user: any,
+    @Res() res: Response,
+  ) {
+    await this.service.exportVehicleEntries(query, user, res);
+  }
+
   @Get('fuel-advance')
   @ApiOperation({
     summary: 'Kho HN fuel advance ledger (Lark vouchers in, fuel out)',

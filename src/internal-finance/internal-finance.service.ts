@@ -136,6 +136,13 @@ import {
   warehouseExpenseExportRow,
 } from './warehouse-expense-export';
 import {
+  VEHICLE_ENTRY_EXPORT_SELECT,
+  VEHICLE_ENTRY_NUMBER_FORMATS,
+  createVehicleSummary,
+  vehicleEntryExportColumns,
+  vehicleEntryExportRow,
+} from './vehicle-entry-export';
+import {
   approvalHistory,
   endingStep,
   type ApprovalHistoryItem,
@@ -2194,17 +2201,259 @@ export class InternalFinanceService {
   }
 
   async listVehicleEntries(query: VehicleEntryQueryDto, user: any) {
-    const allowed = await this.vehicles.allowedBranches(user, ['view']);
+    const page = query.page || 1;
+    const limit = Math.min(query.limit || 50, 100);
+    const { where, isFuel } = await this.vehicleEntryWhere(query, user);
+    const [rows, total] = await Promise.all([
+      this.prisma.internalFinanceEntry.findMany({
+        where,
+        orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+        include: this.vehicleEntryInclude(),
+      }),
+      this.prisma.internalFinanceEntry.count({ where }),
+    ]);
+    if (!isFuel) return { data: rows, total, page, limit };
+
+    const metrics = await this.vehicles.fuelMetrics(
+      rows.map((row: any) => row.vehicleId).filter(Boolean),
+    );
+    return {
+      data: rows.map((row: any) => ({
+        ...row,
+        metrics: metrics.get(row.id) || null,
+        // Phiếu xăng Kho HN từ mốc: trừ vào tiền ứng xăng, không vào Approval tuần.
+        fuelAdvance: isFuelAdvanceEntry(row),
+      })),
+      total,
+      page,
+      limit,
+    };
+  }
+
+  /**
+   * Xuất Excel toàn bộ phiếu xe khớp bộ lọc (mọi trang, cùng thứ tự với bảng).
+   * Sheet 2: tổng theo xe. Cần quyền `vehicles:export` ở chi nhánh; không lọc
+   * chi nhánh thì file chỉ gồm các chi nhánh được xuất.
+   */
+  async exportVehicleEntries(
+    query: VehicleEntryQueryDto,
+    user: any,
+    res: Response,
+  ): Promise<void> {
+    // Kiểm quyền trước khi đặt header để lỗi vẫn trả JSON như thường.
+    const { where, isFuel } = await this.vehicleEntryWhere(
+      query,
+      user,
+      'export',
+    );
+    const orderBy: Prisma.InternalFinanceEntryOrderByWithRelationInput[] = [
+      { occurredAt: 'desc' },
+      { id: 'desc' },
+    ];
+    const attachmentGroups =
+      await this.prisma.internalFinanceAttachment.groupBy({
+        by: ['entryId'],
+        where: { entry: where, ...ACTIVE_ROW },
+        _count: { _all: true },
+      });
+    const attachmentColumns = attachmentGroups.reduce(
+      (max, group) => Math.max(max, group._count._all),
+      0,
+    );
+    // Chỉ số xăng tính trên toàn bộ phiếu của các xe (kỳ trước/sau có thể nằm
+    // ngoài bộ lọc ngày), giống bảng.
+    const metrics = isFuel
+      ? await this.vehicles.fuelMetrics(
+          (
+            await this.prisma.internalFinanceEntry.groupBy({
+              by: ['vehicleId'],
+              where,
+            })
+          )
+            .map((group) => group.vehicleId)
+            .filter((id): id is number => Boolean(id)),
+        )
+      : new Map();
+
+    const stamp = new Date(Date.now() + 7 * 3600 * 1000)
+      .toISOString()
+      .slice(0, 16)
+      .replace(/[-:]/g, '')
+      .replace('T', '-');
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=XeCo_${isFuel ? 'XangDau' : 'ChamSocXe'}_${stamp}.xlsx`,
+    );
+
+    const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({
+      stream: res,
+      useStyles: true,
+    });
+    const headerStyle = (row: ExcelJS.Row) => {
+      row.font = { bold: true };
+      row.alignment = { vertical: 'middle', wrapText: true };
+      row.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFD9E1F2' },
+      };
+    };
+
+    const columns = vehicleEntryExportColumns(isFuel, attachmentColumns);
+    const sheet = workbook.addWorksheet(isFuel ? 'Xăng dầu' : 'Chăm sóc xe', {
+      views: [{ state: 'frozen', ySplit: 1 }],
+    });
+    sheet.columns = columns;
+    sheet.autoFilter = {
+      from: { row: 1, column: 1 },
+      to: { row: 1, column: columns.length },
+    };
+    headerStyle(sheet.getRow(1));
+    sheet.getRow(1).commit();
+    for (const column of columns) {
+      const format = VEHICLE_ENTRY_NUMBER_FORMATS[column.key];
+      if (format) sheet.getColumn(column.key).numFmt = format;
+    }
+    sheet.getColumn('date').numFmt = 'dd/mm/yyyy hh:mm';
+    if (!isFuel) sheet.getColumn('dueAt').numFmt = 'dd/mm/yyyy';
+
+    const summary = createVehicleSummary();
+    const BATCH_SIZE = 500;
+    let stt = 0;
+    let totalAmount = 0;
+    let totalLiters = 0;
+    for (let skip = 0; ; skip += BATCH_SIZE) {
+      const batch = await this.prisma.internalFinanceEntry.findMany({
+        where,
+        orderBy,
+        skip,
+        take: BATCH_SIZE,
+        select: VEHICLE_ENTRY_EXPORT_SELECT,
+      });
+      for (const entry of batch) {
+        stt += 1;
+        totalAmount += Number(entry.amount);
+        totalLiters += Number(entry.vehicleLiters || 0);
+        const entryMetrics = metrics.get(entry.id) || null;
+        summary.add(entry, entryMetrics);
+        const excelRow = sheet.addRow(
+          vehicleEntryExportRow(entry, stt, entryMetrics),
+        );
+        for (let index = 1; index <= entry.attachments.length; index++)
+          excelRow.getCell(`file${index}`).font = {
+            color: { argb: 'FF0563C1' },
+            underline: true,
+          };
+        excelRow.commit();
+      }
+      if (batch.length < BATCH_SIZE) break;
+    }
+    const totalRow = sheet.addRow({
+      code: `Tổng cộng (${stt} phiếu)`,
+      amount: totalAmount,
+      ...(isFuel ? { liters: totalLiters } : {}),
+    });
+    totalRow.font = { bold: true };
+    totalRow.commit();
+    sheet.commit();
+
+    const summarySheet = workbook.addWorksheet('Theo xe', {
+      views: [{ state: 'frozen', ySplit: 1 }],
+    });
+    summarySheet.columns = isFuel
+      ? [
+          { header: 'Xe', key: 'vehicle', width: 26 },
+          { header: 'Chi nhánh', key: 'branch', width: 14 },
+          { header: 'Số phiếu', key: 'count', width: 10 },
+          { header: 'Tổng lít', key: 'liters', width: 12 },
+          { header: 'Tổng tiền', key: 'amount', width: 15 },
+          { header: 'Km đã tính', key: 'km', width: 12 },
+          { header: 'l/100km thực tế', key: 'litersPer100Km', width: 15 },
+          { header: 'Định mức l/100km', key: 'norm', width: 16 },
+          { header: 'Phiếu bất thường', key: 'abnormal', width: 16 },
+        ]
+      : [
+          { header: 'Xe', key: 'vehicle', width: 26 },
+          { header: 'Chi nhánh', key: 'branch', width: 14 },
+          { header: 'Số phiếu', key: 'count', width: 10 },
+          { header: 'Tổng chi phí', key: 'amount', width: 15 },
+        ];
+    headerStyle(summarySheet.getRow(1));
+    summarySheet.getRow(1).commit();
+    summarySheet.getColumn('amount').numFmt = '#,##0';
+    if (isFuel) {
+      summarySheet.getColumn('liters').numFmt = '#,##0.00';
+      summarySheet.getColumn('km').numFmt = '#,##0';
+      summarySheet.getColumn('litersPer100Km').numFmt = '0.00';
+      summarySheet.getColumn('norm').numFmt = '0.00';
+    }
+    for (const item of summary.rows())
+      summarySheet
+        .addRow({
+          vehicle: item.vehicle,
+          branch: item.branch,
+          count: item.count,
+          amount: item.amount,
+          ...(isFuel
+            ? {
+                liters: item.liters,
+                km: item.km || '',
+                // Tổng lít ÷ tổng km của các kỳ đã tính được (không phải trung
+                // bình các con số l/100km).
+                litersPer100Km: item.km
+                  ? Math.round((item.kmLiters / item.km) * 10000) / 100
+                  : '',
+                norm: item.norm ?? 'Chưa đặt',
+                abnormal: item.abnormal,
+              }
+            : {}),
+        })
+        .commit();
+    const summaryTotal = summarySheet.addRow({
+      vehicle: 'Tổng cộng',
+      count: stt,
+      amount: totalAmount,
+      ...(isFuel ? { liters: totalLiters } : {}),
+    });
+    summaryTotal.font = { bold: true };
+    summaryTotal.commit();
+    summarySheet.commit();
+
+    await workbook.commit();
+  }
+
+  /**
+   * Điều kiện lọc phiếu xe dùng chung cho danh sách (`vehicles:view`) và xuất
+   * file (cần cả `vehicles:view` lẫn `vehicles:export` ở cùng chi nhánh, như
+   * Phiếu chi kho): chi nhánh có quyền, bộ lọc sidebar, ô tìm kiếm và lọc kiểm tra.
+   */
+  private async vehicleEntryWhere(
+    query: VehicleEntryQueryDto,
+    user: any,
+    action: 'view' | 'export' = 'view',
+  ) {
+    const verb = action === 'export' ? 'xuất file' : 'xem';
+    const viewable = await this.vehicles.allowedBranches(user, ['view']);
+    const allowed =
+      action === 'export'
+        ? (await this.vehicles.allowedBranches(user, ['export'])).filter(
+            (branchId) => viewable.includes(branchId),
+          )
+        : viewable;
     if (!allowed.length) {
-      throw new ForbiddenException('Không có quyền xem phiếu xe');
+      throw new ForbiddenException(`Không có quyền ${verb} phiếu xe`);
     }
     if (query.branchId !== undefined && !allowed.includes(query.branchId)) {
       throw new ForbiddenException(
-        'Không có quyền xem phiếu xe của chi nhánh này',
+        `Không có quyền ${verb} phiếu xe của chi nhánh này`,
       );
     }
-    const page = query.page || 1;
-    const limit = Math.min(query.limit || 50, 100);
     const branchIds = query.branchId ? [query.branchId] : allowed;
     const isFuel = query.category === INTERNAL_FINANCE_CATEGORY.FUEL;
     const conditions: any[] = [
@@ -2272,32 +2521,9 @@ export class InternalFinanceService {
       conditions.push({ id: { in: matched } });
     }
 
-    const where = { AND: conditions };
-    const [rows, total] = await Promise.all([
-      this.prisma.internalFinanceEntry.findMany({
-        where,
-        orderBy: [{ occurredAt: 'desc' }, { id: 'desc' }],
-        skip: (page - 1) * limit,
-        take: limit,
-        include: this.vehicleEntryInclude(),
-      }),
-      this.prisma.internalFinanceEntry.count({ where }),
-    ]);
-    if (!isFuel) return { data: rows, total, page, limit };
-
-    const metrics = await this.vehicles.fuelMetrics(
-      rows.map((row: any) => row.vehicleId).filter(Boolean),
-    );
     return {
-      data: rows.map((row: any) => ({
-        ...row,
-        metrics: metrics.get(row.id) || null,
-        // Phiếu xăng Kho HN từ mốc: trừ vào tiền ứng xăng, không vào Approval tuần.
-        fuelAdvance: isFuelAdvanceEntry(row),
-      })),
-      total,
-      page,
-      limit,
+      where: { AND: conditions } as Prisma.InternalFinanceEntryWhereInput,
+      isFuel,
     };
   }
 
