@@ -30,5 +30,6 @@ import { LeadReportsService } from './lead-reports/lead-reports.service';
     LeadReportsController,
   ],
   providers: [LeadsService, LeadsCron, LeadFormsService, LeadReportsService],
+  exports: [LeadsService],
 })
 export class LeadsModule {}

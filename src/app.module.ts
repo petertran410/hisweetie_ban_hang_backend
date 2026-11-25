@@ -85,6 +85,7 @@ import { UserBankAccountsModule } from './user-bank-accounts/user-bank-accounts.
 import { SmaxModule } from './smax/smax.module';
 import { LeadsModule } from './leads/leads.module';
 import { QuotesModule } from './quotes/quotes.module';
+import { AiAssistantModule } from './ai-assistant/ai-assistant.module';
 import { PublicPriceModule } from './public-price/public-price.module';
 import { SepayModule } from './sepay/sepay.module';
 import { PromotionsModule } from './promotions/promotions.module';
@@ -195,6 +196,7 @@ import { ManufacturersModule } from './manufacturers/manufacturers.module';
     SmaxModule,
     LeadsModule,
     QuotesModule,
+    AiAssistantModule,
     PublicPriceModule,
     ReturnOrdersModule,
     ConsignmentReturnsModule,
