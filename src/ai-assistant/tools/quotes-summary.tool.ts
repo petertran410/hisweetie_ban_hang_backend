@@ -8,10 +8,12 @@ import {
 import { str, type AiTool } from './common';
 import {
   day,
+  limiter,
   limitOf,
   limitParameter,
   listMeta,
   pickList,
+  TOOL_QUERY_CONCURRENCY,
   vnEndIso,
   vnStartIso,
 } from './tool-helpers';
@@ -81,6 +83,8 @@ export const quotesSummaryTool: AiTool = {
       return { error: 'invalid_range: from phải trước to' };
     const tab = args.tab === 'library' ? 'library' : 'quotes';
     const actor = scope.quoteActor;
+    // Danh sách + đếm từng trạng thái: chạy nhiều nhất 2 lời gọi cùng lúc (pool DB dùng chung với POS).
+    const query = limiter(TOOL_QUERY_CONCURRENCY);
     const statuses = pickList(args, 'statuses', QUOTE_STATUSES);
     const base: QuoteListQueryDto = {
       tab,
@@ -93,9 +97,13 @@ export const quotesSummaryTool: AiTool = {
     const countTargets: QuoteStatus[] =
       tab === 'quotes' ? (statuses ?? [...QUOTE_STATUSES]) : [];
     const [list, ...counts] = await Promise.all([
-      deps.quotes.list({ ...base, page: 1, pageSize: limitOf(args) }, actor),
+      query(() =>
+        deps.quotes.list({ ...base, page: 1, pageSize: limitOf(args) }, actor),
+      ),
       ...countTargets.map((status) =>
-        deps.quotes.list({ ...base, status: [status], pageSize: 1 }, actor),
+        query(() =>
+          deps.quotes.list({ ...base, status: [status], pageSize: 1 }, actor),
+        ),
       ),
     ]);
 

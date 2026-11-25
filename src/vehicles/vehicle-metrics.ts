@@ -12,8 +12,6 @@ export interface FuelRow {
   odo: number | null;
   amount: number;
   liters: number | null;
-  /** Đơn giá trên phiếu (đ/lít); thiếu thì lấy số tiền ÷ số lít. */
-  unitPrice?: number | null;
   occurredAt: Date;
 }
 

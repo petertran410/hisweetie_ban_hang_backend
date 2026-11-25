@@ -10,10 +10,12 @@ import {
 import { str, type AiTool } from './common';
 import {
   day,
+  limiter,
   limitOf,
   limitParameter,
   listMeta,
   pickList,
+  TOOL_QUERY_CONCURRENCY,
   vnEndIso,
   vnStartIso,
 } from './tool-helpers';
@@ -74,6 +76,8 @@ export const leadsSummaryTool: AiTool = {
     if (from && to && from > to)
       return { error: 'invalid_range: from phải trước to' };
     const actor = scope.leadActor;
+    // Đếm theo từng trạng thái / nguồn là hàng chục truy vấn: chạy nhiều nhất 2 lời gọi cùng lúc.
+    const query = limiter(TOOL_QUERY_CONCURRENCY);
     const base: LeadListQueryDto = {
       q: str(args, 'search'),
       statuses: pickList(args, 'statuses', LEAD_STATUSES)?.join(','),
@@ -82,7 +86,11 @@ export const leadsSummaryTool: AiTool = {
       to: to ? vnEndIso(to) : undefined,
     };
     const countWith = async (extra: Partial<LeadListQueryDto>) =>
-      (await deps.leads.list({ ...base, ...extra, limit: 1 }, actor)).total;
+      (
+        await query(() =>
+          deps.leads.list({ ...base, ...extra, limit: 1 }, actor),
+        )
+      ).total;
     // Đếm theo từng giá trị, giữ bộ lọc model đã chọn (giao nhau).
     const countEach = async (
       key: 'statuses' | 'sources' | 'channels',
@@ -107,7 +115,9 @@ export const leadsSummaryTool: AiTool = {
     };
 
     const [list, byStatus, bySource] = await Promise.all([
-      deps.leads.list({ ...base, limit: limitOf(args), page: 1 }, actor),
+      query(() =>
+        deps.leads.list({ ...base, limit: limitOf(args), page: 1 }, actor),
+      ),
       countEach('statuses', LEAD_STATUSES, LEAD_STATUS_LABEL),
       countEach('sources', LEAD_SOURCES, LEAD_SOURCE_LABEL),
     ]);

@@ -228,8 +228,8 @@ export class VehiclesService {
   }
 
   /**
-   * Báo cáo tổng hợp xăng dầu theo xe (sheet "Tổng hợp"): định mức, km, lít,
-   * L/100km thực tế FUEL_RECENT_MONTHS tháng gần nhất và chênh lệch đơn giá.
+   * Tab "Tổng hợp" xăng dầu theo xe: định mức đang cài, km, lít và L/100km
+   * thực tế FUEL_RECENT_MONTHS tháng gần nhất.
    */
   async fuelSummary(query: VehicleFuelSummaryQueryDto, user: any) {
     const allowed = await this.allowedBranches(user, ['view']);
@@ -474,7 +474,6 @@ export class VehiclesService {
           vehicleOdo: true,
           amount: true,
           vehicleLiters: true,
-          vehicleUnitPrice: true,
           occurredAt: true,
         },
       }),
@@ -495,7 +494,6 @@ export class VehiclesService {
         odo: toNumber(row.vehicleOdo),
         amount: Number(row.amount),
         liters: toNumber(row.vehicleLiters),
-        unitPrice: toNumber(row.vehicleUnitPrice),
         occurredAt: row.occurredAt,
       })),
       thresholds: new Map(
