@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { Prisma } from '@prisma/client';
+import { Prisma, type SmaxMessage } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { SmaxRecentThread } from './smax-api.service';
 import type { ChatMessage } from './smax-chat.service';
@@ -13,6 +13,23 @@ const COVER_LAG_MS = 10 * 60_000;
 
 /** Bật lưu tin Smax (cả lưu khi POS tải tin lẫn đồng bộ nền). Tạo bảng trước khi bật. */
 export const archiveEnabled = () => process.env.SMAX_ARCHIVE_ENABLED === 'true';
+
+const toChatMessage = (m: SmaxMessage): ChatMessage => ({
+  id: m.msgPid,
+  text: m.text,
+  type: m.type,
+  fromMe: m.fromMe,
+  senderPid: m.senderPid,
+  senderName: m.senderName,
+  attachments: (m.attachments as ChatMessage['attachments'] | null) ?? [],
+  albumId: null,
+  stickerId: m.sticker && !/^https?:/.test(m.sticker) ? m.sticker : null,
+  stickerImage: m.sticker && /^https?:/.test(m.sticker) ? m.sticker : null,
+  quote: (m.quote as ChatMessage['quote']) ?? null,
+  reactions: [],
+  recalled: m.recalled,
+  createdAt: m.createdAt.toISOString(),
+});
 
 type ThreadInfo = {
   platform?: string;
@@ -225,23 +242,26 @@ export class SmaxArchiveService {
         orderBy: { createdAt: 'asc' },
       }),
     ]);
-    const messages: ChatMessage[] = rows.map((m) => ({
-      id: m.msgPid,
-      text: m.text,
-      type: m.type,
-      fromMe: m.fromMe,
-      senderPid: m.senderPid,
-      senderName: m.senderName,
-      attachments: (m.attachments as ChatMessage['attachments'] | null) ?? [],
-      albumId: null,
-      stickerId: m.sticker && !/^https?:/.test(m.sticker) ? m.sticker : null,
-      stickerImage: m.sticker && /^https?:/.test(m.sticker) ? m.sticker : null,
-      quote: (m.quote as ChatMessage['quote']) ?? null,
-      reactions: [],
-      recalled: m.recalled,
-      createdAt: m.createdAt.toISOString(),
-    }));
-    return { name: thread?.name ?? null, messages };
+    return { name: thread?.name ?? null, messages: rows.map(toChatMessage) };
+  }
+
+  /** `take` tin cuối (bỏ tin hệ thống) của một hội thoại, cũ → mới. */
+  async lastMessages(pagePid: string, tid: string, take: number) {
+    const [thread, rows] = await Promise.all([
+      this.prisma.smaxThread.findUnique({
+        where: { pagePid_tid: { pagePid, tid } },
+        select: { name: true },
+      }),
+      this.prisma.smaxMessage.findMany({
+        where: { pagePid, tid, type: { not: 'system' } },
+        orderBy: { createdAt: 'desc' },
+        take,
+      }),
+    ]);
+    return {
+      name: thread?.name ?? null,
+      messages: rows.reverse().map(toChatMessage),
+    };
   }
 
   /** 3:00 sáng xoá tin / hội thoại cũ hơn 30 ngày. */
