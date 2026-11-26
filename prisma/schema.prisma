@@ -6486,3 +6486,63 @@ model AiThreadLabel {
   @@index([tid])
   @@map("ai_thread_labels")
 }
+
+/// Tiến độ đồng bộ nền tin nhắn Smax của từng kênh (prisma/scripts/create-smax-message-archive.sql).
+model SmaxSyncChannel {
+  pagePid      String   @id @map("page_pid")
+  platform     String
+  name         String
+  /// Đã quét hội thoại có tin tới mốc này
+  syncedUntil  DateTime @map("synced_until")
+  /// DB đủ tin của kênh từ mốc này (lấy bù / lúc bật)
+  backfillFrom DateTime @map("backfill_from")
+  lastError    String?  @map("last_error")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  @@map("smax_sync_channels")
+}
+
+/// Hội thoại Smax đã lưu tin (giữ 30 ngày).
+model SmaxThread {
+  id             Int       @id @default(autoincrement())
+  pagePid        String    @map("page_pid")
+  tid            String
+  platform       String    @default("")
+  name           String    @default("")
+  isGroup        Boolean   @default(false) @map("is_group")
+  lastMessage    String    @default("") @map("last_message")
+  lastMessageAt  DateTime? @map("last_message_at")
+  lastCustomerAt DateTime? @map("last_customer_at")
+  /// Đồng bộ nền đã lưu đủ tin (không lỗ hổng) tới tin cuối lúc này
+  syncedThrough  DateTime? @map("synced_through")
+  updatedAt      DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([pagePid, tid])
+  @@index([pagePid, lastMessageAt])
+  @@map("smax_threads")
+}
+
+/// Tin nhắn Smax (giữ 30 ngày; ảnh / video / tệp chỉ lưu link trong `attachments`).
+model SmaxMessage {
+  id          BigInt   @id @default(autoincrement())
+  pagePid     String   @map("page_pid")
+  tid         String
+  msgPid      String   @map("msg_pid")
+  senderPid   String?  @map("sender_pid")
+  senderName  String?  @map("sender_name")
+  fromMe      Boolean  @default(false) @map("from_me")
+  type        String   @default("message")
+  text        String   @default("")
+  attachments Json?
+  quote       Json?
+  /// Mã sticker Zalo hoặc link ảnh sticker
+  sticker     String?
+  recalled    Boolean  @default(false)
+  createdAt   DateTime @map("created_at")
+
+  @@unique([pagePid, msgPid])
+  @@index([pagePid, tid, createdAt])
+  @@index([pagePid, createdAt])
+  @@index([createdAt])
+  @@map("smax_messages")
+}

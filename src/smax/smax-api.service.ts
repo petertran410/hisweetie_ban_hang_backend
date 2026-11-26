@@ -624,10 +624,21 @@ export class SmaxApiService {
   }
 
   /** Hội thoại mới nhất của các kênh, mọi nền tảng (mới → cũ). Response nặng (~20KB/thread) → nơi gọi nên cache. */
-  async listRecentThreads(pagePids: string[], limit = 30, keyword?: string): Promise<SmaxRecentThread[]> {
+  async listRecentThreads(
+    pagePids: string[],
+    limit = 30,
+    keyword?: string,
+    // Chỉ hội thoại có tin cuối trong khoảng (dateRange của Smax) — đồng bộ nền lưu tin
+    range?: { from: Date; to: Date },
+  ): Promise<SmaxRecentThread[]> {
     const threads = await this.listThreadsRaw(
       // keyword: Smax tìm trên mọi hội thoại (tên khách/nhóm, cả thành viên & nội dung) — ~2-3s
-      { page_pids: pagePids, limit, ...(keyword ? { keyword } : {}) },
+      {
+        page_pids: pagePids,
+        limit,
+        ...(keyword ? { keyword } : {}),
+        ...(range ? { dateRange: [range.from.toISOString(), range.to.toISOString()] } : {}),
+      },
       30000,
     );
     return threads

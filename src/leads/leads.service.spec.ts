@@ -563,6 +563,21 @@ describe('LeadsService', () => {
     expect(smaxApi.requestFriend).toHaveBeenCalledTimes(2);
   });
 
+  it('handover: hội thoại Zalo của lead ở kênh khác → không dùng ID đó (ID khác nhau theo tài khoản Zalo), tra lại theo SĐT trên kênh Sale', async () => {
+    const conv = { pagePid: 'zlwCS', tid: 'zlw1434556663632705766', isGroup: false, name: null };
+    const { service, smaxApi } = makeService({ lead: { conversations: [conv] } });
+    await service.handover(7, HANDOVER, CSKH);
+    expect(smaxApi.findFriendByPhone).toHaveBeenCalledWith('zlwSALE', '84913597795');
+    expect(smaxApi.requestFriend).toHaveBeenCalledWith('zlwSALE', '4546', 'Em là Sale B - LerMao');
+    expect(smaxApi.sendZaloweb).toHaveBeenCalledWith('zlwSALE', { uid: '4546' }, expect.anything());
+
+    // Hội thoại đúng kênh Sale → dùng luôn ID của hội thoại, không tra SĐT
+    const same = makeService({ lead: { conversations: [{ ...conv, pagePid: 'zlwSALE', tid: 'zlw777' }] } });
+    await same.service.handover(7, HANDOVER, CSKH);
+    expect(same.smaxApi.findFriendByPhone).not.toHaveBeenCalled();
+    expect(same.smaxApi.requestFriend).toHaveBeenCalledWith('zlwSALE', '777', 'Em là Sale B - LerMao');
+  });
+
   it('handover: khách chặn tin từ người lạ → tin chào "bỏ qua", vẫn hoàn tất chuyển giao', async () => {
     const { service, prisma, audit, smaxApi, getHandover } = makeService();
     smaxApi.sendZaloweb.mockRejectedValueOnce(
