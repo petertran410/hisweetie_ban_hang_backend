@@ -65,7 +65,7 @@ describe('AiComposeService', () => {
     can: (p) => perms.includes(p),
   });
 
-  const make = (reply: string | Error) => {
+  const make = (reply: string | Error, archive?: unknown) => {
     const complete = jest.fn(async () => {
       if (reply instanceof Error) throw reply;
       return {
@@ -105,6 +105,9 @@ describe('AiComposeService', () => {
         }),
       },
       invoice: { findFirst: jest.fn().mockResolvedValue(null) },
+      smaxChannelUser: {
+        findUnique: jest.fn().mockResolvedValue({ pagePid: 'zlwA', userId: 9 }),
+      },
     };
     const BG_SI = {
       id: 7,
@@ -169,6 +172,7 @@ describe('AiComposeService', () => {
       priceBooks as any,
       smax as any,
       chat as any,
+      archive as any,
     );
     return { service, complete, audit, smax, prisma, priceBooks, BG_SI };
   };
@@ -396,6 +400,62 @@ describe('AiComposeService', () => {
     });
   });
 
+  it('tóm tắt / xác nhận đơn: DB đủ số tin thì không gọi Smax, thiếu tin thì gọi Smax', async () => {
+    const msg = (i: number) => ({
+      id: `d${i}`,
+      text: `tin ${i}`,
+      type: 'text',
+      fromMe: false,
+      senderPid: 'u1',
+      senderName: 'Chị Huệ',
+      attachments: [],
+      albumId: null,
+      stickerId: null,
+      stickerImage: null,
+      quote: null,
+      reactions: [],
+      recalled: false,
+      createdAt: `2026-11-26T02:${String(i).padStart(2, '0')}:00Z`,
+    });
+    let stored = 20;
+    const archive = {
+      covered: jest.fn().mockResolvedValue(true),
+      lastMessages: jest.fn((_page: string, _tid: string, take: number) =>
+        Promise.resolve({
+          name: null,
+          messages: Array.from({ length: Math.min(stored, take) }, (_, i) =>
+            msg(i),
+          ),
+        }),
+      ),
+    };
+    const { service, smax } = make(
+      '{"overview":"ok","unanswered":[],"needs":[],"todo":[]}',
+      archive,
+    );
+    await service.run(actor([]), {
+      mode: 'summary',
+      pagePid: 'zlwA',
+      tid: 'zlw1',
+      unreadCount: 5,
+    });
+    expect(archive.lastMessages).toHaveBeenCalledWith('zlwA', 'zlw1', 20);
+    expect(smax.getThreadMessages).not.toHaveBeenCalled();
+    // Xác nhận đơn cần 40 tin, DB mới có 20 → đọc Smax như cũ
+    await service.run(actor([]), {
+      mode: 'order',
+      pagePid: 'zlwA',
+      tid: 'zlw1',
+    });
+    expect(smax.getThreadMessages).toHaveBeenCalledTimes(1);
+    // Gợi ý trả lời vẫn đọc Smax (câu trả lời mẫu không phải nháp → lỗi, bỏ qua)
+    stored = 100;
+    await service
+      .run(actor([]), { mode: 'reply', pagePid: 'zlwA', tid: 'zlw1' })
+      .catch(() => null);
+    expect(smax.getThreadMessages).toHaveBeenCalledTimes(2);
+  });
+
   it('phân loại: lưu nhãn theo số hội thoại, "other" không chờ xử lý, bỏ nhãn lạ; giữ nhãn gắn tay', async () => {
     const { service, prisma } = make(
       '{"items":[{"n":1,"label":"order","pending":true,"reason":"Khách đặt mứt xoài"},{"n":2,"label":"other","pending":true},{"n":3,"label":"lạ"}]}',
@@ -424,6 +484,57 @@ describe('AiComposeService', () => {
       ['zlw1', 'order', true],
       ['zlw2', 'other', false],
     ]);
+  });
+
+  it('phân loại: kênh DB đã đồng bộ → đọc tin từ DB, hội thoại DB chưa có mới gọi Smax', async () => {
+    const archive = {
+      covered: jest.fn().mockResolvedValue(true),
+      lastMessages: jest.fn((_page: string, tid: string) =>
+        Promise.resolve({
+          name: 'Quán A',
+          messages:
+            tid === 'zlw1'
+              ? [
+                  {
+                    id: 'm9',
+                    text: 'Cho chị 2 thùng mứt xoài',
+                    type: 'text',
+                    fromMe: false,
+                    senderPid: 'u1',
+                    senderName: 'Chị Huệ',
+                    attachments: [],
+                    albumId: null,
+                    stickerId: null,
+                    stickerImage: null,
+                    quote: null,
+                    reactions: [],
+                    recalled: false,
+                    createdAt: '2026-11-26T02:00:00Z',
+                  },
+                ]
+              : [],
+        }),
+      ),
+    };
+    const { service, prisma, smax, complete } = make(
+      '{"items":[{"n":1,"label":"order","pending":true},{"n":2,"label":"price","pending":true}]}',
+      archive,
+    );
+    const input = {
+      mode: 'classify' as const,
+      pagePid: 'zlwA',
+      tid: 'zlw1',
+      tids: ['zlw1', 'zlw2'],
+    };
+    expect(await service.run(actor([]), input)).toEqual({ labeled: 2 });
+    expect(smax.getThreadMessages).toHaveBeenCalledTimes(1);
+    expect(smax.getThreadMessages).toHaveBeenCalledWith(9, 'zlwA', 'zlw2');
+    expect(JSON.stringify(complete.mock.calls)).toContain('mứt xoài');
+    // Kênh không liên kết với người bấm → chặn như đường Smax
+    prisma.smaxChannelUser.findUnique.mockResolvedValue(null);
+    await expect(service.run(actor([]), input)).rejects.toThrow(
+      'Kênh này không liên kết',
+    );
   });
 
   it('khách mới: chỉ nhận phân loại hợp lệ, ô không "high" là chưa chắc', async () => {
