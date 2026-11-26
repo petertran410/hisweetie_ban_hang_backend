@@ -674,6 +674,123 @@ describe('SmaxChatService', () => {
     expect((api as any).listRecentThreads).toHaveBeenCalledTimes(1);
   });
 
+  it('recentChats tự gắn khi chắc chắn: đúng 1 mã khách / tên trùng khít đúng 1 khách; không gắn lại, không thay ID cá nhân', async () => {
+    const { service, api, audit } = makeService();
+    const prisma = (service as any).prisma;
+    prisma.smaxChannelUser.findMany = jest.fn().mockResolvedValue([
+      { pagePid: PAGE, pageName: 'Diệp Trà Cs', platform: 'zaloweb', userId: 1 },
+    ]);
+    prisma.customerZaloContact.findMany = jest.fn(({ where }) =>
+      Promise.resolve(
+        where.customerId?.in ? [{ customerId: 82, zaloId: '123456', pagePid: null }] : [],
+      ),
+    );
+    prisma.customerZaloContact.create = jest.fn(({ data }) => Promise.resolve({ id: 100, ...data }));
+    prisma.user.findUnique = jest.fn().mockResolvedValue({ name: 'Sale A' });
+    prisma.customer.findMany = jest.fn(({ where }) =>
+      Promise.resolve(
+        where.code
+          ? [
+              { id: 77, code: 'KH005844', name: 'Mr Vũ' },
+              { id: 99, code: 'KH000999', name: 'Khách cũ' },
+            ]
+          : where.name?.contains
+            ? [
+                { id: 84, code: 'KH84', name: 'Ms Hoài Diễm - Buôn Ma Thuột, Đắk Lắk (Sale 4)' },
+                { id: 85, code: 'KH85', name: 'Mr Tí - Q1 (Sale 1)' },
+                { id: 86, code: 'KH86', name: 'Mr Tí - Q1 (Sale 2 - A2)' },
+                { id: 88, code: 'KH88', name: 'Ms Hồng Cẩm - Quy Nhơn, Bình Định (Sale 4)' },
+                // bản trùng ngừng hoạt động: truy vấn lọc isActive thì không có
+                ...(where.isActive ? [] : [{ id: 87, code: 'KH87', name: 'Ms Hồng Cẩm - Quy Nhơn, Bình Định (Sale 4)' }]),
+              ]
+            : where.name
+            ? [
+                { id: 81, code: 'KH81', name: 'Chị Hoa - Tân Phú, HCM (Sale 4)' },
+                { id: 90, code: 'KH90', name: 'Anh Nam' },
+                { id: 91, code: 'KH91', name: 'anh nam' },
+                { id: 82, code: 'KH82', name: 'Chị Lan' },
+                { id: 83, code: 'KH83', name: 'Mr Long - Năm Căn, Cà Mau (Sale 4)' },
+              ]
+            : [],
+      ),
+    );
+    const report = (bd: string, hd: string, name: string) =>
+      `🎉 Báo đơn ${bd} - Giao hàng thành công\n🏪 Chi nhánh: Kho Sài Gòn\n🧾 Hoá đơn: ${hd}\n👤 Khách hàng: ${name}\n📦 Số kiện: 2`;
+    prisma.smaxMessage = {
+      findMany: jest.fn().mockResolvedValue([
+        { pagePid: PAGE, tid: 'zlw5620000001', text: report('BD1', 'HD1', 'Ms Ngân - Vĩnh Châu, Sóc Trăng (Sale 4)') },
+        { pagePid: PAGE, tid: 'zlw5620000001', text: report('BD4', 'HD4', 'Ms Ngân - Vĩnh Châu, Sóc Trăng (Sale 4)') },
+        // nhóm nội bộ nhận báo đơn nhiều khách
+        { pagePid: PAGE, tid: 'zlw5630000001', text: report('BD1', 'HD1', 'Ms Ngân - Vĩnh Châu, Sóc Trăng (Sale 4)') },
+        { pagePid: PAGE, tid: 'zlw5630000001', text: report('BD2', 'HD2', 'Anh Nam') },
+        // tên trong tin khác tên khách của hoá đơn
+        { pagePid: PAGE, tid: 'zlw5640000001', text: report('BD3', 'HD3', 'Khách khác') },
+        // nhóm nhà cung cấp / nội bộ có tin báo đơn của khách
+        { pagePid: PAGE, tid: 'zlw5650000001', text: report('BD5', 'HD5', 'Ms Hải Anh - Biên Hòa (Sale 4)') },
+        { pagePid: PAGE, tid: 'zlw5660000001', text: report('BD6', 'HD6', 'Mr. Hải Setup - Gò Vấp (Sale 1)') },
+      ]),
+    };
+    prisma.invoice.findMany = jest.fn().mockResolvedValue([
+      { code: 'HD1', customer: { id: 89, code: 'KH89', name: 'Ms Ngân - Vĩnh Châu, Sóc Trăng (Sale 4)' } },
+      { code: 'HD4', customer: { id: 89, code: 'KH89', name: 'Ms Ngân - Vĩnh Châu, Sóc Trăng (Sale 4)' } },
+      { code: 'HD2', customer: { id: 90, code: 'KH90', name: 'Anh Nam' } },
+      { code: 'HD3', customer: { id: 92, code: 'KH92', name: 'Chị Lan Hai' } },
+      { code: 'HD5', customer: { id: 93, code: 'KH93', name: 'Ms Hải Anh - Biên Hòa (Sale 4)' } },
+      { code: 'HD6', customer: { id: 94, code: 'KH94', name: 'Mr. Hải Setup - Gò Vấp (Sale 1)' } },
+    ]);
+    // zlw557 đã tự gắn trước đây (nhân viên đã gỡ) → không gắn lại
+    prisma.auditLog.findMany = jest.fn(({ where }) =>
+      Promise.resolve(where.actionCode === 'SMAX_AUTO_LINK' ? [{ entityId: `${PAGE}:zlw557` }] : []),
+    );
+    const t = (tid: string, name: string, isGroup: boolean) => ({
+      tid, pagePid: PAGE, name, isGroup, lastMessage: 'hi', lastMessageAt: null, unread: false,
+    });
+    (api as any).listRecentThreads = jest.fn().mockResolvedValue([
+      t('zlw3102735962735863553', 'TGNL VŨNG TÀU MR VŨ - DIỆP TRÀ kh005844', true),
+      t('zlw5540000001', 'Chị Hoa -  Tân Phú, HCM (Sale 4)', true),
+      t('zlw555', 'Anh Nam', false), // 2 khách cùng tên
+      t('zlw556', 'Chị Lan', false), // khách đã có ID Zalo cá nhân khác
+      t('zlw557', 'KH000999 cũ', true),
+      t('zlw5580000001', 'Diệp Trà - Mr Long - Năm Căn, Cà Mau (Sale 4)', true), // bỏ thương hiệu đầu tên
+      t('zlw5590000001', 'Diệp Trà - Ms Hoài Diễm - Buôn Ma Thuột, Đắk Lắk', true), // tên khách có nhãn Sale
+      t('zlw5600000001', 'Mr Tí - Q1', true), // 2 khách khác nhãn Sale
+      t('zlw5610000001', 'Ms Hồng Cẩm - Quy Nhơn, Bình Định - Diệp trà', true), // bỏ khách ngừng hoạt động
+      t('zlw5620000001', 'Diệp Trà/Ms Ngân - Vĩnh Châu', true), // báo đơn của 1 khách, tên nhóm có từ chung
+      t('zlw5630000001', 'Báo đơn', true), // báo đơn nhiều khách
+      t('zlw5640000001', 'Ngân B', true), // tên trong báo đơn lệch
+      t('zlw5650000001', 'NCC- HI SWEETIE VIỆT NAM', true), // không có từ chung với tên khách
+      t('zlw5660000001', 'Mr Hải Lê Setup x LerMao (nhóm nội bộ)', true), // nhóm nội bộ
+    ]);
+
+    const { items } = await service.recentChats(1);
+
+    expect(items.map((i) => [i.match?.type ?? null, i.match?.customer.id ?? null])).toEqual([
+      ['linked', 77],
+      ['linked', 81],
+      [null, null],
+      [null, null],
+      ['byCode', 99],
+      ['linked', 83],
+      ['linked', 84],
+      [null, null],
+      ['linked', 88],
+      ['linked', 89],
+      [null, null],
+      [null, null],
+      [null, null],
+      [null, null],
+    ]);
+    expect(prisma.customerZaloContact.create.mock.calls.map((c: any[]) => [c[0].data.customerId, c[0].data.zaloId])).toEqual([
+      [77, '3102735962735863553'],
+      [81, '5540000001'],
+      [83, '5580000001'],
+      [84, '5590000001'],
+      [88, '5610000001'],
+      [89, '5620000001'],
+    ]);
+    expect(audit.create.mock.calls.filter((c: any[]) => c[0].actionCode === 'SMAX_AUTO_LINK')).toHaveLength(6);
+  });
+
   it('recentChats: cảnh báo khách chờ quá 30 phút giờ làm; nhóm kiểm người gửi tin cuối (nền)', async () => {
     jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'] });
     jest.setSystemTime(new Date('2026-11-23T10:00:00+07:00')); // Thứ 2
