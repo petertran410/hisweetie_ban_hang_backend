@@ -63,11 +63,11 @@ describe('production_external print data', () => {
   });
 
   it('lists NSX materials with quantity only (no unit price / amount)', () => {
-    const { Nguyen_Lieu_NSX } = mapProductionExternal(slip());
-    expect(Nguyen_Lieu_NSX).toContain('Trà Thiết Quan Âm');
-    expect(Nguyen_Lieu_NSX).toContain('250,000 g');
-    expect(Nguyen_Lieu_NSX).not.toMatch(/205|51,300|đ\b/);
-    expect(mapProductionExternal(slip({ manufacturerMaterials: [] })).Nguyen_Lieu_NSX).toBe('');
+    const table = String(mapProductionExternal(slip()).Nguyen_Lieu_NSX);
+    expect(table).toContain('Trà Thiết Quan Âm');
+    expect(table).toContain('250,000 g');
+    expect(table).not.toMatch(/205|51,300|đ\b/);
+    expect(String(mapProductionExternal(slip({ manufacturerMaterials: [] })).Nguyen_Lieu_NSX)).toBe('');
   });
 
   it('marks lines taken from the stock already held at the manufacturer', () => {
@@ -101,13 +101,13 @@ describe('production_external print data', () => {
     expect(PRODUCTION_EXTERNAL_DEFAULT_TEMPLATE).not.toMatch(/Thành phẩm|Sản lượng|Công thức/);
   });
 
-  it('escapes names so product text cannot inject HTML into the print', () => {
+  it('returns raw names (escaping happens once, when the template is rendered)', () => {
     const data = mapProductionExternal(slip({
       manufacturer: { code: 'N1', name: '<b>X</b>' },
       components: [{ componentCode: 'A', componentName: '<img src=x>', actualGrams: 1, unit: 'g', unitsDeducted: 1, componentProduct: { unit: 'Thùng' } }],
     }));
-    expect(data.Nha_San_Xuat).toBe('&lt;b&gt;X&lt;/b&gt;');
-    expect(data.items[0].Ten_Hang_Hoa).toBe('&lt;img src=x&gt;');
+    expect(data.Nha_San_Xuat).toBe('<b>X</b>');
+    expect(data.items[0].Ten_Hang_Hoa).toBe('<img src=x>');
   });
 
   it('the default template uses only variables declared for this type, none about money', () => {
@@ -163,6 +163,21 @@ describe('PrintTemplatesService — production_external', () => {
     expect(content).toContain('Giao trước 10h<br />Gọi trước');
     expect(content).not.toMatch(/\{[A-Za-z_]+\}/);
     expect(content).not.toMatch(/59,423,010|51,800,000|51,300,000|205,200|500,000/);
+  });
+
+  it('escapes record text exactly once in the rendered print', async () => {
+    const { prisma, svc } = service();
+    prisma.production.findUnique.mockResolvedValue(slip({
+      manufacturer: { code: 'N1', name: '<b>X</b> & Co' },
+      components: [{ componentCode: 'A', componentName: '<img src=x onerror=alert(1)>', actualGrams: 1, unit: 'g', unitsDeducted: 1, componentProduct: { unit: 'Thùng' } }],
+      manufacturerMaterials: [{ productId: 1, productCode: 'M1', description: '<i>M</i>', quantity: 1, unit: 'g', pricingMode: 'UNIT_PRICE' }],
+    }));
+    const { content } = await svc.renderPreview(1, 9);
+    expect(content).toContain('&lt;b&gt;X&lt;/b&gt; &amp; Co');
+    expect(content).toContain('&lt;img src=x onerror=alert(1)&gt;');
+    expect(content).toContain('&lt;i&gt;M&lt;/i&gt;');
+    expect(content).toContain('<table style="width: 100%; border-collapse: collapse; margin-top: 4px;"');
+    expect(content).not.toMatch(/&amp;(amp|lt|gt);|<b>X|<img src=x|<i>M/);
   });
 
   it('refuses an internal production id', async () => {

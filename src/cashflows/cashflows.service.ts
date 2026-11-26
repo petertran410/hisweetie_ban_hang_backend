@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CreateCashFlowDto,
@@ -16,6 +17,8 @@ import {
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { buildChanges } from '../audit-logs/audit-diff.utils';
 import { recalcCustomerDebt as recalcCustomerDebtUtil } from 'src/common/customer-debt.util';
+import { recalcInvoicePaidTotals } from 'src/common/invoice-paid-totals.util';
+import { findInvoiceMirrorsOfOrderPayments } from 'src/orders/order-payment-mirror.util';
 import {
   INVOICE_STATUS,
   getStatusLabel,
@@ -738,6 +741,8 @@ export class CashFlowsService {
       where: { id: params.entryId },
       include: {
         invoiceLinks: {
+          // Bỏ liên kết hóa đơn đã gỡ khỏi phiếu.
+          where: { removedAt: null },
           include: {
             invoice: {
               select: {
@@ -1427,8 +1432,43 @@ export class CashFlowsService {
           code: { startsWith: cashFlow.code },
           status: { not: 2 },
         },
-        select: { id: true, orderId: true },
+        select: { id: true, orderId: true, amount: true, paymentDate: true },
       });
+
+      // Bản sao TTTU<mã HĐ>-n của các phiếu đơn này trên hóa đơn lập từ đơn:
+      // hủy kèm, nếu không hóa đơn vẫn hiện "Khách đã trả" khoản đã hủy.
+      const orderPaymentMirrors = await findInvoiceMirrorsOfOrderPayments(
+        tx,
+        linkedOrderPayments,
+      );
+      if (orderPaymentMirrors.length > 0) {
+        const mirrorInvoiceIds = [
+          ...new Set(orderPaymentMirrors.map((m) => m.invoiceId)),
+        ].sort((a, b) => a - b);
+        await tx.$queryRaw`
+          SELECT id FROM invoices
+          WHERE id IN (${Prisma.join(mirrorInvoiceIds)})
+          ORDER BY id
+          FOR UPDATE
+        `;
+        const linkedIds = new Set(linkedInvoicePayments.map((p) => p.id));
+        for (const mirror of orderPaymentMirrors) {
+          if (linkedIds.has(mirror.id)) continue;
+          linkedInvoicePayments.push({
+            id: mirror.id,
+            invoiceId: mirror.invoiceId,
+          });
+        }
+        const mirrorCashFlowIds = orderPaymentMirrors
+          .map((m) => m.cashFlowId)
+          .filter((v): v is number => v != null && v !== id);
+        if (mirrorCashFlowIds.length > 0) {
+          await tx.cashFlow.updateMany({
+            where: { id: { in: mirrorCashFlowIds }, status: { not: 2 } },
+            data: { status: 2, statusValue: 'Đã hủy' },
+          });
+        }
+      }
 
       const linkedCtns = await tx.returnOrder.findMany({
         where: {
@@ -1519,69 +1559,7 @@ export class CashFlowsService {
       });
 
       for (const invId of affectedInvoiceIds) {
-        const invoice = await tx.invoice.findUnique({
-          where: { id: invId },
-          select: { grandTotal: true, status: true },
-        });
-        if (!invoice) continue;
-
-        const activePayments = await tx.invoicePayment.findMany({
-          where: { invoiceId: invId, status: { not: 2 } },
-          select: { amount: true },
-        });
-        const sumPayments = activePayments.reduce(
-          (sum: number, p: any) => sum + Number(p.amount),
-          0,
-        );
-
-        const activeCtns = await tx.returnOrder.findMany({
-          where: {
-            invoiceId: invId,
-            refundType: 'manual_offset',
-            status: 4,
-          },
-          select: { refundAmount: true },
-        });
-        const sumCtns = activeCtns.reduce(
-          (sum: number, c: any) => sum + Number(c.refundAmount),
-          0,
-        );
-
-        const newPaidAmount = sumPayments + sumCtns;
-        const newDebtAmount = Math.max(
-          0,
-          Number(invoice.grandTotal) - newPaidAmount,
-        );
-
-        // Chỉ thay đổi status nếu invoice CHƯA bị hủy
-        const updateInvoiceData: any = {
-          paidAmount: newPaidAmount,
-          debtAmount: newDebtAmount,
-        };
-        if (invoice.status !== INVOICE_STATUS.CANCELLED) {
-          const currentStatus = invoice.status;
-          let newStatus = currentStatus;
-
-          if (newDebtAmount <= 0) {
-            // Chỉ chuyển sang COMPLETED khi đã giao thành công (DELIVERED)
-            if (currentStatus === INVOICE_STATUS.DELIVERED) {
-              newStatus = INVOICE_STATUS.COMPLETED;
-            }
-          } else {
-            // Hoàn tác: COMPLETED → DELIVERED
-            if (currentStatus === INVOICE_STATUS.COMPLETED) {
-              newStatus = INVOICE_STATUS.DELIVERED;
-            }
-          }
-
-          updateInvoiceData.status = newStatus;
-          updateInvoiceData.statusValue = getStatusLabel(newStatus);
-        }
-
-        await tx.invoice.update({
-          where: { id: invId },
-          data: updateInvoiceData,
-        });
+        await recalcInvoicePaidTotals(tx, invId);
       }
 
       // ── 7. Recalc paidAmount/debtAmount cho từng order bị ảnh hưởng

@@ -373,3 +373,104 @@ describe('CashFlowsService.createCustomerPayment', () => {
     expect(createdCashFlows).toHaveLength(0);
   });
 });
+
+describe('CashFlowsService.cancelInTransaction → hủy kèm bản sao trên hóa đơn', () => {
+  const AT = new Date('2026-11-20T09:32:58.277Z');
+  const orderPayment = {
+    id: 10,
+    orderId: 130121,
+    amount: 3099000,
+    paymentDate: AT,
+  };
+
+  const setup = () => {
+    const tx: any = {
+      $queryRaw: jest.fn().mockResolvedValue([]),
+      payablePaymentBatch: { findUnique: jest.fn().mockResolvedValue(null) },
+      cashFlow: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 50,
+          code: 'TTDH130121-1',
+          partnerType: 'C',
+          partnerId: 5,
+          branch: null,
+        }),
+        update: jest.fn().mockResolvedValue({ id: 50, status: 2 }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      invoicePayment: {
+        findMany: jest.fn(({ where }: any) => {
+          if (where.code?.startsWith === 'TTTU')
+            return Promise.resolve([
+              {
+                id: 1,
+                invoiceId: 116,
+                cashFlowId: 901,
+                code: 'TTTUHD137790-1',
+                amount: 3099000,
+                paymentDate: AT,
+                invoice: { orderId: 130121 },
+              },
+            ]);
+          return Promise.resolve([]); // phiếu HĐ theo mã TTDH… / sau khi hủy
+        }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      orderPayment: {
+        findMany: jest.fn(({ where }: any) => {
+          if (where.code) return Promise.resolve([orderPayment]);
+          if (where.orderId?.in) return Promise.resolve([orderPayment]);
+          return Promise.resolve([]);
+        }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      returnOrder: { findMany: jest.fn().mockResolvedValue([]) },
+      purchaseOrderPayment: { findMany: jest.fn().mockResolvedValue([]) },
+      orderSupplierPayment: { findMany: jest.fn().mockResolvedValue([]) },
+      invoice: {
+        findUnique: jest.fn().mockResolvedValue({
+          grandTotal: 1315000,
+          status: 1,
+        }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      order: {
+        findUnique: jest.fn().mockResolvedValue({ grandTotal: 1315000 }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+    };
+    const service = new CashFlowsService({} as any, {} as any);
+    jest
+      .spyOn(service as any, 'recalcCustomerDebt')
+      .mockResolvedValue(undefined);
+    return { service, tx };
+  };
+
+  it('hủy TTDH130121-1 thì hủy luôn TTTUHD137790-1 và tính lại HD137790', async () => {
+    const { service, tx } = setup();
+
+    await service.cancelInTransaction(tx, 50);
+
+    expect(tx.invoicePayment.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: [1] } },
+      data: { status: 2, statusValue: 'Đã hủy' },
+    });
+    expect(tx.cashFlow.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: [901] }, status: { not: 2 } },
+      data: { status: 2, statusValue: 'Đã hủy' },
+    });
+    expect(tx.orderPayment.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: [10] } },
+      data: { status: 2, statusValue: 'Đã hủy' },
+    });
+    expect(tx.invoice.update).toHaveBeenCalledWith({
+      where: { id: 116 },
+      data: {
+        paidAmount: 0,
+        debtAmount: 1315000,
+        status: 7,
+        statusValue: 'Giao thành công',
+      },
+    });
+  });
+});

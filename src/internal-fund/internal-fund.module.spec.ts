@@ -12,6 +12,7 @@ import { AuthService } from '../auth/auth.service';
 import { LARK_CLIENT } from '../lark-sync/lark-client.provider';
 import { PermissionCacheModule } from '../permission-cache/permission-cache.module';
 import { ScheduleModule } from '@nestjs/schedule';
+import { FinanceAuditService } from '../finance-audit/finance-audit.service';
 
 describe('Internal fund module wiring (no DB or network)', () => {
   it('resolves controllers, permissions and ledger without circular dependencies', async () => {
@@ -31,7 +32,11 @@ describe('Internal fund module wiring (no DB or network)', () => {
       .useValue({})
       .compile();
     expect(module.get(InternalFundService)).toBeDefined();
-    expect(module.get(InternalFundLedgerService)).toBeDefined();
+    const ledger = module.get(InternalFundLedgerService);
+    expect(ledger).toBeDefined();
+    // Sổ quỹ nhận FinanceAuditService để ghi lịch sử (không phải undefined).
+    expect(ledger['audit']).toBeInstanceOf(FinanceAuditService);
+    expect(module.get(FinanceAuditService)).toBe(ledger['audit']);
     expect(module.get(InternalFundController)).toBeDefined();
     expect(module.get(InternalFundApprovalController)).toBeDefined();
     await module.close();

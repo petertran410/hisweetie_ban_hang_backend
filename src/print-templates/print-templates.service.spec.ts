@@ -1,4 +1,5 @@
 import { PrintTemplatesService } from './print-templates.service';
+import { trustedHtml } from './print-html.util';
 
 describe('PrintTemplatesService', () => {
   const previousSecret = process.env.DOCUMENT_QR_SECRET;
@@ -66,7 +67,7 @@ describe('PrintTemplatesService', () => {
         '<div>{Ghi_Chu}</div><div>{Ma_QR_Code}</div>',
         {
           Ghi_Chu: '<script>alert("x")</script>\nAn toàn & rõ ràng',
-          Ma_QR_Code: '<img src="qr.png" />',
+          Ma_QR_Code: trustedHtml('<img src="qr.png" />'),
         },
         'order',
       );
@@ -75,15 +76,74 @@ describe('PrintTemplatesService', () => {
         '<div>&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;<br />An toàn &amp; rõ ràng</div><div><img src="qr.png" /></div>',
       );
     });
+
+    it('escapes every record value that is not service-built HTML', async () => {
+      const service = createService();
+
+      const content = await service.replaceVariables(
+        '<p>{Khach_Hang}</p><p>{Dia_Chi_Giao_Hang}</p><p>{Nhan_Vien_Ban_Hang}</p>',
+        {
+          Khach_Hang: '<img src=x onerror="alert(1)">',
+          Dia_Chi_Giao_Hang: '<svg onload=alert(2)>',
+          Nhan_Vien_Ban_Hang: "<details open ontoggle='alert(3)'>",
+        },
+        'order',
+      );
+
+      expect(content).toBe(
+        '<p>&lt;img src=x onerror=&quot;alert(1)&quot;&gt;</p><p>&lt;svg onload=alert(2)&gt;</p><p>&lt;details open ontoggle=&#39;alert(3)&#39;&gt;</p>',
+      );
+    });
+
+    it('escapes the product name in item rows but keeps the label spans', async () => {
+      const service = createService(['Ten_Hang_Hoa']);
+      const item = (service as any).mapItem({
+        productName: '<img src=x onerror=alert(1)>',
+        quantity: 1,
+        conditionType: 'damaged',
+      });
+
+      const content = await service.replaceVariables(
+        '<table><tr><td>{Ten_Hang_Hoa}</td></tr></table>',
+        { items: [item] },
+        'invoice',
+      );
+
+      expect(content).toBe(
+        '<table><tr><td>&lt;img src=x onerror=alert(1)&gt; <span style="font-size:7pt;font-weight:bold;font-style:italic">(Bục rách)</span></td></tr></table>',
+      );
+    });
+
+    it('keeps $ patterns in item values literal', async () => {
+      const service = createService(['Ten_Hang_Hoa']);
+
+      const content = await service.replaceVariables(
+        '<table><tr><td>{Ten_Hang_Hoa}</td></tr></table>',
+        { items: [{ Ten_Hang_Hoa: "A $& B $' C" }] },
+        'invoice',
+      );
+
+      expect(content).toBe(
+        '<table><tr><td>A $&amp; B $&#39; C</td></tr></table>',
+      );
+    });
+
+    it('serialises service-built HTML as plain strings in the response data', () => {
+      expect(JSON.stringify({ Ma_QR_Code: trustedHtml('<img />') })).toBe(
+        '{"Ma_QR_Code":"<img />"}',
+      );
+    });
   });
 
   describe('mapItem', () => {
-    const mapItem = (item: Record<string, any>) =>
-      (createService() as any).mapItem({
+    const mapItem = (item: Record<string, any>) => {
+      const mapped = (createService() as any).mapItem({
         productName: 'Trà đào',
         quantity: 1,
         ...item,
       });
+      return { ...mapped, Ten_Hang_Hoa: String(mapped.Ten_Hang_Hoa) };
+    };
 
     it('appends the damaged condition to the product name', () => {
       expect(mapItem({ conditionType: 'damaged' }).Ten_Hang_Hoa).toBe(
@@ -137,10 +197,12 @@ describe('PrintTemplatesService', () => {
 
   describe('mapInternalUse', () => {
     const mapInternalUse = (detail: Record<string, any>) =>
-      (createService() as any).mapInternalUse({
-        totalValue: 0,
-        details: [{ productName: 'Trà đào', quantity: 1, ...detail }],
-      }).items[0].Ten_Hang_Hoa;
+      String(
+        (createService() as any).mapInternalUse({
+          totalValue: 0,
+          details: [{ productName: 'Trà đào', quantity: 1, ...detail }],
+        }).items[0].Ten_Hang_Hoa,
+      );
 
     it('appends damaged and near-expiry information to internal-use items', () => {
       expect(mapInternalUse({ conditionType: 'damaged' })).toContain(
@@ -228,7 +290,7 @@ describe('PrintTemplatesService', () => {
       expect(v.Dia_Chi_Cu_Giao_Hang).toBe(
         'Phường Kim Mã, Quận Ba Đình, Thành phố Hà Nội',
       );
-      expect(v.Dong_Dia_Chi_Cu_Giao_Hang).toBe(
+      expect(String(v.Dong_Dia_Chi_Cu_Giao_Hang)).toBe(
         '<br>(Địa chỉ cũ: Phường Kim Mã, Quận Ba Đình, Thành phố Hà Nội)',
       );
     });
@@ -321,7 +383,9 @@ describe('PrintTemplatesService', () => {
         oldDistrictName: 'Q',
         oldCityName: 'T',
       });
-      expect(v.Dong_Dia_Chi_Cu_Giao_Hang).toContain('&lt;b&gt;Cũ&lt;/b&gt;');
+      expect(String(v.Dong_Dia_Chi_Cu_Giao_Hang)).toContain(
+        '&lt;b&gt;Cũ&lt;/b&gt;',
+      );
     });
   });
 
@@ -358,7 +422,10 @@ describe('PrintTemplatesService', () => {
           debtAmount,
         };
         const data = await (createService() as any)[mapper](entity);
-        const src = data.Ma_QR_Code.match(/src="([^"]+)"/)?.[1];
+        // Trình duyệt giải mã &amp; trong thuộc tính src.
+        const src = String(data.Ma_QR_Code)
+          .match(/src="([^"]+)"/)?.[1]
+          ?.replace(/&amp;/g, '&');
         expect(src).toBeDefined();
         const url = new URL(src!);
 
@@ -429,7 +496,7 @@ describe('PrintTemplatesService', () => {
         });
 
         expect(data.Phi_Giao_Hang).toBe('25,000');
-        expect(data.Dong_Phi_Giao_Hang).toBe(
+        expect(String(data.Dong_Phi_Giao_Hang)).toBe(
           '<div>Phí giao hàng: 25,000</div>',
         );
         expect(data.Style_Dong_Phi_Giao_Hang).toBe('');

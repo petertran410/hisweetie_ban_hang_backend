@@ -460,6 +460,33 @@ export class VehicleEntryQueryDto {
   limit = 50;
 }
 
+/** Trang Tiền ứng xăng xe Kho HN: khoảng ngày xem sổ. */
+export class FuelAdvanceQueryDto {
+  @IsOptional()
+  @IsDateString()
+  fromDate?: string;
+
+  @IsOptional()
+  @IsDateString()
+  toDate?: string;
+}
+
+/** Khoản ứng xăng Kho HN nhập tay (đã đi tiền ngoài đơn PHIẾU CHI Lark). */
+export class CreateFuelAdvanceEntryDto {
+  @IsDateString()
+  occurredAt: string;
+
+  @IsNumber()
+  @Min(1)
+  @Type(() => Number)
+  amount: number;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+}
+
 export class ReviewInternalFinanceDto {
   @IsIn(Object.values(INTERNAL_FINANCE_REVIEW_DECISION))
   decision: string;
@@ -518,6 +545,11 @@ export class CreateApprovalForWeeklyBatchDto {
   @IsOptional()
   @IsString()
   viewUrl?: string;
+
+  /** Vẫn gửi dù có phiếu đủ tick sau lần Tổng hợp gần nhất. */
+  @IsOptional()
+  @IsBoolean()
+  allowLateEntries?: boolean;
 }
 
 export const INTERNAL_FINANCE_CATEGORIES = Object.values(
@@ -656,6 +688,12 @@ export class PostWarehouseReceiptDto {
 export class CancelWarehouseReceiptDto {
   @IsBoolean()
   cancelCashFlows: boolean;
+
+  /** Lý do hủy; bỏ trống thì ghi "Hủy phiếu tiền mặt kho". */
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  reason?: string;
 }
 
 export class WarehouseExpenseQueryDto {

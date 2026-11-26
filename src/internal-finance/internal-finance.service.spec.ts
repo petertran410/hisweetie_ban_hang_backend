@@ -1,6 +1,12 @@
 import { BadRequestException } from '@nestjs/common';
 import { FinanceAccessService } from '../auth/finance-access.service';
+import { FinanceAuditService } from '../finance-audit';
 import { InternalFinanceService } from './internal-finance.service';
+import {
+  FUEL_ADVANCE_BATCH_BLOCK,
+  fuelAdvanceEntryWhere,
+  fuelAdvanceUsedWhere,
+} from './fuel-advance';
 
 describe('InternalFinanceService', () => {
   const makeService = (overrides: any = {}) => {
@@ -28,11 +34,31 @@ describe('InternalFinanceService', () => {
     // Mặc định cho bước đồng bộ dòng quỹ của phiếu Tiền mặt kho.
     prisma.internalFinanceEntry = {
       findMany: jest.fn().mockResolvedValue([]),
+      // Gửi Approval tuần đếm phiếu xăng Kho HN còn trong batch.
+      count: jest.fn().mockResolvedValue(0),
       ...prisma.internalFinanceEntry,
     };
     prisma.internalFundTransaction = {
       findUnique: jest.fn().mockResolvedValue(null),
       ...prisma.internalFundTransaction,
+    };
+    // Chứng từ / hóa đơn: gỡ là đặt removedAt (entry-files), không xóa.
+    prisma.internalFinanceAttachment = {
+      findMany: jest.fn().mockResolvedValue([]),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      createMany: jest.fn(),
+      ...prisma.internalFinanceAttachment,
+    };
+    prisma.internalFinanceInvoiceLink = {
+      findMany: jest.fn().mockResolvedValue([]),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+      create: jest.fn(async ({ data }: any) => ({ id: 1, ...data })),
+      update: jest.fn(async ({ data }: any) => ({ id: 1, ...data })),
+      ...prisma.internalFinanceInvoiceLink,
+    };
+    prisma.packingSlip = {
+      findUnique: jest.fn().mockResolvedValue({ code: 'BD-9' }),
+      ...prisma.packingSlip,
     };
     const cashFlowsService = {
       createInternalFinanceCashFlow: jest.fn(),
@@ -71,8 +97,15 @@ describe('InternalFinanceService', () => {
       issueReviewedExpense: jest.fn(),
       revertReviewedExpense: jest.fn(),
     };
+    // Lịch sử: diff thật, write giả (test riêng dùng write thật).
+    const financeAudit = new FinanceAuditService();
+    const auditWrite = jest
+      .spyOn(financeAudit, 'write')
+      .mockResolvedValue(undefined);
     return {
       fundLedger,
+      financeAudit,
+      auditWrite,
       service: new InternalFinanceService(
         prisma as any,
         cashFlowsService as any,
@@ -83,6 +116,7 @@ describe('InternalFinanceService', () => {
         internalFund as any,
         vehicles as any,
         fundLedger as any,
+        financeAudit,
       ),
       prisma,
       vehicles,
@@ -124,7 +158,281 @@ describe('InternalFinanceService', () => {
         clientUuid: 'INTERNAL_FINANCE_WEEK:4:6:2026-10-05:2026-10-11',
       }),
       7,
+      expect.objectContaining({ kind: 'USER', userId: 7 }),
     );
+  });
+
+  it('refuses to send a batch still holding Kho HN fuel paid from the fuel advance', async () => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const { service, approvalLifecycle, prisma } = makeService({
+      internalFinanceWeeklyBatch: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 4,
+          branchId: 6,
+          status: 'READY',
+          approvalRequestId: null,
+          totalAmount: 100,
+          weekStart: new Date('2026-11-15T17:00:00Z'),
+          weekEnd: new Date('2026-11-22T16:59:59Z'),
+          updatedAt: new Date(),
+        }),
+        updateMany,
+      },
+    });
+    prisma.internalFinanceEntry.count.mockResolvedValue(2);
+    await expect(service.createWeeklyApproval(4, 7)).rejects.toThrow(
+      FUEL_ADVANCE_BATCH_BLOCK,
+    );
+    expect(updateMany).not.toHaveBeenCalled();
+    expect(approvalLifecycle.create).not.toHaveBeenCalled();
+  });
+
+  it('reads the Kho HN fuel advance: Lark vouchers in, ticked fuel out', async () => {
+    const queryRaw = jest.fn().mockResolvedValue([
+      {
+        id: 1,
+        completedAt: new Date('2026-11-15T03:00:00.000Z'),
+        amount: 20000000,
+        description: 'Ứng xăng',
+        requesterName: 'Kế toán',
+        form: JSON.stringify([
+          { id: 'widget17321752802850001', name: 'Số tiền', value: 20000000 },
+          { id: 'a', name: 'Chi phí thuộc phòng ban', value: 'Kho Hà Nội' },
+          { id: 'b', name: 'Loại chi phí', value: 'Chi phí kho' },
+          {
+            id: 'c',
+            name: 'Khoản mục chi phí',
+            value: 'Xăng xe: oto, xe tại kho',
+          },
+        ]),
+      },
+      // Khớp chữ lọc thô nhưng khác khoản mục: bỏ.
+      {
+        id: 2,
+        completedAt: new Date('2026-11-16T03:00:00.000Z'),
+        amount: 900000,
+        description: null,
+        requesterName: null,
+        form: JSON.stringify([
+          { id: 'a', name: 'Chi phí thuộc phòng ban', value: 'Kho Hà Nội' },
+          { id: 'b', name: 'Loại chi phí', value: 'Chi phí kho' },
+          {
+            id: 'c',
+            name: 'Khoản mục chi phí',
+            value: 'Sửa chữa, bảo dưỡng; oto xe máy tại kho',
+          },
+        ]),
+      },
+    ]);
+    const findMany = jest.fn().mockResolvedValue([
+      {
+        id: 30,
+        code: 'TCNB-XD-HN-1',
+        amount: 500000,
+        occurredAt: new Date('2026-11-16T01:00:00.000Z'),
+        vehicleName: '29D',
+        managerReviewedAt: new Date('2026-11-16T02:00:00.000Z'),
+        accountantReviewedAt: new Date('2026-11-17T02:00:00.000Z'),
+        creator: { id: 8, name: 'Lái xe' },
+      },
+    ]);
+    const manualFindMany = jest.fn().mockResolvedValue([
+      {
+        id: 3,
+        branchId: 6,
+        occurredAt: new Date('2026-11-13T17:00:00.000Z'),
+        amount: 20000000,
+        note: 'Ứng trước khi lên POS',
+        status: 'ACTIVE',
+        createdBy: 4,
+      },
+    ]);
+    const { service, vehicles } = makeService({
+      $queryRaw: queryRaw,
+      internalFinanceEntry: { findMany },
+      fuelAdvanceEntry: { findMany: manualFindMany },
+      user: {
+        findMany: jest.fn().mockResolvedValue([{ id: 4, name: 'Kế toán kho' }]),
+      },
+    });
+
+    const ledger = await service.fuelAdvanceLedger({}, { id: 7 });
+
+    expect(vehicles.assertPermission).toHaveBeenCalledWith(
+      { id: 7 },
+      6,
+      'view',
+    );
+    expect(findMany.mock.calls[0][0].where.AND[0]).toBe(fuelAdvanceUsedWhere);
+    expect(manualFindMany.mock.calls[0][0].where).toMatchObject({
+      branchId: 6,
+      status: 'ACTIVE',
+    });
+    // Khoản nhập tay 14/11 + đơn PHIẾU CHI 15/11, trừ phiếu xăng 500.000.
+    expect(ledger).toMatchObject({
+      opening: 0,
+      advanced: 40000000,
+      used: 500000,
+      closing: 39500000,
+    });
+    expect(ledger.rows[0]).toMatchObject({
+      kind: 'ADVANCE',
+      source: 'MANUAL',
+      requesterName: 'Kế toán kho',
+      balance: 20000000,
+    });
+    expect(ledger.byCreator).toEqual([
+      { creatorId: 8, creatorName: 'Lái xe', count: 1, amount: 500000 },
+    ]);
+  });
+
+  it('adds a manual fuel advance from 14/11 with the manage permission, and cancels it with a reason', async () => {
+    const create = jest.fn(async ({ data }: any) => ({ id: 3, ...data }));
+    const update = jest.fn(async ({ data }: any) => ({ id: 3, ...data }));
+    const findUnique = jest
+      .fn()
+      .mockResolvedValueOnce({ id: 3, status: 'ACTIVE' })
+      .mockResolvedValueOnce({ id: 3, status: 'CANCELLED' });
+    const { service, vehicles } = makeService({
+      fuelAdvanceEntry: { create, update, findUnique },
+    });
+
+    await service.createFuelAdvanceEntry(
+      { occurredAt: '2026-11-14', amount: 20000000, note: ' Ứng trước ' },
+      { id: 7 },
+    );
+    expect(vehicles.assertPermission).toHaveBeenCalledWith(
+      { id: 7 },
+      6,
+      'manage',
+    );
+    expect(create.mock.calls[0][0].data).toEqual({
+      branchId: 6,
+      occurredAt: new Date('2026-11-14T00:00:00+07:00'),
+      amount: 20000000,
+      note: 'Ứng trước',
+      createdBy: 7,
+    });
+    await expect(
+      service.createFuelAdvanceEntry(
+        { occurredAt: '2026-11-13', amount: 20000000 },
+        { id: 7 },
+      ),
+    ).rejects.toThrow('14/11/2026');
+
+    await expect(
+      service.cancelFuelAdvanceEntry(3, '  ', { id: 7 }),
+    ).rejects.toThrow();
+    await service.cancelFuelAdvanceEntry(3, 'Nhập sai số', { id: 7 });
+    expect(update.mock.calls[0][0].data).toMatchObject({
+      status: 'CANCELLED',
+      cancelReason: 'Nhập sai số',
+      cancelledBy: 7,
+    });
+    await expect(
+      service.cancelFuelAdvanceEntry(3, 'Lần hai', { id: 7 }),
+    ).rejects.toThrow('đã hủy');
+  });
+
+  describe('entries ticked after the last prepare (late entries)', () => {
+    const batch = {
+      id: 4,
+      branchId: 6,
+      status: 'READY',
+      approvalRequestId: null,
+      totalAmount: 100,
+      weekStart: new Date('2026-11-08T17:00:00Z'),
+      weekEnd: new Date('2026-11-15T16:59:59.999Z'),
+      updatedAt: new Date(),
+    };
+    const late = [
+      {
+        id: 21,
+        code: 'TCNB-CHI-HN-20261113-000062',
+        occurredAt: new Date('2026-11-12T17:00:00Z'),
+        amount: 150000,
+        description: 'Mua băng keo',
+      },
+    ];
+    const setup = (rows: any[] = late, row: any = batch) => {
+      const findMany = jest.fn(async ({ where }: any) =>
+        where?.weeklyBatchId === null ? rows : [],
+      );
+      const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+      const ctx = makeService({
+        internalFinanceWeeklyBatch: {
+          findUnique: jest.fn().mockResolvedValue(row),
+          updateMany,
+          update: jest.fn(),
+        },
+        internalFinanceEntry: { findMany, updateMany: jest.fn() },
+      });
+      ctx.approvalLifecycle.create.mockResolvedValue({ id: 55 });
+      return { ...ctx, findMany, updateMany };
+    };
+
+    it('lists eligible entries of the week that are in no batch yet', async () => {
+      const f = setup();
+      f.authService.getPermissionsForBranch.mockResolvedValue([
+        'weekly_approval:submit',
+      ]);
+      expect(
+        await f.service.warehouseBatchLateEntries(4, { id: 7, roles: [] }),
+      ).toEqual({ count: 1, amount: 150000, entries: late });
+      const where = f.findMany.mock.calls[0][0].where;
+      expect(where).toMatchObject({
+        branchId: 6,
+        status: { in: ['MANAGER_APPROVED', 'READY_FOR_WEEKLY_APPROVAL'] },
+        cashIssued: false,
+        cashFlowId: null,
+        managerReviewedAt: { not: null },
+        accountantReviewedAt: { not: null },
+        weeklyBatchId: null,
+        occurredAt: { gte: batch.weekStart, lte: batch.weekEnd },
+      });
+      expect(where.NOT).toEqual(fuelAdvanceEntryWhere);
+    });
+
+    it('needs the submit or prepare permission to look', async () => {
+      const f = setup();
+      await expect(
+        f.service.warehouseBatchLateEntries(4, { id: 7, roles: [] }),
+      ).rejects.toThrow('Không có quyền');
+    });
+
+    it('does not check office batches', async () => {
+      const f = setup(late, { ...batch, branchId: 4 });
+      f.authService.getPermissionsForBranch.mockResolvedValue([
+        'weekly_approval:prepare',
+      ]);
+      expect(
+        await f.service.warehouseBatchLateEntries(4, {
+          id: 7,
+          roles: [],
+          branchIds: [4],
+        }),
+      ).toMatchObject({ count: 0 });
+      expect(f.findMany).not.toHaveBeenCalled();
+    });
+
+    it('refuses to send while late entries exist, unless the sender chose to', async () => {
+      const blocked = setup();
+      await expect(blocked.service.createWeeklyApproval(4, 7)).rejects.toThrow(
+        'Có 1 phiếu chi trong tuần đã đủ tick sau lần Tổng hợp',
+      );
+      expect(blocked.updateMany).not.toHaveBeenCalled();
+      expect(blocked.approvalLifecycle.create).not.toHaveBeenCalled();
+
+      const allowed = setup();
+      await allowed.service.createWeeklyApproval(
+        4,
+        7,
+        undefined,
+        undefined,
+        true,
+      );
+      expect(allowed.approvalLifecycle.create).toHaveBeenCalled();
+    });
   });
 
   it('releases a claimed weekly batch when Approval submission fails', async () => {
@@ -472,6 +780,7 @@ describe('InternalFinanceService', () => {
         entry,
         8,
         false,
+        expect.objectContaining({ kind: 'USER', userId: 8 }),
       );
       expect(entry).toMatchObject({
         accountantReviewedBy: 8,
@@ -719,21 +1028,35 @@ describe('InternalFinanceService', () => {
       });
     });
 
-    it('removes a wrongly added entry, keeping its ticks, and deletes an empty batch', async () => {
+    it('removes a wrongly added entry, keeping its ticks, and cancels (not deletes) an emptied batch', async () => {
       const updateMany = jest.fn();
       const remove = jest.fn();
-      const { service, authService } = makeService({
+      const update = jest.fn();
+      const { service, authService, auditWrite } = makeService({
         internalFinanceWeeklyBatch: {
           findUnique: jest.fn().mockResolvedValue({
             id: 9,
+            code: 'TUAN-9',
             branchId: 6,
             status: 'READY',
             approvalRequestId: null,
+            totalAmount: 100,
           }),
           delete: remove,
+          update,
         },
         internalFinanceEntry: {
-          count: jest.fn().mockResolvedValue(1),
+          findMany: jest.fn().mockResolvedValue([
+            {
+              id: 5,
+              code: 'TCNB-5',
+              amount: 100,
+              branchId: 6,
+              status: 'READY_FOR_WEEKLY_APPROVAL',
+              managerReviewedAt: new Date(),
+              accountantReviewedAt: new Date(),
+            },
+          ]),
           updateMany,
           aggregate: jest
             .fn()
@@ -745,12 +1068,34 @@ describe('InternalFinanceService', () => {
       ]);
       expect(await service.removeWeeklyBatchEntries(9, [5], user)).toEqual({
         removed: 1,
+        batchCancelled: true,
         batchDeleted: true,
       });
       expect(updateMany.mock.calls[0][0]).toMatchObject({
         data: { weeklyBatchId: null, status: 'MANAGER_APPROVED' },
       });
-      expect(remove).toHaveBeenCalledWith({ where: { id: 9 } });
+      expect(remove).not.toHaveBeenCalled();
+      expect(update).toHaveBeenCalledWith({
+        where: { id: 9 },
+        data: {
+          status: 'CANCELLED',
+          cancelledAt: expect.any(Date),
+          cancelledBy: 7,
+          cancelReason: 'Tự hủy: đã bỏ hết phiếu khỏi batch',
+          cancelledEntryIds: [5],
+        },
+      });
+      const rows = auditWrite.mock.calls[0][1] as any[];
+      expect(rows.map((row) => row.action)).toEqual([
+        'FIN_BATCH_REMOVE_ENTRIES',
+        'FIN_BATCH_CANCEL',
+        'FIN_ENTRY_BATCH_REMOVE',
+      ]);
+      expect(rows[2]).toMatchObject({
+        entityId: 5,
+        metadata: { batchId: 9, statusBefore: 'READY_FOR_WEEKLY_APPROVAL' },
+      });
+      expect(new Set(rows.map((row) => row.actor.opId)).size).toBe(1);
     });
 
     it('refuses to add entries to a batch already sent to Lark', async () => {
@@ -822,6 +1167,19 @@ describe('InternalFinanceService', () => {
       );
       expect(create.mock.calls[0][0].data.code).toBe(
         'TCNB-TUAN-HN-2026-W40-2026-09-28-2026-10-04',
+      );
+    });
+
+    it('leaves Kho HN fuel from 14/11 out of the week and the carry-over list', async () => {
+      const prepared = setup();
+      await prepared.service.prepareWarehouseExpenseBatch(week, user);
+      expect(prepared.findMany.mock.calls[0][0].where.NOT).toEqual(
+        fuelAdvanceEntryWhere,
+      );
+      const carry = setup();
+      await carry.service.warehouseCarryOver(user, 6, '2026-11-23');
+      expect(carry.findMany.mock.calls[0][0].where.NOT).toEqual(
+        fuelAdvanceEntryWhere,
       );
     });
 
@@ -942,10 +1300,14 @@ describe('InternalFinanceService', () => {
       { ids: [1, 2, 3, 3, 4], role: 'manager' },
     );
     expect(single).toHaveBeenCalledTimes(2);
-    expect(single).toHaveBeenCalledWith(1, expect.anything(), {
-      role: 'manager',
-      checked: true,
-    });
+    expect(single).toHaveBeenCalledWith(
+      1,
+      expect.anything(),
+      { role: 'manager', checked: true },
+      expect.any(String),
+    );
+    // Tick hàng loạt: mỗi phiếu một dòng lịch sử, chung một mã thao tác.
+    expect(single.mock.calls[0][3]).toBe(single.mock.calls[1][3]);
     expect(result.updated).toEqual([{ id: 1 }]);
     expect(result.alreadyChecked).toBe(1);
     expect(result.skipped).toEqual([
@@ -1006,9 +1368,15 @@ describe('InternalFinanceService', () => {
       };
       const { service, fundLedger } = setup(entry);
       await service.cancelWarehouseExpense(9, user, 'Trùng phiếu');
+      // Trạng thái do hủy phiếu đặt: sổ quỹ giữ nguyên trạng thái, cùng người.
       expect(fundLedger.detachFromBatch).toHaveBeenCalledWith(
         expect.anything(),
         entry,
+        {
+          actor: expect.objectContaining({ kind: 'USER', userId: 7 }),
+          reason: expect.stringContaining('Trùng phiếu'),
+          keepStatus: true,
+        },
       );
     });
 
@@ -1167,11 +1535,33 @@ describe('InternalFinanceService', () => {
       attachments: [{ fileUrl: 'https://files.example/a.jpg', kind: 'IMAGE' }],
     };
 
-    it('replaces the evidence of a Lark-synced expense', async () => {
-      const { service, prisma } = setup({});
+    it('replaces the evidence of a Lark-synced expense, keeping removed files', async () => {
+      const { service, prisma, auditWrite } = setup({});
+      const old = {
+        id: 31,
+        entryId: 4,
+        kind: 'EVIDENCE',
+        fileUrl: 'https://files.example/old.jpg',
+        fileName: 'old.jpg',
+        removedAt: null,
+      };
+      prisma.internalFinanceAttachment.findMany
+        .mockResolvedValueOnce([old])
+        .mockResolvedValueOnce([
+          {
+            id: 32,
+            entryId: 4,
+            kind: 'IMAGE',
+            fileUrl: files.attachments[0].fileUrl,
+          },
+        ]);
       await service.replaceWarehouseExpenseAttachments(4, files as any, user);
-      expect(prisma.internalFinanceAttachment.deleteMany).toHaveBeenCalledWith({
-        where: { entryId: 4 },
+      expect(
+        prisma.internalFinanceAttachment.deleteMany,
+      ).not.toHaveBeenCalled();
+      expect(prisma.internalFinanceAttachment.updateMany).toHaveBeenCalledWith({
+        where: { id: { in: [31] }, removedAt: null },
+        data: { removedAt: expect.any(Date), removedBy: 7 },
       });
       expect(prisma.internalFinanceAttachment.createMany).toHaveBeenCalledWith({
         data: [
@@ -1187,6 +1577,60 @@ describe('InternalFinanceService', () => {
           data: { evidenceStatus: 'COMPLETE' },
         }),
       );
+      expect(auditWrite.mock.calls[0][1]).toMatchObject({
+        action: 'FIN_ENTRY_ATTACHMENTS_CHANGE',
+        entityId: 4,
+        params: { added: 1, removed: 1 },
+        metadata: {
+          removedAttachments: [
+            { id: 31, fileUrl: 'https://files.example/old.jpg' },
+          ],
+        },
+      });
+    });
+
+    it('logs a status-only change when the same files are saved again', async () => {
+      const { service, prisma, auditWrite } = setup({
+        evidenceStatus: 'MISSING',
+      });
+      prisma.internalFinanceAttachment.findMany.mockResolvedValue([
+        {
+          id: 32,
+          entryId: 4,
+          kind: 'IMAGE',
+          fileUrl: files.attachments[0].fileUrl,
+          removedAt: null,
+        },
+      ]);
+      await service.replaceWarehouseExpenseAttachments(4, files as any, user);
+      expect(auditWrite).toHaveBeenCalledTimes(1);
+      expect(auditWrite.mock.calls[0][1]).toMatchObject({
+        action: 'FIN_ENTRY_ATTACHMENTS_CHANGE',
+        params: { added: 0, removed: 0 },
+        changes: [
+          expect.objectContaining({
+            field: 'evidenceStatus',
+            detail: { from: 'MISSING', to: 'COMPLETE' },
+          }),
+        ],
+      });
+    });
+
+    it('writes nothing when files and evidence status are unchanged', async () => {
+      const { service, prisma, auditWrite } = setup({
+        evidenceStatus: 'COMPLETE',
+      });
+      prisma.internalFinanceAttachment.findMany.mockResolvedValue([
+        {
+          id: 32,
+          entryId: 4,
+          kind: 'IMAGE',
+          fileUrl: files.attachments[0].fileUrl,
+          removedAt: null,
+        },
+      ]);
+      await service.replaceWarehouseExpenseAttachments(4, files as any, user);
+      expect(auditWrite).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -1392,8 +1836,29 @@ describe('InternalFinanceService', () => {
       40,
     );
     expect(fundLedger.cancelBySource).toHaveBeenCalled();
-    expect(fundLedger.detachFromBatch).toHaveBeenCalledWith(prisma, fee);
+    const detachOpts = {
+      actor: expect.objectContaining({
+        kind: 'USER',
+        userId: 7,
+        trigger: 'packing-slip',
+      }),
+      reason: 'Hủy báo đơn BD-9',
+      keepStatus: true,
+    };
+    expect(fundLedger.detachFromBatch).toHaveBeenCalledWith(
+      prisma,
+      fee,
+      detachOpts,
+    );
     expect(update).toHaveBeenCalledTimes(2);
+    // Hủy báo đơn: mỗi phiếu ghi người hủy + lý do "Hủy báo đơn {mã}".
+    for (const call of update.mock.calls)
+      expect(call[0].data).toMatchObject({
+        status: 'CANCELLED',
+        cancelReason: 'Hủy báo đơn BD-9',
+        cancelledBy: 7,
+        cancelledAt: expect.any(Date),
+      });
 
     fee.weeklyBatch.status = 'IN_APPROVAL';
     expect((await service.packingSlipCancelCheck(9)).blockedReason).toContain(
@@ -1755,6 +2220,7 @@ describe('InternalFinanceService', () => {
           name: '  Khách buôn Mr Dũng  - Kim Mã, HN (Sale 1 - A1)  ',
         }),
       },
+      ...memoryFileTables(),
     };
     const { service } = makeService();
     const packingSlip = {
@@ -1942,7 +2408,7 @@ describe('InternalFinanceService', () => {
 
   it('edits an open Lark-imported vehicle entry but keeps its original content', async () => {
     const update = jest.fn().mockResolvedValue({ id: 94 });
-    const { service } = makeService({
+    const { service, prisma } = makeService({
       internalFinanceEntry: {
         findUnique: jest.fn().mockResolvedValue({
           id: 94,
@@ -1973,7 +2439,11 @@ describe('InternalFinanceService', () => {
     const data = update.mock.calls[0][0].data;
     expect(data.description).toBeUndefined();
     expect(data.occurredAt).toEqual(new Date('2026-10-13T01:00:00.000Z'));
-    expect(data.attachments.create[0].fileUrl).toBe('https://cdn/hoa-don.jpg');
+    // Chứng từ đồng bộ riêng (entry-files), không lồng deleteMany vào update.
+    expect(data.attachments).toBeUndefined();
+    expect(
+      prisma.internalFinanceAttachment.createMany.mock.calls[0][0].data[0],
+    ).toMatchObject({ entryId: 94, fileUrl: 'https://cdn/hoa-don.jpg' });
   });
 
   it('cancels a vehicle entry only with a reason and records who cancelled', async () => {
@@ -2213,17 +2683,22 @@ describe('InternalFinanceService', () => {
       }),
     });
     expect(
-      db.internalFinanceEntry.update.mock.calls[0][0].data.attachments.create,
-    ).toEqual([
-      expect.objectContaining({ fileUrl: 'https://cdn/chung-tu-moi.jpg' }),
+      db.internalFinanceEntry.update.mock.calls[0][0].data,
+    ).not.toHaveProperty('attachments');
+    expect(db.files.get(99)).toEqual([
+      expect.objectContaining({
+        fileUrl: 'https://cdn/chung-tu-moi.jpg',
+        removedAt: null,
+      }),
     ]);
     // Đã trừ trên sổ quỹ Lark theo số cũ: báo để điều chỉnh tay.
     expect(result.locked).toEqual([
       { code: 'TCNB-CHI-SG-20261013-000034', reason: expect.any(String) },
     ]);
     // Không bị hủy ở bước dọn phiếu không còn dùng.
-    const dropped = db.internalFinanceEntry.updateMany.mock.calls.at(-1)![0];
+    const dropped = db.internalFinanceEntry.findMany.mock.calls.at(-1)![0];
     expect(dropped.where.sourceKey.notIn).toContain('LARK:base:tbl:rec1');
+    expect(db.internalFinanceEntry.updateMany).not.toHaveBeenCalled();
   });
 
   it('reports fee entries locked in a weekly batch when the packing slip changes', async () => {
@@ -2490,6 +2965,127 @@ describe('InternalFinanceService', () => {
     expect(cashFlowsService.createCustomerPayment).toHaveBeenCalledTimes(2);
   });
 
+  describe('partial receipt posting', () => {
+    const setup = () => {
+      const state = warehouseEntry();
+      const ctx = makeService({
+        customer: {
+          findMany: jest.fn().mockResolvedValue([
+            { id: 55, code: 'KH1', name: 'An' },
+            { id: 56, code: 'KH2', name: 'Binh' },
+          ]),
+        },
+        invoice: { findMany: jest.fn().mockResolvedValue([]) },
+      });
+      state.sourceSnapshot = { customerIds: [55, 56] };
+      state.invoiceLinks = [];
+      ctx.prisma.internalFinanceEntry.findUnique.mockImplementation(
+        async () => ({ ...state }),
+      );
+      ctx.prisma.internalFinanceEntry.update.mockImplementation(
+        async ({ data }: any) => {
+          Object.assign(state, data);
+          return { ...state };
+        },
+      );
+      return { ...ctx, state };
+    };
+    const allocations = {
+      allocations: [
+        { customerId: 55, amount: 40000, invoices: [] },
+        { customerId: 56, amount: 60000, invoices: [] },
+      ],
+    };
+
+    it('logs the claim and the cash receipts already created when a later one fails', async () => {
+      const { service, prisma, cashFlowsService, auditWrite, state } = setup();
+      prisma.internalFinanceEntry.updateMany.mockResolvedValue({ count: 1 });
+      cashFlowsService.createCustomerPayment
+        .mockResolvedValueOnce({ cashFlow: { id: 9, code: 'PT000009' } })
+        .mockRejectedValueOnce(new Error('Hóa đơn đã thu đủ'));
+
+      await expect(
+        service.postWarehouseReceipt(4, allocations as any, 7),
+      ).rejects.toThrow('Hóa đơn đã thu đủ');
+
+      expect(state.status).toBe('POSTING');
+      expect(auditWrite).toHaveBeenCalledTimes(1);
+      // Phần đã commit ngoài transaction: ghi bằng prisma, không phải tx.
+      expect(auditWrite.mock.calls[0][0]).toBe(prisma);
+      expect(auditWrite.mock.calls[0][1]).toMatchObject({
+        action: 'FIN_ENTRY_POST_FAILED',
+        entityId: 4,
+        actor: { kind: 'USER', userId: 7 },
+        params: {
+          code: 'TCNB-THU-HN-20261002-000001',
+          error: 'Hóa đơn đã thu đủ',
+        },
+        changes: [
+          expect.objectContaining({
+            field: 'status',
+            detail: { from: 'PENDING_ACCOUNTANT', to: 'POSTING' },
+          }),
+        ],
+        snapshot: { lines: [{ label: 'Phiếu thu PT000009' }] },
+        metadata: {
+          partialPost: true,
+          stage: 'cashFlows',
+          newCashFlows: [expect.objectContaining({ id: 9, customerId: 55 })],
+        },
+      });
+    });
+
+    it('keeps the original error when the failure row cannot be written', async () => {
+      const { service, prisma, cashFlowsService, auditWrite } = setup();
+      prisma.internalFinanceEntry.updateMany.mockResolvedValue({ count: 1 });
+      cashFlowsService.createCustomerPayment.mockRejectedValue(
+        new Error('Mất kết nối'),
+      );
+      auditWrite.mockRejectedValueOnce(new Error('audit down'));
+      const logError = jest
+        .spyOn((service as any).logger, 'error')
+        .mockImplementation(() => undefined);
+      await expect(
+        service.postWarehouseReceipt(4, allocations as any, 7),
+      ).rejects.toThrow('Mất kết nối');
+      expect(logError).toHaveBeenCalledWith(
+        expect.stringContaining('audit down'),
+      );
+    });
+
+    it('writes nothing when the claim is lost to another request', async () => {
+      const { service, prisma, cashFlowsService, auditWrite } = setup();
+      prisma.internalFinanceEntry.updateMany.mockResolvedValue({ count: 0 });
+      await expect(
+        service.postWarehouseReceipt(4, allocations as any, 7),
+      ).rejects.toThrow('đang được lập hoặc đã lập');
+      expect(cashFlowsService.createCustomerPayment).not.toHaveBeenCalled();
+      expect(auditWrite).not.toHaveBeenCalled();
+    });
+
+    it('writes nothing when a stale retry fails again before creating a receipt', async () => {
+      const { service, cashFlowsService, auditWrite, state } = setup();
+      Object.assign(state, {
+        status: 'POSTING',
+        cashFlowId: 9,
+        updatedAt: new Date(Date.now() - 60000),
+        sourceSnapshot: {
+          customerIds: [55, 56],
+          postedCashFlows: [
+            { id: 9, code: 'PT000009', customerId: 55, amount: 40000 },
+          ],
+        },
+      });
+      cashFlowsService.createCustomerPayment.mockRejectedValue(
+        new Error('Hóa đơn đã thu đủ'),
+      );
+      await expect(
+        service.postWarehouseReceipt(4, allocations as any, 7),
+      ).rejects.toThrow('Hóa đơn đã thu đủ');
+      expect(auditWrite).not.toHaveBeenCalled();
+    });
+  });
+
   it('allocates a customer cash receipt to another unpaid invoice of the same customer', async () => {
     const state = warehouseEntry();
     const { service, prisma, cashFlowsService } = makeService({
@@ -2628,6 +3224,7 @@ describe('InternalFinanceService', () => {
         'WAREHOUSE_RECEIPT:4',
         9,
         'Bỏ xác nhận số tiền thực nhận',
+        expect.objectContaining({ kind: 'USER', userId: 9 }),
       );
       expect(f.reviewCreate).toHaveBeenCalledTimes(3);
     });
@@ -2689,6 +3286,7 @@ describe('InternalFinanceService', () => {
         'WAREHOUSE_RECEIPT:4',
         9,
         'Ngày thu trước mốc sổ quỹ: đã ghi trên sổ quỹ Lark',
+        expect.objectContaining({ kind: 'USER', userId: 9 }),
       );
       expect(f.fundLedger.postSystemTransaction).not.toHaveBeenCalled();
     });
@@ -2985,7 +3583,8 @@ describe('InternalFinanceService', () => {
       expect.anything(),
       'WAREHOUSE_RECEIPT:4',
       7,
-      expect.any(String),
+      'Hủy phiếu tiền mặt kho',
+      expect.objectContaining({ kind: 'USER', userId: 7 }),
     );
     expect(state.status).toBe('CANCELLED');
   });
@@ -3056,6 +3655,904 @@ describe('InternalFinanceService', () => {
       expect(conditions).toContainEqual({ branchId: { in: [1] } });
     });
   });
+
+  describe('export vehicle entries permission', () => {
+    const setup = (byAction: Record<string, number[]>) => {
+      const ctx = makeService({
+        internalFinanceAttachment: {
+          groupBy: jest.fn().mockResolvedValue([]),
+        },
+      });
+      ctx.prisma.internalFinanceEntry.groupBy = jest.fn().mockResolvedValue([]);
+      ctx.vehicles.allowedBranches.mockImplementation(
+        (_user: any, actions: string[]) =>
+          Promise.resolve(byAction[actions[0]] || []),
+      );
+      const res: any = { setHeader: jest.fn() };
+      return { ...ctx, res };
+    };
+    const user = { id: 7, roles: [] };
+
+    it('refuses users who can view but not export', async () => {
+      const { service, res } = setup({ view: [6, 1], export: [] });
+      await expect(
+        service.exportVehicleEntries({ category: 'FUEL' } as any, user, res),
+      ).rejects.toThrow('Không có quyền xuất file phiếu xe');
+      expect(res.setHeader).not.toHaveBeenCalled();
+    });
+
+    it('refuses a branch filter without export permission there', async () => {
+      const { service, res } = setup({ view: [6, 1], export: [1] });
+      await expect(
+        service.exportVehicleEntries(
+          { category: 'FUEL', branchId: 6 } as any,
+          user,
+          res,
+        ),
+      ).rejects.toThrow('Không có quyền xuất file phiếu xe của chi nhánh này');
+      expect(res.setHeader).not.toHaveBeenCalled();
+    });
+
+    it('limits "all branches" to branches with both view and export', async () => {
+      // Kho SG xem + xuất; Kho HN chỉ xem; chi nhánh 4 xuất mà không xem.
+      const { service } = setup({ view: [6, 1], export: [1, 4] });
+      const { where } = await (service as any).vehicleEntryWhere(
+        { category: 'FUEL' },
+        user,
+        'export',
+      );
+      expect(where.AND).toContainEqual({ branchId: { in: [1] } });
+    });
+
+    it('listing still only needs view', async () => {
+      const { service } = setup({ view: [6, 1], export: [] });
+      const { where } = await (service as any).vehicleEntryWhere(
+        { category: 'FUEL' },
+        user,
+      );
+      expect(where.AND).toContainEqual({ branchId: { in: [6, 1] } });
+    });
+  });
+
+  describe('finance audit log (Cài đặt → Lịch sử)', () => {
+    const user = { id: 7, name: 'Kế toán A', roles: [] };
+    const rowsOf = (auditWrite: jest.SpyInstance, call = 0): any[] => {
+      const rows = auditWrite.mock.calls[call][1];
+      return Array.isArray(rows) ? rows : [rows];
+    };
+
+    it('soft-removes dropped files when editing a manual warehouse expense and logs the edit', async () => {
+      const before = {
+        id: 88,
+        code: 'TCNB-CHI-HN-1',
+        direction: 'EXPENSE',
+        category: 'OTHER_EXPENSE',
+        sourceType: 'MANUAL_EXPENSE',
+        branchId: 6,
+        amount: 100000,
+        description: 'Băng keo',
+        cashFlowId: null,
+        cashIssued: false,
+        weeklyBatchId: null,
+        status: 'PENDING_ACCOUNTANT',
+        evidenceStatus: 'COMPLETE',
+      };
+      // Như Prisma: trường không gửi lên giữ nguyên giá trị cũ.
+      const update = jest.fn(async ({ data }: any) => ({
+        ...before,
+        ...Object.fromEntries(
+          Object.entries(data).filter(([, value]) => value !== undefined),
+        ),
+      }));
+      const { service, prisma, authService, auditWrite } = makeService({
+        internalFinanceEntry: {
+          findUnique: jest.fn().mockResolvedValue(before),
+          update,
+        },
+      });
+      authService.getPermissionsForBranch.mockResolvedValue([
+        'warehouse_expense:update',
+      ]);
+      prisma.internalFinanceAttachment.findMany.mockResolvedValueOnce([
+        {
+          id: 41,
+          entryId: 88,
+          kind: 'EVIDENCE',
+          fileUrl: 'https://cdn/keep.jpg',
+          removedAt: null,
+        },
+        {
+          id: 42,
+          entryId: 88,
+          kind: 'EVIDENCE',
+          fileUrl: 'https://cdn/drop.jpg',
+          fileName: 'drop.jpg',
+          removedAt: null,
+        },
+      ]);
+
+      await service.updateWarehouseExpense(
+        88,
+        {
+          amount: 120000,
+          attachments: [{ fileUrl: 'https://cdn/keep.jpg' }],
+        } as any,
+        user,
+      );
+
+      // Gỡ file = đặt removedAt/removedBy; không deleteMany, không tạo lại file giữ.
+      expect(prisma.internalFinanceAttachment.updateMany).toHaveBeenCalledWith({
+        where: { id: { in: [42] }, removedAt: null },
+        data: { removedAt: expect.any(Date), removedBy: 7 },
+      });
+      expect(
+        prisma.internalFinanceAttachment.createMany,
+      ).not.toHaveBeenCalled();
+      expect(prisma.internalFinanceAttachment.deleteMany).toBeUndefined();
+      const data = update.mock.calls[0][0].data;
+      expect(data).not.toHaveProperty('attachments');
+      expect(JSON.stringify(update.mock.calls)).not.toContain('deleteMany');
+      expect(data.evidenceStatus).toBe('COMPLETE');
+
+      const [row] = rowsOf(auditWrite);
+      expect(auditWrite.mock.calls[0][0]).toBe(prisma);
+      expect(row).toMatchObject({
+        action: 'FIN_ENTRY_UPDATE',
+        entityId: 88,
+        entityCode: 'TCNB-CHI-HN-1',
+        branchId: 6,
+        actor: { kind: 'USER', userId: 7, userName: 'Kế toán A' },
+        params: { code: 'TCNB-CHI-HN-1', kindLabel: 'phiếu chi kho' },
+        metadata: {
+          removedAttachments: [
+            { id: 42, fileUrl: 'https://cdn/drop.jpg', fileName: 'drop.jpg' },
+          ],
+        },
+      });
+      expect(row.changes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            field: 'amount',
+            from: '100.000 đ',
+            to: '120.000 đ',
+          }),
+          expect.objectContaining({
+            field: 'attachments',
+            type: 'item_removed',
+            from: 'drop.jpg',
+          }),
+        ]),
+      );
+
+      // Lưu lại y nguyên: không ghi dòng sửa.
+      await service.updateWarehouseExpense(88, { amount: 100000 }, user);
+      expect(rowsOf(auditWrite, 1)).toEqual([]);
+    });
+
+    it('writes the create row to audit_logs with the real service, inside the create transaction', async () => {
+      const createMany = jest.fn();
+      const ctx = makeService({
+        branch: {
+          findUnique: jest.fn().mockResolvedValue({ id: 6, isActive: true }),
+        },
+        internalFinanceEntry: {
+          create: jest.fn(async ({ data }: any) => ({ id: 91, ...data })),
+        },
+        auditLog: { createMany },
+      });
+      ctx.auditWrite.mockRestore();
+      ctx.authService.getPermissionsForBranch.mockResolvedValue([
+        'warehouse_expense:create',
+      ]);
+
+      await ctx.service.createWarehouseExpense(
+        {
+          branchId: 6,
+          occurredAt: '2026-10-09T00:00:00+07:00',
+          description: 'Băng keo',
+          amount: 180000,
+        } as any,
+        user,
+      );
+
+      expect(createMany).toHaveBeenCalledTimes(1);
+      const [row] = createMany.mock.calls[0][0].data;
+      expect(row).toMatchObject({
+        actionType: 'POST',
+        actionCode: 'FIN_ENTRY_CREATE',
+        category: 'internal_finance',
+        entityType: 'internal_finance_entries',
+        entityId: '91',
+        entityCode: 'TCNB-CHI-HN-20260930-000001',
+        branchId: 6,
+        userId: 7,
+        userName: 'Kế toán A',
+        metadata: expect.objectContaining({
+          actorKind: 'USER',
+          trigger: 'http',
+          sourceType: 'MANUAL_EXPENSE',
+        }),
+      });
+      expect(row.message).toContain(
+        'Tạo phiếu chi kho TCNB-CHI-HN-20260930-000001',
+      );
+      expect(row.message).toContain('180.000 đ');
+    });
+
+    it('logs one row per tick and untick, with the role and status change', async () => {
+      const entry: any = {
+        id: 77,
+        code: 'TCNB-77',
+        branchId: 6,
+        direction: 'EXPENSE',
+        sourceType: 'PACKING_SLIP',
+        category: 'DELIVERY_FEE',
+        status: 'PENDING_ACCOUNTANT',
+        cashIssued: false,
+        cashFlowId: null,
+        weeklyBatchId: null,
+        weeklyBatch: null,
+        managerReviewedAt: null,
+        accountantReviewedAt: new Date('2026-10-10T03:00:00Z'),
+      };
+      const { service, authService, auditWrite } = makeService({
+        internalFinanceEntry: {
+          findUnique: jest.fn(async () => entry),
+          update: jest.fn(async ({ data }: any) => Object.assign(entry, data)),
+        },
+        internalFinanceReview: { create: jest.fn() },
+      });
+      authService.getPermissionsForBranch.mockResolvedValue([
+        'warehouse_expense:check_manager',
+      ]);
+
+      await service.checkWarehouseExpense(77, user, {
+        role: 'manager',
+        checked: true,
+      });
+      await service.checkWarehouseExpense(77, user, {
+        role: 'manager',
+        checked: false,
+      });
+
+      const [check] = rowsOf(auditWrite, 0);
+      const [uncheck] = rowsOf(auditWrite, 1);
+      expect(check).toMatchObject({
+        action: 'FIN_ENTRY_CHECK',
+        entityId: 77,
+        params: { roleLabel: 'Quản lý kho', code: 'TCNB-77' },
+      });
+      expect(check.changes).toEqual([
+        expect.objectContaining({
+          field: 'managerReviewedAt',
+          from: 'Không',
+          to: 'Có',
+        }),
+        expect.objectContaining({
+          field: 'status',
+          from: 'Chờ kiểm tra',
+          to: 'Đã kiểm tra',
+        }),
+      ]);
+      expect(uncheck).toMatchObject({
+        action: 'FIN_ENTRY_UNCHECK',
+        params: { roleLabel: 'Quản lý kho' },
+      });
+      expect(uncheck.changes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ field: 'status', to: 'Chờ kiểm tra' }),
+        ]),
+      );
+      // Tick lẻ: mỗi lần một mã thao tác riêng.
+      expect(check.actor.opId).not.toBe(uncheck.actor.opId);
+    });
+
+    it('logs a cancelled warehouse expense with its reason and review', async () => {
+      const entry = {
+        id: 9,
+        code: 'TCNB-CHI-HN-9',
+        branchId: 6,
+        category: 'OTHER_EXPENSE',
+        direction: 'EXPENSE',
+        amount: 50000,
+        status: 'MANAGER_APPROVED',
+        cancelReason: null,
+        cashIssued: false,
+        cashFlowId: null,
+        weeklyBatchId: null,
+        weeklyBatch: null,
+      };
+      const { service, authService, auditWrite } = makeService({
+        internalFinanceEntry: {
+          findUnique: jest.fn().mockResolvedValue(entry),
+          update: jest.fn().mockResolvedValue({ id: 9 }),
+        },
+        internalFinanceReview: {
+          create: jest.fn().mockResolvedValue({ id: 501 }),
+        },
+      });
+      authService.getPermissionsForBranch.mockResolvedValue([
+        'warehouse_expense:cancel',
+      ]);
+      await service.cancelWarehouseExpense(9, user, ' Sai số tiền ');
+      const [row] = rowsOf(auditWrite);
+      expect(row).toMatchObject({
+        action: 'FIN_ENTRY_CANCEL',
+        entityCode: 'TCNB-CHI-HN-9',
+        params: { kindLabel: 'phiếu chi kho', reasonSuffix: ': Sai số tiền' },
+        metadata: { statusBefore: 'MANAGER_APPROVED', reviewId: 501 },
+      });
+      expect(row.changes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ field: 'status', to: 'Đã hủy' }),
+          expect.objectContaining({ field: 'cancelReason', to: 'Sai số tiền' }),
+        ]),
+      );
+    });
+
+    it('logs a customer-list change on a manual warehouse receipt even when the first customer stays', async () => {
+      const before: any = {
+        ...warehouseEntry(),
+        sourceType: 'MANUAL_RECEIPT',
+        sourceKey: null,
+        category: 'MANUAL_RECEIPT',
+        subCategory: 'OTHER',
+        sourceSnapshot: {
+          customerIds: [55, 56],
+          receiptKind: 'CUSTOMER',
+          manual: true,
+          note: '',
+        },
+        invoiceLinks: [],
+      };
+      const ctx = makeService({
+        customer: {
+          findMany: jest.fn().mockResolvedValue([{ id: 55 }, { id: 57 }]),
+        },
+      });
+      ctx.prisma.internalFinanceEntry.findUnique.mockImplementation(
+        async ({ include }: any) => (include ? before : null),
+      );
+      ctx.prisma.internalFinanceEntry.update.mockImplementation(
+        async ({ data }: any) => ({
+          ...before,
+          ...Object.fromEntries(
+            Object.entries(data).filter(([, value]) => value !== undefined),
+          ),
+          invoiceLinks: [],
+        }),
+      );
+      await ctx.service.updateWarehouseReceipt(
+        4,
+        { customers: [{ customerId: 55 }, { customerId: 57 }] } as any,
+        9,
+      );
+      expect(
+        ctx.prisma.internalFinanceEntry.update.mock.calls[0][0].data,
+      ).toMatchObject({
+        customerId: 55,
+        sourceSnapshot: expect.objectContaining({ customerIds: [55, 57] }),
+      });
+      expect(ctx.auditWrite).toHaveBeenCalledTimes(1);
+      const rows = rowsOf(ctx.auditWrite);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        action: 'FIN_ENTRY_UPDATE',
+        entityId: 4,
+        actor: { kind: 'USER', userId: 9 },
+      });
+      // Một dòng "Khách hàng" cho danh sách, không thêm dòng customerId riêng.
+      expect(rows[0].changes).toEqual([
+        expect.objectContaining({
+          field: 'customerIds',
+          label: 'Khách hàng',
+          detail: { from: [55, 56], to: [55, 57] },
+        }),
+      ]);
+    });
+
+    it('writes no update row when a warehouse receipt is saved unchanged', async () => {
+      const before: any = {
+        ...warehouseEntry(),
+        sourceType: 'MANUAL_RECEIPT',
+        sourceKey: null,
+        category: 'MANUAL_RECEIPT',
+        // Phiếu cũ: chưa có customerIds trong snapshot.
+        sourceSnapshot: { manual: true },
+        invoiceLinks: [],
+      };
+      const ctx = makeService({
+        customer: { findMany: jest.fn().mockResolvedValue([{ id: 55 }]) },
+      });
+      ctx.prisma.internalFinanceEntry.findUnique.mockImplementation(
+        async ({ include }: any) => (include ? before : null),
+      );
+      ctx.prisma.internalFinanceEntry.update.mockImplementation(
+        async ({ data }: any) => ({
+          ...before,
+          ...Object.fromEntries(
+            Object.entries(data).filter(([, value]) => value !== undefined),
+          ),
+          invoiceLinks: [],
+        }),
+      );
+      await ctx.service.updateWarehouseReceipt(
+        4,
+        { customers: [{ customerId: 55 }] } as any,
+        9,
+      );
+      expect(ctx.auditWrite).toHaveBeenCalledTimes(1);
+      expect(rowsOf(ctx.auditWrite)).toEqual([]);
+    });
+
+    it('stores the typed reason and canceller when cancelling a warehouse receipt', async () => {
+      const cancel = async (reason?: string) => {
+        const state = {
+          ...warehouseEntry(),
+          status: 'PENDING_ACCOUNTANT',
+        } as any;
+        const ctx = makeService();
+        ctx.prisma.internalFinanceEntry.update.mockImplementation(
+          async ({ data }: any) => {
+            Object.assign(state, data);
+            return { ...state };
+          },
+        );
+        jest.spyOn(ctx.service, 'getWarehouseReceipt').mockResolvedValue(state);
+        await ctx.service.cancelWarehouseReceipt(
+          4,
+          { cancelCashFlows: false, ...(reason ? { reason } : {}) },
+          9,
+        );
+        return ctx;
+      };
+
+      const typed = await cancel('  Khách trả lại tiền ');
+      expect(
+        typed.prisma.internalFinanceEntry.update.mock.calls[0][0].data,
+      ).toMatchObject({
+        status: 'CANCELLED',
+        cancelReason: 'Khách trả lại tiền',
+        cancelledBy: 9,
+        cancelledAt: expect.any(Date),
+      });
+      // Chưa lập phiếu thu: tiền rút khỏi quỹ với cùng lý do, cùng người.
+      expect(typed.fundLedger.cancelBySource).toHaveBeenCalledWith(
+        typed.prisma,
+        'WAREHOUSE_RECEIPT:4',
+        9,
+        'Khách trả lại tiền',
+        expect.objectContaining({ kind: 'USER', userId: 9 }),
+      );
+      const [row] = rowsOf(typed.auditWrite);
+      expect(row).toMatchObject({
+        action: 'FIN_ENTRY_CANCEL',
+        entityId: 4,
+        entityCode: 'TCNB-THU-HN-20261002-000001',
+        actor: { kind: 'USER', userId: 9 },
+        params: {
+          kindLabel: 'phiếu thu tiền mặt',
+          reasonSuffix: ': Khách trả lại tiền',
+        },
+        metadata: {
+          statusBefore: 'PENDING_ACCOUNTANT',
+          cancelCashFlows: false,
+          fundReleased: true,
+        },
+      });
+
+      const blank = await cancel();
+      expect(
+        blank.prisma.internalFinanceEntry.update.mock.calls[0][0].data
+          .cancelReason,
+      ).toBe('Hủy phiếu tiền mặt kho');
+    });
+
+    it('cancels entries a packing slip drops with a reason, the canceller and one row each', async () => {
+      const db = memoryFinanceDb();
+      const { service, auditWrite } = makeService();
+      const slip = {
+        id: 26,
+        code: 'BD-26',
+        branchId: 6,
+        createdAt: new Date('2026-10-02T00:00:00.000Z'),
+        paymentMethod: 'cash',
+        cashAmount: 50000,
+        hasFeeGuiBen: true,
+        feeGuiBen: 10000,
+        hasFeeGrab: false,
+        feeGrab: 0,
+        hasCuocGuiHang: false,
+        cuocGuiHang: 0,
+        hasCuocNhanHang: false,
+        cuocNhanHang: 0,
+        invoices: [{ invoiceId: 1, invoice: { customerId: 8 } }],
+        expenseFiles: [],
+        images: [],
+      };
+      await service.syncPackingSlipEntriesInTransaction(db as any, slip, 7);
+      const created = rowsOf(auditWrite, 0);
+      expect(created.map((row) => row.action)).toEqual([
+        'FIN_ENTRY_CREATE',
+        'FIN_ENTRY_CREATE',
+      ]);
+      expect(created[0].actor).toMatchObject({
+        kind: 'USER',
+        userId: 7,
+        trigger: 'packing-slip',
+      });
+      expect(created[0].actor.opId).toBe(created[1].actor.opId);
+      expect(auditWrite.mock.calls[0][0]).toBe(db);
+
+      await service.syncPackingSlipEntriesInTransaction(
+        db as any,
+        { ...slip, hasFeeGuiBen: false, paymentMethod: 'transfer' },
+        8,
+      );
+      const fee = db.entries.get('PACKING_SLIP:26:FEE_GUI_BEN');
+      const receipt = db.entries.get('PACKING_SLIP:26:CUSTOMER_RECEIPT');
+      for (const entry of [fee, receipt])
+        expect(entry).toMatchObject({
+          status: 'CANCELLED',
+          cancelReason: 'Báo đơn BD-26 bỏ khoản này',
+          cancelledBy: 8,
+          cancelledAt: expect.any(Date),
+        });
+      const dropped = rowsOf(auditWrite, 1);
+      expect(dropped.map((row) => [row.action, row.entityId])).toEqual([
+        ['FIN_ENTRY_CANCEL', fee.id],
+        ['FIN_ENTRY_CANCEL', receipt.id],
+      ]);
+      expect(dropped[0]).toMatchObject({
+        params: { reasonSuffix: ': Báo đơn BD-26 bỏ khoản này' },
+        actor: { userId: 8, trigger: 'packing-slip' },
+        metadata: { statusBefore: 'PENDING_ACCOUNTANT', packingSlipId: 26 },
+      });
+
+      // Báo đơn thu tiền mặt lại: mở lại phiếu thu, xóa thông tin hủy cũ.
+      await service.syncPackingSlipEntriesInTransaction(db as any, slip, 8);
+      expect(receipt).toMatchObject({
+        status: 'PENDING_ACCOUNTANT',
+        cancelReason: null,
+        cancelledAt: null,
+        cancelledBy: null,
+      });
+      const reopened = rowsOf(auditWrite, 2).find(
+        (row) => row.action === 'FIN_ENTRY_REOPEN',
+      );
+      expect(reopened).toMatchObject({
+        entityId: receipt.id,
+        params: { reasonSuffix: ': theo báo đơn BD-26' },
+        snapshot: {
+          cancelledBefore: {
+            cancelReason: 'Báo đơn BD-26 bỏ khoản này',
+            cancelledBy: 8,
+          },
+        },
+      });
+    });
+
+    describe('re-preparing a week with nothing new', () => {
+      const prepare = async (keptStatus: string, totalAmount = 100) => {
+        const ctx = makeService({
+          branch: {
+            findUnique: jest.fn().mockResolvedValue({ id: 6, isActive: true }),
+          },
+          internalFinanceWeeklyBatch: {
+            findFirst: jest.fn().mockResolvedValue({
+              id: 9,
+              code: 'TUAN-9',
+              status: 'READY',
+              totalAmount,
+              entries: [
+                { id: 5, code: 'TCNB-5', branchId: 6, status: keptStatus },
+              ],
+            }),
+            findMany: jest.fn().mockResolvedValue([]),
+            update: jest.fn().mockResolvedValue({ id: 9, code: 'TUAN-9' }),
+          },
+          internalFinanceEntry: {
+            findMany: jest.fn().mockResolvedValue([
+              {
+                id: 5,
+                code: 'TCNB-5',
+                amount: 100,
+                status: keptStatus,
+                branchId: 6,
+              },
+            ]),
+            updateMany: jest.fn(),
+          },
+        });
+        ctx.authService.getPermissionsForBranch.mockResolvedValue([
+          'weekly_approval:prepare',
+        ]);
+        await ctx.service.prepareWarehouseExpenseBatch(
+          { branchId: 6, weekStart: '2026-10-19', weekEnd: '2026-10-25' },
+          user,
+        );
+        return rowsOf(ctx.auditWrite);
+      };
+
+      it('writes no row when entries, total and statuses are unchanged', async () => {
+        expect(await prepare('READY_FOR_WEEKLY_APPROVAL')).toEqual([]);
+      });
+
+      it('still logs a changed total', async () => {
+        const rows = await prepare('READY_FOR_WEEKLY_APPROVAL', 130);
+        expect(rows.map((row) => row.action)).toEqual(['FIN_BATCH_REPREPARE']);
+      });
+
+      it('logs a kept entry whose status returns to "đã gom tuần"', async () => {
+        const rows = await prepare('PENDING_ACCOUNTANT');
+        expect(rows.map((row) => [row.action, row.entityId])).toEqual([
+          ['FIN_BATCH_REPREPARE', 9],
+          ['FIN_ENTRY_WEEKLY_STATUS', 5],
+        ]);
+        expect(rows[0].metadata).toMatchObject({ restatusedEntryIds: [5] });
+        expect(rows[1]).toMatchObject({
+          params: { code: 'TCNB-5', batchCode: 'TUAN-9' },
+          changes: [
+            expect.objectContaining({
+              detail: {
+                from: 'PENDING_ACCOUNTANT',
+                to: 'READY_FOR_WEEKLY_APPROVAL',
+              },
+            }),
+          ],
+        });
+      });
+    });
+
+    it('logs a re-prepared week with the entries added and dropped', async () => {
+      const update = jest.fn().mockResolvedValue({ id: 9, code: 'TUAN-9' });
+      const updateMany = jest.fn();
+      const { service, authService, auditWrite } = makeService({
+        branch: {
+          findUnique: jest.fn().mockResolvedValue({ id: 6, isActive: true }),
+        },
+        internalFinanceWeeklyBatch: {
+          findFirst: jest.fn().mockResolvedValue({
+            id: 9,
+            code: 'TUAN-9',
+            status: 'READY',
+            totalAmount: 130,
+            entries: [
+              {
+                id: 5,
+                code: 'TCNB-5',
+                branchId: 6,
+                status: 'READY_FOR_WEEKLY_APPROVAL',
+              },
+              {
+                id: 4,
+                code: 'TCNB-4',
+                branchId: 6,
+                status: 'READY_FOR_WEEKLY_APPROVAL',
+              },
+            ],
+          }),
+          findMany: jest.fn().mockResolvedValue([]),
+          update,
+        },
+        internalFinanceEntry: {
+          findMany: jest.fn().mockResolvedValue([
+            {
+              id: 5,
+              code: 'TCNB-5',
+              amount: 100,
+              status: 'READY_FOR_WEEKLY_APPROVAL',
+              branchId: 6,
+            },
+            {
+              id: 6,
+              code: 'TCNB-6',
+              amount: 50,
+              status: 'MANAGER_APPROVED',
+              branchId: 6,
+            },
+          ]),
+          updateMany,
+        },
+      });
+      authService.getPermissionsForBranch.mockResolvedValue([
+        'weekly_approval:prepare',
+      ]);
+
+      await service.prepareWarehouseExpenseBatch(
+        { branchId: 6, weekStart: '2026-10-19', weekEnd: '2026-10-25' },
+        user,
+      );
+
+      const rows = rowsOf(auditWrite);
+      expect(rows.map((row) => [row.action, row.entityId])).toEqual([
+        ['FIN_BATCH_REPREPARE', 9],
+        ['FIN_ENTRY_BATCH_ADD', 6],
+        ['FIN_ENTRY_BATCH_REMOVE', 4],
+      ]);
+      expect(rows[0]).toMatchObject({
+        entityCode: 'TUAN-9',
+        params: { batchCode: 'TUAN-9', added: 1, dropped: 1, totalAmount: 150 },
+        metadata: { addedEntryIds: [6], droppedEntryIds: [4] },
+      });
+      expect(rows[1].changes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ field: 'weeklyBatchId', to: 'TUAN-9' }),
+          expect.objectContaining({ field: 'status', to: 'Đã gom tuần' }),
+        ]),
+      );
+      expect(rows[2]).toMatchObject({
+        metadata: { batchId: 9, statusBefore: 'READY_FOR_WEEKLY_APPROVAL' },
+      });
+      expect(rows[2].changes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ field: 'status', to: 'Đã kiểm tra' }),
+        ]),
+      );
+      expect(new Set(rows.map((row) => row.actor.opId)).size).toBe(1);
+    });
+
+    it('logs the Lark submission per batch and entry, and the failure on rollback', async () => {
+      const batch = {
+        id: 4,
+        code: 'TUAN-4',
+        branchId: 6,
+        status: 'READY',
+        approvalRequestId: null,
+        totalAmount: 100,
+        weekStart: new Date('2026-10-04T17:00:00Z'),
+        weekEnd: new Date('2026-10-11T16:59:59Z'),
+        updatedAt: new Date(),
+      };
+      const ok = makeService({
+        internalFinanceWeeklyBatch: {
+          findUnique: jest.fn().mockResolvedValue(batch),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          update: jest.fn(),
+        },
+      });
+      // Phiếu trong batch; không có phiếu tick muộn (chưa thuộc batch nào).
+      ok.prisma.internalFinanceEntry.findMany.mockImplementation(
+        async ({ where }: any) =>
+          where?.weeklyBatchId === null
+            ? []
+            : [{ id: 11, code: 'TCNB-11', branchId: 6 }],
+      );
+      // Lịch sử gửi duyệt ghi trong transaction khóa batch, TRƯỚC khi gọi Lark.
+      ok.approvalLifecycle.create.mockImplementation(async () => {
+        expect(ok.auditWrite).toHaveBeenCalledTimes(1);
+        return { id: 55 };
+      });
+      await ok.service.createWeeklyApproval(4, 7);
+      expect(ok.auditWrite).toHaveBeenCalledTimes(1);
+      const rows = rowsOf(ok.auditWrite);
+      expect(rows.map((row) => [row.action, row.entityId])).toEqual([
+        ['FIN_BATCH_SUBMIT', 4],
+        ['FIN_ENTRY_WEEKLY_STATUS', 11],
+      ]);
+      expect(rows[0]).toMatchObject({
+        params: { batchCode: 'TUAN-4', totalAmount: 100 },
+        changes: [expect.objectContaining({ field: 'status' })],
+        metadata: { kind: 'EXPENSE_HN', entryIds: [11] },
+      });
+      expect(rows[0].metadata).not.toHaveProperty('approvalRequestId');
+      // FIN_APPROVAL_CREATE (approval-lifecycle) dùng chung opId với batch.
+      expect(ok.approvalLifecycle.create.mock.calls[0][2].opId).toBe(
+        rows[0].actor.opId,
+      );
+      expect(rows[1].params).toMatchObject({
+        code: 'TCNB-11',
+        statusLabel: 'Đang duyệt tuần',
+      });
+      expect(ok.prisma.internalFinanceWeeklyBatch.update).toHaveBeenCalledWith({
+        where: { id: 4 },
+        data: { approvalRequestId: 55 },
+      });
+
+      const failed = makeService({
+        internalFinanceWeeklyBatch: {
+          findUnique: jest.fn().mockResolvedValue(batch),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        },
+      });
+      failed.prisma.internalFinanceEntry.findMany.mockImplementation(
+        async ({ where }: any) =>
+          where?.weeklyBatchId === null
+            ? []
+            : [{ id: 11, code: 'TCNB-11', branchId: 6 }],
+      );
+      failed.approvalLifecycle.create.mockRejectedValue(
+        new Error('Offline Lark'),
+      );
+      await expect(failed.service.createWeeklyApproval(4, 7)).rejects.toThrow(
+        'Offline Lark',
+      );
+      expect(failed.auditWrite).toHaveBeenCalledTimes(2);
+      expect(rowsOf(failed.auditWrite, 0).map((row) => row.action)).toEqual([
+        'FIN_BATCH_SUBMIT',
+        'FIN_ENTRY_WEEKLY_STATUS',
+      ]);
+      const revert = rowsOf(failed.auditWrite, 1);
+      expect(revert.map((row) => [row.action, row.entityId])).toEqual([
+        ['FIN_BATCH_SUBMIT_FAILED', 4],
+        ['FIN_ENTRY_WEEKLY_STATUS', 11],
+      ]);
+      expect(revert[0]).toMatchObject({
+        params: { batchCode: 'TUAN-4', error: 'Offline Lark' },
+        changes: [
+          expect.objectContaining({
+            field: 'status',
+            detail: { from: 'IN_APPROVAL', to: 'READY' },
+          }),
+        ],
+        metadata: { reset: true },
+      });
+      expect(revert[1].changes).toEqual([
+        expect.objectContaining({
+          detail: {
+            from: 'IN_WEEKLY_APPROVAL',
+            to: 'READY_FOR_WEEKLY_APPROVAL',
+          },
+        }),
+      ]);
+
+      // Batch đã bị sự kiện Lark / hủy đổi trong lúc gọi: chỉ ghi lỗi.
+      const moved = makeService({
+        internalFinanceWeeklyBatch: {
+          findUnique: jest.fn().mockResolvedValue(batch),
+          updateMany: jest
+            .fn()
+            .mockResolvedValueOnce({ count: 1 })
+            .mockResolvedValueOnce({ count: 0 }),
+        },
+      });
+      moved.approvalLifecycle.create.mockRejectedValue(new Error('Lỗi mạng'));
+      await expect(moved.service.createWeeklyApproval(4, 7)).rejects.toThrow(
+        'Lỗi mạng',
+      );
+      const movedRows = rowsOf(moved.auditWrite, 1);
+      expect(movedRows).toHaveLength(1);
+      expect(movedRows[0]).toMatchObject({
+        action: 'FIN_BATCH_SUBMIT_FAILED',
+        metadata: { reset: false },
+      });
+      expect(movedRows[0].changes).toEqual([]);
+    });
+
+    it('logs manual fuel advances added and cancelled', async () => {
+      const { service, auditWrite, prisma } = makeService({
+        fuelAdvanceEntry: {
+          create: jest.fn(async ({ data }: any) => ({ id: 3, ...data })),
+          findUnique: jest.fn().mockResolvedValue({
+            id: 3,
+            branchId: 6,
+            status: 'ACTIVE',
+            amount: 20000000,
+            occurredAt: new Date('2026-11-14T00:00:00+07:00'),
+            note: null,
+          }),
+          update: jest.fn(async ({ data }: any) => ({ id: 3, ...data })),
+        },
+      });
+      await service.createFuelAdvanceEntry(
+        { occurredAt: '2026-11-14', amount: 20000000 },
+        user,
+      );
+      await service.cancelFuelAdvanceEntry(3, 'Nhập trùng', user);
+      expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+      expect(rowsOf(auditWrite, 0)[0]).toMatchObject({
+        action: 'FIN_FUEL_ADVANCE_CREATE',
+        entityType: 'fuel_advance_entries',
+        entityId: 3,
+        params: { amount: 20000000, date: '14/11/2026' },
+      });
+      expect(rowsOf(auditWrite, 1)[0]).toMatchObject({
+        action: 'FIN_FUEL_ADVANCE_CANCEL',
+        entityId: 3,
+        params: { amount: 20000000, reasonSuffix: ': Nhập trùng' },
+      });
+    });
+  });
 });
 
 function warehouseEntry() {
@@ -3085,10 +4582,64 @@ function warehouseEntry() {
   };
 }
 
+/** Bảng chứng từ / liên kết hóa đơn trong bộ nhớ (theo entryId). */
+function memoryFileTables() {
+  const files = new Map<number, any[]>();
+  const links = new Map<number, any[]>();
+  let nextId = 1000;
+  const matches = (row: any, where: any) =>
+    (!where.id?.in || where.id.in.includes(row.id)) &&
+    (where.entryId === undefined || row.entryId === where.entryId) &&
+    (!('removedAt' in where) || row.removedAt === where.removedAt);
+  const all = (table: Map<number, any[]>) => [...table.values()].flat();
+  return {
+    files,
+    links,
+    internalFinanceAttachment: {
+      findMany: jest.fn(async ({ where }: any) =>
+        all(files).filter((row) => matches(row, where)),
+      ),
+      createMany: jest.fn(async ({ data }: any) => {
+        for (const row of data) {
+          const list = files.get(row.entryId) ?? [];
+          list.push({ id: nextId++, removedAt: null, removedBy: null, ...row });
+          files.set(row.entryId, list);
+        }
+        return { count: data.length };
+      }),
+      updateMany: jest.fn(async ({ where, data }: any) => {
+        const rows = all(files).filter((row) => matches(row, where));
+        rows.forEach((row) => Object.assign(row, data));
+        return { count: rows.length };
+      }),
+    },
+    internalFinanceInvoiceLink: {
+      findMany: jest.fn(async ({ where }: any) =>
+        all(links).filter((row) => matches(row, where)),
+      ),
+      create: jest.fn(async ({ data }: any) => {
+        const row = { id: nextId++, removedAt: null, removedBy: null, ...data };
+        links.set(data.entryId, [...(links.get(data.entryId) ?? []), row]);
+        return row;
+      }),
+      update: jest.fn(async ({ where, data }: any) => {
+        const row = all(links).find((item) => item.id === where.id);
+        return Object.assign(row, data);
+      }),
+      updateMany: jest.fn(async ({ where, data }: any) => {
+        const rows = all(links).filter((row) => matches(row, where));
+        rows.forEach((row) => Object.assign(row, data));
+        return { count: rows.length };
+      }),
+    },
+  };
+}
+
 function memoryFinanceDb() {
   const entries = new Map<string, any>();
   return {
     entries,
+    ...memoryFileTables(),
     customer: {
       findUnique: jest.fn().mockResolvedValue({ name: 'Khách 55' }),
     },
@@ -3121,7 +4672,16 @@ function memoryFinanceDb() {
           [...entries.values()].filter(
             (entry) =>
               entry.packingSlipId === where.packingSlipId &&
-              entry.direction === where.direction &&
+              (where.direction
+                ? entry.direction === where.direction
+                : // Dọn phiếu báo đơn bỏ: thu, hoặc chi chưa vào batch tuần.
+                  !where.OR ||
+                  where.OR.some(
+                    (option: any) =>
+                      entry.direction === option.direction &&
+                      (!('weeklyBatchId' in option) ||
+                        (entry.weeklyBatchId ?? null) === option.weeklyBatchId),
+                  )) &&
               !where.sourceKey?.notIn?.includes(entry.sourceKey) &&
               (!where.status?.in || where.status.in.includes(entry.status)),
           ),
@@ -3143,6 +4703,7 @@ function memoryFinanceDb() {
         let count = 0;
         for (const entry of entries.values()) {
           if (entry.packingSlipId !== where.packingSlipId) continue;
+          if (where.id?.in && !where.id.in.includes(entry.id)) continue;
           if (where.sourceKey?.notIn?.includes(entry.sourceKey)) continue;
           if (where.status?.in && !where.status.in.includes(entry.status))
             continue;

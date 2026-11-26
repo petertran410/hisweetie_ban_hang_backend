@@ -1,9 +1,14 @@
 import {
   AiChatService,
+  ASSISTANT_RULES,
   AUDIT_ASK,
   AUDIT_TOOL,
-  systemPrompt,
+  FINAL_ROUND_NOTE,
+  historyStart,
+  requestContext,
+  sessionPrompt,
 } from './ai-chat.service';
+import { toAnthropicMessages } from './llm/anthropic-chat-client';
 import type { AiChatConfig } from './ai.config';
 import type { AiScope } from './ai-scope';
 import {
@@ -14,6 +19,7 @@ import {
 } from './llm/openai-chat-client';
 import type { AiTool } from './tools/common';
 import { MAX_RESULT_CHARS, runTool } from './tools/run-tool';
+import { limiter } from './tools/tool-helpers';
 import { forwardedContext, lastUserText } from './ai-assistant.controller';
 
 const CONFIG: AiChatConfig = {
@@ -21,6 +27,7 @@ const CONFIG: AiChatConfig = {
   configured: true,
   assistantModels: ['claude-sonnet-5-5', 'ocg/deepseek-v4.1-flash'],
   maxToolRounds: 5,
+  maxToolConcurrency: 2,
   timeoutMs: 10_000,
   rateLimitPerHour: 20,
   retentionDays: 90,
@@ -90,11 +97,28 @@ function fakeStore(
       deleteMany: jest.fn(async () => ({ count: 2 })),
     },
     aiChatMessage: {
-      findMany: jest.fn(async ({ where }: Row) =>
-        messages
-          .filter((r) => r.conversationId === where.conversationId)
-          .slice()
-          .reverse(),
+      count: jest.fn(({ where }: { where: { conversationId: number } }) =>
+        Promise.resolve(
+          messages.filter((r) => r.conversationId === where.conversationId)
+            .length,
+        ),
+      ),
+      // Theo thứ tự tạo (createdAt, id tăng dần), có skip / take như Prisma.
+      findMany: jest.fn(
+        ({
+          where,
+          skip = 0,
+          take,
+        }: {
+          where: { conversationId: number };
+          skip?: number;
+          take?: number;
+        }) =>
+          Promise.resolve(
+            messages
+              .filter((r) => r.conversationId === where.conversationId)
+              .slice(skip, take === undefined ? undefined : skip + take),
+          ),
       ),
       create: jest.fn(async ({ data }: Row) => {
         const row = { id: ++seq, ...data };
@@ -160,10 +184,11 @@ function makeService(
   store: ReturnType<typeof fakeStore>,
   llm: LlmClient,
   config: Partial<AiChatConfig> = {},
+  tools: AiTool[] = [invoiceTool],
 ) {
   const service = new AiChatService(
     store.prisma as any,
-    { tools: [invoiceTool], deps: {} } as any,
+    { tools, deps: {} } as any,
     store.audit as any,
   );
   service.config = { ...CONFIG, ...config };
@@ -174,7 +199,11 @@ function makeService(
 async function ask(
   service: AiChatService,
   scope: AiScope,
-  input: { question: string; conversationId?: number | null },
+  input: {
+    question: string;
+    conversationId?: number | null;
+    page?: { path: string; title: string };
+  },
 ) {
   const events: Row[] = [];
   await service.ask(
@@ -184,7 +213,7 @@ async function ask(
       runId: 'run-1',
       conversationId: input.conversationId ?? null,
       question: input.question,
-      page: { path: '/don-hang/hoa-don', title: 'Hoá đơn' },
+      page: input.page ?? { path: '/don-hang/hoa-don', title: 'Hoá đơn' },
       chatCustomerId: 5,
     },
     (e) => events.push(e as Row),
@@ -245,9 +274,22 @@ describe('AiChatService.ask', () => {
       role: 'tool',
       content: JSON.stringify({ total: 3, revenue: 12_500_000 }),
     });
-    // Ngữ cảnh trang + khách đang chat vào system prompt.
-    expect(round2[0].content).toContain('/don-hang/hoa-don');
-    expect(round2[0].content).toContain('KH000123');
+    // Quy tắc cố định mang điểm cache; trang + khách đang chat đi sau câu hỏi, không vào system.
+    expect(round2[0]).toEqual({
+      role: 'system',
+      content: ASSISTANT_RULES,
+      cache: true,
+    });
+    expect(round2[1].content).not.toContain('/don-hang/hoa-don');
+    const questionMessage = round2.find((m) => m.role === 'user') as Row;
+    expect(questionMessage).toMatchObject({
+      content: 'Doanh thu tháng này?',
+      cache: true,
+    });
+    expect(questionMessage.context).toContain('/don-hang/hoa-don');
+    expect(questionMessage.context).toContain('KH000123');
+    // Vòng 2 gửi đúng danh sách công cụ của vòng 1 (đổi công cụ là mất cache toàn bộ).
+    expect(llm.calls[1].tools).toEqual(llm.calls[0].tools);
 
     // Không lưu kết quả thô của công cụ.
     expect(store.messages.map((m) => [m.role, m.content])).toEqual([
@@ -371,12 +413,101 @@ describe('AiChatService.ask', () => {
       conversationId: 5,
     });
     expect(
-      llm.calls[0].messages.slice(1).map((m) => [m.role, m.content]),
+      llm.calls[0].messages.slice(2).map((m) => [m.role, m.content]),
     ).toEqual([
       ['user', 'Câu 1'],
       ['assistant', 'Đáp 1'],
       ['user', 'Câu 2'],
     ]);
+  });
+
+  it('câu hỏi sau gửi lại y hệt phần đầu của câu trước, nên đọc được cache', async () => {
+    const store = fakeStore();
+    const llm = scriptedLlm([answer('Đáp 1'), answer('Đáp 2')]);
+    const service = makeService(store, llm);
+    await ask(service, SCOPE, { question: 'Câu 1' });
+    // Hỏi tiếp từ một trang khác: ngữ cảnh đổi nhưng phần đầu prompt không được đổi.
+    await ask(service, SCOPE, {
+      question: 'Câu 2',
+      conversationId: 101,
+      page: { path: '/khach-hang', title: 'Khách hàng' },
+    });
+    const [first, second] = llm.calls.map((c) =>
+      toAnthropicMessages(c.messages),
+    );
+    const noMarks = (value: unknown): unknown =>
+      JSON.parse(
+        JSON.stringify(value, (key, v: unknown) =>
+          key === 'cache_control' ? undefined : v,
+        ),
+      );
+    expect(second.system).toEqual(first.system);
+    const asked = first.messages[0].content as Row[];
+    const replayed = second.messages[0].content as Row[];
+    // Lần 1: điểm cache ngay sau chữ câu hỏi, ngữ cảnh trang đứng sau điểm đó.
+    expect(asked[0].cache_control).toEqual({ type: 'ephemeral' });
+    expect(asked[1].text).toContain('/don-hang/hoa-don');
+    // Lần 2: lịch sử gửi lại đúng phần trước điểm cache của lần 1.
+    expect(replayed).toEqual(noMarks([asked[0]]));
+    expect(second.messages.map((m) => m.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+    ]);
+    expect((second.messages[2].content as Row[])[1].text).toContain(
+      '/khach-hang',
+    );
+  });
+
+  it('lịch sử dài cắt theo bậc nửa cửa sổ và luôn bắt đầu bằng câu hỏi', async () => {
+    const messages = Array.from({ length: 14 }, (_, i) => ({
+      id: i + 1,
+      conversationId: 5,
+      role: i % 2 === 0 ? 'user' : 'assistant',
+      content: i % 2 === 0 ? `Câu ${i / 2 + 1}` : `Đáp ${(i + 1) / 2}`,
+    }));
+    const store = fakeStore({
+      conversations: [{ id: 5, userId: 7, title: 'Dài' }],
+      messages,
+    });
+    const llm = scriptedLlm([answer('Đáp 8')]);
+    await ask(makeService(store, llm), SCOPE, {
+      question: 'Câu 8',
+      conversationId: 5,
+    });
+    const sent = llm.calls[0].messages.slice(2, -1);
+    // 14 tin, cửa sổ 12 → bỏ 6 tin đầu (không phải 2), gửi 8 tin từ "Câu 4".
+    expect(sent).toHaveLength(8);
+    expect(sent[0]).toEqual({ role: 'user', content: 'Câu 4' });
+  });
+
+  it('vòng cuối giữ nguyên công cụ, dặn trả lời ngay, cộng dồn token cache vào audit', async () => {
+    const store = fakeStore();
+    const cached = {
+      promptTokens: 7000,
+      completionTokens: 20,
+      cacheReadTokens: 6500,
+      cacheWriteTokens: 400,
+    };
+    const llm = scriptedLlm([
+      (r) => ({ ...callTool('invoices_summary')(r), usage: cached }),
+      (r) => ({ ...answer('Có 3 hoá đơn.')(r), usage: cached }),
+    ]);
+    await ask(makeService(store, llm, { maxToolRounds: 1 }), SCOPE, {
+      question: 'Doanh thu?',
+    });
+    expect(llm.calls[1].tools).toEqual(llm.calls[0].tools);
+    expect(llm.calls[1].messages.at(-1)).toEqual({
+      role: 'user',
+      content: FINAL_ROUND_NOTE,
+    });
+    expect(store.audits.at(-1)?.metadata).toMatchObject({
+      status: 'ok',
+      rounds: 2,
+      promptTokens: 14_000,
+      cacheReadTokens: 13_000,
+      cacheWriteTokens: 800,
+    });
   });
 
   it('không gửi công cụ người hỏi không có quyền; model gọi bừa thì nhận tool_not_allowed', async () => {
@@ -414,6 +545,83 @@ describe('AiChatService.ask', () => {
     );
     expect(events.at(-1)).toMatchObject({ code: 'cancelled' });
     expect(store.audits.at(-1)?.metadata.status).toBe('cancelled');
+  });
+
+  it('người hỏi dừng khi công cụ đang chạy thì không chạy công cụ kế tiếp', async () => {
+    const store = fakeStore();
+    const abort = new AbortController();
+    const stopping: AiTool = {
+      ...invoiceTool,
+      run: jest.fn(() => {
+        abort.abort();
+        return Promise.resolve({ total: 1 });
+      }),
+    };
+    const twoCalls = (r: CompletionRequest): CompletionResult => ({
+      content: '',
+      toolCalls: ['call_1', 'call_2'].map((id) => ({
+        id,
+        type: 'function' as const,
+        function: { name: 'invoices_summary', arguments: '{}' },
+      })),
+      finishReason: 'tool_calls',
+      usage: null,
+      model: r.model,
+    });
+    const service = makeService(store, scriptedLlm([twoCalls]), {}, [stopping]);
+    const events: Row[] = [];
+    await service.ask(
+      SCOPE,
+      {
+        threadId: 't',
+        runId: 'r',
+        conversationId: null,
+        question: 'Doanh thu?',
+      },
+      (e) => events.push(e as Row),
+      abort.signal,
+      () => NOW,
+    );
+    expect(stopping.run).toHaveBeenCalledTimes(1);
+    expect(events.at(-1)).toMatchObject({
+      type: 'RUN_ERROR',
+      code: 'cancelled',
+    });
+  });
+
+  it('công cụ của nhiều người hỏi cùng lúc xếp hàng theo toolGate', async () => {
+    const store = fakeStore();
+    const state = { active: 0, max: 0 };
+    const tracked: AiTool = {
+      ...invoiceTool,
+      run: jest.fn(async () => {
+        state.active += 1;
+        state.max = Math.max(state.max, state.active);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        state.active -= 1;
+        return { total: 1 };
+      }),
+    };
+    const service = makeService(
+      store,
+      scriptedLlm([
+        callTool('invoices_summary'),
+        callTool('invoices_summary'),
+        answer('A'),
+        answer('B'),
+      ]),
+      {},
+      [tracked],
+    );
+    service.toolGate = limiter(1);
+    const [first, second] = await Promise.all([
+      ask(service, SCOPE, { question: 'Câu A' }),
+      ask(service, SCOPE, { question: 'Câu B' }),
+    ]);
+    expect(tracked.run).toHaveBeenCalledTimes(2);
+    expect(state.max).toBe(1);
+    expect(types(first).at(-1)).toBe('RUN_FINISHED');
+    expect(types(second).at(-1)).toBe('RUN_FINISHED');
   });
 
   it('purgeExpired xoá theo thời hạn lưu', async () => {
@@ -485,19 +693,37 @@ describe('runTool', () => {
   });
 });
 
-describe('systemPrompt và input AG-UI', () => {
+describe('prompt và input AG-UI', () => {
   it('nêu ngày giờ VN và phạm vi chỉ của mình', () => {
-    const text = systemPrompt({
+    const text = sessionPrompt({
       now: NOW,
       scope: scopeOf([], false),
-      page: null,
       branchName: 'Kho Hà Nội',
-      chatCustomer: null,
     });
     expect(text).toContain('22/11/2026');
     expect(text).toContain('Kho Hà Nội');
     expect(text).toContain('chỉ dữ liệu do chính mình');
-    expect(text).toContain('Không bao giờ đưa số điện thoại');
+    expect(ASSISTANT_RULES).toContain('Không bao giờ đưa số điện thoại');
+    // Phần cố định không chứa gì đổi theo ngày / người / trang.
+    expect(ASSISTANT_RULES).not.toMatch(
+      /\d{2}\/\d{2}\/\d{4}|Sale A|Kho Hà Nội/,
+    );
+  });
+
+  it('requestContext chỉ có khi biết trang hoặc khách', () => {
+    expect(requestContext({ page: null, chatCustomer: null })).toBeNull();
+    expect(
+      requestContext({
+        page: null,
+        chatCustomer: { code: 'KH000123', name: 'Quán A' },
+      }),
+    ).toContain('Quán A (mã KH000123)');
+  });
+
+  it('historyStart cắt lịch sử theo bậc nửa cửa sổ', () => {
+    expect([0, 12].map((t) => historyStart(t, 12))).toEqual([0, 0]);
+    expect([13, 14, 18].map((t) => historyStart(t, 12))).toEqual([6, 6, 6]);
+    expect([19, 24, 25].map((t) => historyStart(t, 12))).toEqual([12, 12, 18]);
   });
 
   it('lastUserText lấy tin user cuối, ghép phần text', () => {

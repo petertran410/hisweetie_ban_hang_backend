@@ -4,6 +4,32 @@ import { vnDayKey } from './common';
 /** Danh sách trả cho model tối đa chừng này dòng. */
 export const MAX_ROWS = 20;
 
+/**
+ * Số lời gọi service (mỗi lời gọi list = 2 truy vấn) một công cụ chạy cùng lúc. Cả POS dùng chung
+ * pool kết nối nhỏ (DATABASE_URL connection_limit): một câu hỏi về lead không được chiếm hết.
+ */
+export const TOOL_QUERY_CONCURRENCY = 2;
+
+/**
+ * Giới hạn số việc chạy cùng lúc; việc thừa xếp hàng theo thứ tự. Việc xong trao chỗ thẳng cho
+ * việc đang chờ (không trả về rồi giành lại), nên không bao giờ vượt `max`.
+ */
+export function limiter(max: number) {
+  let active = 0;
+  const queue: Array<() => void> = [];
+  return async <T>(task: () => Promise<T>): Promise<T> => {
+    if (active < max) active += 1;
+    else await new Promise<void>((resolve) => queue.push(resolve));
+    try {
+      return await task();
+    } finally {
+      const next = queue.shift();
+      if (next) next();
+      else active -= 1;
+    }
+  };
+}
+
 /** Đầu / cuối ngày theo giờ Việt Nam, dạng ISO để truyền cho service như frontend. */
 export const vnStartIso = (day: string) => `${day}T00:00:00.000+07:00`;
 export const vnEndIso = (day: string) => `${day}T23:59:59.999+07:00`;

@@ -1,4 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
+import { FinanceAuditService, auditActor } from '../finance-audit';
 import { ApprovalLifecycleService } from './approval-lifecycle.service';
 
 function larkMirrorStub() {
@@ -15,6 +16,16 @@ function larkMirrorStub() {
   };
 }
 
+/** Các dòng audit_logs FinanceAuditService đã ghi qua prisma giả. */
+function auditRows(prisma: any): any[] {
+  return prisma.auditLog.createMany.mock.calls.flatMap(
+    ([arg]: any[]) => arg.data,
+  );
+}
+
+const larkActor = (trigger = 'lark-webhook') =>
+  expect.objectContaining({ kind: 'LARK', trigger });
+
 describe('ApprovalLifecycleService', () => {
   const user = { id: 7, larkUserId: 'ou_requester' };
 
@@ -22,7 +33,16 @@ describe('ApprovalLifecycleService', () => {
     const prisma = {
       user: {
         findUnique: jest.fn().mockResolvedValue(user),
+        findMany: jest.fn(async ({ where }: any) =>
+          where.id.in.map((id: number) => ({
+            id,
+            name: `User ${id}`,
+            email: null,
+          })),
+        ),
       },
+      // Lịch sử tài chính nội bộ: FinanceAuditService thật ghi qua createMany.
+      auditLog: { createMany: jest.fn() },
       branch: {
         findUnique: jest.fn().mockResolvedValue({
           id: 6,
@@ -58,6 +78,11 @@ describe('ApprovalLifecycleService', () => {
         findUnique: jest.fn().mockResolvedValue(null),
         findMany: jest.fn().mockResolvedValue([]),
         update: jest.fn(),
+      },
+      // Bản sao đơn Lark: người tạo đơn (requesterId) để ghi thay trong lịch sử.
+      larkApprovalInstance: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        ...overrides.larkApprovalInstance,
       },
     };
     const larkClient = {
@@ -102,6 +127,7 @@ describe('ApprovalLifecycleService', () => {
       larkClient as any,
       fundLedger as any,
       larkMirror as any,
+      new FinanceAuditService(),
     );
     return {
       service,
@@ -154,7 +180,7 @@ describe('ApprovalLifecycleService', () => {
         status: 'APPROVED',
         sourceType: 'INTERNAL_FUND_RECEIPT',
       }),
-      { skipBranchIds: [] },
+      { skipBranchIds: [], auditActor: larkActor() },
     );
     expect(f.cashFlowsService.createApprovalCashFlow).not.toHaveBeenCalled();
   });
@@ -667,7 +693,10 @@ describe('ApprovalLifecycleService', () => {
       findUnique: jest.fn().mockResolvedValue({ branchId: 6, createdBy: 9 }),
       update: jest.fn(),
     };
-    (prisma as any).internalFinanceEntry = { updateMany: jest.fn() };
+    (prisma as any).internalFinanceEntry = {
+      findMany: jest.fn().mockResolvedValue([]),
+      updateMany: jest.fn(),
+    };
     (fundLedger as any).issueApprovedBatch = jest.fn();
     (fundLedger as any).revertApprovedBatch = jest.fn();
     const event = {
@@ -686,6 +715,7 @@ describe('ApprovalLifecycleService', () => {
       4,
       7,
       9,
+      larkActor(),
     );
     expect((fundLedger as any).revertApprovedBatch).not.toHaveBeenCalled();
     // Tuần tạo trên POS vốn chỉ gồm phiếu đủ hai tick: không gỡ phiếu nào.
@@ -706,6 +736,7 @@ describe('ApprovalLifecycleService', () => {
       4,
       7,
       9,
+      larkActor(),
     );
   });
 
@@ -781,6 +812,15 @@ describe('ApprovalLifecycleService', () => {
       where: { weeklyBatchId: 9 },
       data: { weeklyBatchId: null },
     });
+    // Hủy batch ghi lịch sử bằng actor Lark của cùng thao tác (cùng opId).
+    const rows = auditRows(prisma);
+    const status = rows.find((row) => row.actionCode === 'FIN_APPROVAL_STATUS');
+    const cancel = rows.find((row) => row.actionCode === 'FIN_BATCH_CANCEL');
+    expect(status).toBeDefined();
+    expect(cancel).toMatchObject({
+      requestId: status.requestId,
+      metadata: expect.objectContaining({ actorKind: 'LARK' }),
+    });
   });
 
   it('handles an approval for a week synced from Lark while it was still pending', async () => {
@@ -803,7 +843,10 @@ describe('ApprovalLifecycleService', () => {
       findUnique: jest.fn().mockResolvedValue({ branchId: 6, createdBy: 9 }),
       update: batchUpdate,
     };
-    (prisma as any).internalFinanceEntry = { updateMany: jest.fn() };
+    (prisma as any).internalFinanceEntry = {
+      findMany: jest.fn().mockResolvedValue([]),
+      updateMany: jest.fn(),
+    };
     (fundLedger as any).issueApprovedBatch = jest.fn();
 
     await service.handleInstanceEvent({
@@ -835,6 +878,7 @@ describe('ApprovalLifecycleService', () => {
       5,
       11,
       9,
+      larkActor(),
     );
   });
 
@@ -858,7 +902,10 @@ describe('ApprovalLifecycleService', () => {
       update: jest.fn(),
     };
     const updateMany = jest.fn();
-    (prisma as any).internalFinanceEntry = { updateMany };
+    (prisma as any).internalFinanceEntry = {
+      findMany: jest.fn().mockResolvedValue([]),
+      updateMany,
+    };
     (fundLedger as any).issueApprovedBatch = jest.fn();
 
     await service.handleInstanceEvent({
@@ -879,6 +926,7 @@ describe('ApprovalLifecycleService', () => {
       8,
       14,
       9,
+      larkActor(),
     );
   });
 
@@ -914,7 +962,10 @@ describe('ApprovalLifecycleService', () => {
       findUnique: jest.fn().mockResolvedValue({ branchId: 1, createdBy: 3 }),
       update: jest.fn(),
     };
-    (prisma as any).internalFinanceEntry = { updateMany: jest.fn() };
+    (prisma as any).internalFinanceEntry = {
+      findMany: jest.fn().mockResolvedValue([]),
+      updateMany: jest.fn(),
+    };
     (fundLedger as any).issueApprovedBatch = jest.fn();
 
     service.onApplicationBootstrap();
@@ -938,6 +989,10 @@ describe('ApprovalLifecycleService', () => {
       6,
       12,
       3,
+      expect.objectContaining({
+        kind: 'SYSTEM',
+        trigger: 'bootstrap:repairImportedWeeks',
+      }),
     );
   });
 
@@ -1006,6 +1061,20 @@ describe('ApprovalLifecycleService', () => {
         data: expect.objectContaining({ status: 'APPROVED' }),
       }),
     );
+    // Cron đưa trạng thái về: lịch sử ghi là hệ thống tự động.
+    expect(auditRows(prisma)).toEqual([
+      expect.objectContaining({
+        actionCode: 'FIN_APPROVAL_STATUS',
+        entityId: '8',
+        userName: 'Hệ thống (tự động)',
+        metadata: expect.objectContaining({
+          actorKind: 'CRON',
+          trigger: 'cron:reconcilePending',
+          statusBefore: 'PENDING',
+          statusAfter: 'APPROVED',
+        }),
+      }),
+    ]);
   });
 
   it('reads current nodes, tasks, and timeline from the Lark detail shape', async () => {
@@ -1147,6 +1216,7 @@ describe('ApprovalLifecycleService', () => {
         {} as any,
         { applyApproval: jest.fn() } as any,
         larkMirrorStub() as any,
+        new FinanceAuditService(),
       );
 
       await expect(guardedService.postCashFlow(22, 7)).rejects.toBeInstanceOf(
@@ -1246,6 +1316,7 @@ describe('ApprovalLifecycleService', () => {
       } as any,
       { applyApproval: jest.fn() } as any,
       larkMirrorStub() as any,
+      new FinanceAuditService(),
     );
 
     await expect(serviceWithCashFlow.postCashFlow(12, 7)).rejects.toThrow(
@@ -1312,6 +1383,7 @@ describe('ApprovalLifecycleService', () => {
       {} as any,
       { applyApproval: jest.fn() } as any,
       larkMirrorStub() as any,
+      new FinanceAuditService(),
     );
 
     await expect(service.postCashFlow(15, 7)).rejects.toThrow(
@@ -1370,6 +1442,7 @@ describe('ApprovalLifecycleService', () => {
       larkClient as any,
       { applyApproval: jest.fn() } as any,
       larkMirrorStub() as any,
+      new FinanceAuditService(),
     );
 
     const result = await service.findTempAdvanceOptions();
@@ -1418,6 +1491,305 @@ describe('ApprovalLifecycleService', () => {
         }),
       }),
     );
+  });
+  describe('finance audit log', () => {
+    function fundReceipt(status: string) {
+      const state: any = {
+        id: 31,
+        kind: 'RECEIPT',
+        status,
+        sourceType: 'INTERNAL_FUND_RECEIPT',
+        sourceId: null,
+        instanceCode: 'fund-31',
+        approvalCode: 'receipt-template',
+        clientUuid: 'uuid-31',
+        branchId: 6,
+        createdById: 7,
+        lastEventAt: null,
+      };
+      const f = createService({
+        approvalRequest: {
+          findUnique: jest.fn(async () => state),
+          // reconcilePending: cron hỏi lại đơn này.
+          findMany: jest.fn(async () => [state]),
+          update: jest.fn(async ({ data }: any) => Object.assign(state, data)),
+        },
+      });
+      f.larkClient.approval.v4.instance.get.mockResolvedValue({
+        code: 0,
+        data: { status: 'APPROVED', serial_number: '202611200001' },
+      });
+      const event = (eventStatus: string, time: string, uuid: string) =>
+        f.service.handleInstanceEvent({
+          instance_code: 'fund-31',
+          approval_code: 'receipt-template',
+          status: eventStatus,
+          instance_operate_time: time,
+          uuid,
+        });
+      return { ...f, state, event };
+    }
+
+    it('logs a Lark status change once; a replay with the same status logs nothing', async () => {
+      const f = fundReceipt('PENDING');
+      await f.event('APPROVED', '1790440000000', 'a');
+
+      const rows = auditRows(f.prisma);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        actionCode: 'FIN_APPROVAL_STATUS',
+        actionType: 'PUT',
+        category: 'internal_finance',
+        entityType: 'approval_requests',
+        entityId: '31',
+        entityCode: '202611200001',
+        branchId: 6,
+        message: 'Lark: đơn thu quỹ 202611200001 Đang duyệt → Đã duyệt',
+        userName: 'Hệ thống (Lark Approval)',
+        metadata: expect.objectContaining({
+          actorKind: 'LARK',
+          trigger: 'lark-webhook',
+          onBehalfOfUserId: 7,
+          statusBefore: 'PENDING',
+          statusAfter: 'APPROVED',
+        }),
+      });
+      expect(rows[0].changes).toEqual([
+        expect.objectContaining({
+          field: 'status',
+          from: 'Đang duyệt',
+          to: 'Đã duyệt',
+        }),
+      ]);
+      // Sổ quỹ nhận cùng actor (cùng opId) để các dòng cùng một thao tác.
+      expect(f.fundLedger.applyApproval.mock.calls[0][2].auditActor).toEqual(
+        expect.objectContaining({ kind: 'LARK', opId: rows[0].requestId }),
+      );
+
+      // Webhook lặp lại / cron hỏi lại cùng trạng thái: không ghi gì thêm.
+      await f.event('APPROVED', '1790440005000', 'b');
+      await f.service.reconcilePending();
+      expect(auditRows(f.prisma)).toHaveLength(1);
+    });
+
+    it('logs a recall after approval as FIN_APPROVAL_REVERT', async () => {
+      const f = fundReceipt('APPROVED');
+      await f.event('REVERTED', '1790440000000', 'r');
+      const rows = auditRows(f.prisma);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        actionCode: 'FIN_APPROVAL_REVERT',
+        severity: 'critical',
+        message: 'Lark: đơn thu quỹ 202611200001 bị thu hồi',
+        metadata: expect.objectContaining({
+          statusBefore: 'APPROVED',
+          statusAfter: 'REVERTED',
+        }),
+      });
+    });
+
+    it('logs the weekly batch and entry statuses from the Lark result, once', async () => {
+      const request: any = {
+        id: 7,
+        kind: 'EXPENSE_HN',
+        instanceCode: 'instance-7',
+        clientUuid: 'INTERNAL_FINANCE_WEEK:4',
+        status: 'PENDING',
+        lastEventAt: null,
+        sourceType: 'INTERNAL_FINANCE_WEEKLY',
+        sourceId: 4,
+        branchId: 6,
+        createdById: 9,
+      };
+      const { service, prisma, fundLedger } = createService({
+        approvalRequest: {
+          findUnique: jest.fn(async () => request),
+          update: jest.fn(async ({ data }: any) =>
+            Object.assign(request, data),
+          ),
+        },
+      });
+      const batch: any = {
+        branchId: 6,
+        createdBy: 9,
+        status: 'IN_APPROVAL',
+        code: 'TCNB-TUAN-HN-2026-47',
+      };
+      (prisma as any).internalFinanceWeeklyBatch = {
+        findUnique: jest.fn(async () => ({ ...batch })),
+        update: jest.fn(async ({ data }: any) => Object.assign(batch, data)),
+      };
+      const entries: any[] = [
+        { id: 1, code: 'P1', status: 'IN_WEEKLY_APPROVAL', branchId: 6 },
+        { id: 2, code: 'P2', status: 'APPROVED', branchId: 6 },
+      ].map((row) => ({
+        ...row,
+        weeklyBatchId: 4,
+        cashIssued: false,
+        cashFlowId: null,
+      }));
+      const matches = (row: any, where: any) =>
+        Object.entries(where).every(([key, value]) => row[key] === value);
+      (prisma as any).internalFinanceEntry = {
+        findMany: jest.fn(async ({ where }: any) =>
+          entries
+            .filter((row) => matches(row, where))
+            .map(({ id, code, status, branchId }) => ({
+              id,
+              code,
+              status,
+              branchId,
+            })),
+        ),
+        updateMany: jest.fn(async ({ where, data }: any) => {
+          for (const row of entries.filter((item) => matches(item, where)))
+            Object.assign(row, data);
+        }),
+      };
+      (fundLedger as any).issueApprovedBatch = jest.fn(async () => {
+        for (const row of entries) row.cashIssued = true;
+      });
+      (fundLedger as any).revertApprovedBatch = jest.fn(async () => {
+        for (const row of entries) row.cashIssued = false;
+      });
+      const event = (status: string, time: string) =>
+        service.handleInstanceEvent({
+          approval_code: 'E759B9DB-B8EA-4DC6-B309-2E162D94EEF3',
+          instance_code: 'instance-7',
+          status,
+          instance_operate_time: time,
+          uuid: `${status}-${time}`,
+        });
+
+      await event('APPROVED', '1790440000000');
+      const approved = auditRows(prisma);
+      expect(approved.map((row) => row.actionCode)).toEqual([
+        'FIN_APPROVAL_STATUS',
+        'FIN_BATCH_LARK_STATUS',
+        'FIN_ENTRY_WEEKLY_STATUS',
+      ]);
+      expect(approved[1]).toMatchObject({
+        entityType: 'internal_finance_weekly_batches',
+        entityId: '4',
+        entityCode: 'TCNB-TUAN-HN-2026-47',
+        message: 'Lark: Approval tuần TCNB-TUAN-HN-2026-47 Đã duyệt',
+      });
+      // P2 đã ở "Đã duyệt": chỉ P1 đổi trạng thái.
+      expect(approved[2]).toMatchObject({
+        entityId: '1',
+        message: 'Phiếu P1 – Approval tuần TCNB-TUAN-HN-2026-47: Đã duyệt',
+      });
+      expect(new Set(approved.map((row) => row.requestId)).size).toBe(1);
+      expect((fundLedger as any).issueApprovedBatch.mock.calls[0][4]).toEqual(
+        expect.objectContaining({ opId: approved[0].requestId }),
+      );
+
+      await event('REVERTED', '1790440001000');
+      const reverted = auditRows(prisma).slice(approved.length);
+      expect(reverted.map((row) => row.actionCode)).toEqual([
+        'FIN_APPROVAL_REVERT',
+        'FIN_BATCH_LARK_REVERT',
+        'FIN_ENTRY_WEEKLY_STATUS',
+        'FIN_ENTRY_WEEKLY_STATUS',
+      ]);
+      expect(reverted[1]).toMatchObject({
+        severity: 'critical',
+        message:
+          'Lark: Approval tuần TCNB-TUAN-HN-2026-47 bị thu hồi sau khi duyệt',
+      });
+      expect(reverted.slice(2).map((row) => row.entityId)).toEqual(['1', '2']);
+      expect(new Set(reverted.map((row) => row.requestId)).size).toBe(1);
+
+      // Thu hồi lặp lại: đơn đã REVERTED, không ghi gì.
+      const total = auditRows(prisma).length;
+      await event('REVERTED', '1790440002000');
+      expect(auditRows(prisma)).toHaveLength(total);
+    });
+
+    it('logs the approval it creates as the user, and the Lark failure', async () => {
+      const ok = createService();
+      await ok.service.create(
+        { kind: 'EXPENSE_HN', clientUuid: 'uuid-1', branchId: 6, form: hnForm },
+        7,
+      );
+      expect(auditRows(ok.prisma)).toEqual([
+        expect.objectContaining({
+          actionCode: 'FIN_APPROVAL_CREATE',
+          actionType: 'POST',
+          entityId: '1',
+          entityCode: 'uuid-1',
+          message: 'Tạo đơn chi Kho HN #1',
+          userId: 7,
+          userName: 'User 7',
+          metadata: expect.objectContaining({
+            actorKind: 'USER',
+            trigger: 'http',
+          }),
+        }),
+      ]);
+
+      const failed = createService();
+      failed.larkClient.approval.v4.instance.create.mockResolvedValue({
+        code: 1390001,
+        msg: 'Lark lỗi',
+      } as any);
+      await expect(
+        failed.service.create(
+          {
+            kind: 'EXPENSE_HN',
+            clientUuid: 'uuid-1',
+            branchId: 6,
+            form: hnForm,
+          },
+          7,
+        ),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      const rows = auditRows(failed.prisma);
+      expect(rows.map((row) => row.actionCode)).toEqual([
+        'FIN_APPROVAL_CREATE',
+        'FIN_APPROVAL_CREATE_FAILED',
+      ]);
+      expect(rows[1]).toMatchObject({
+        message: 'Gửi đơn chi Kho HN #1 lên Lark thất bại: Lark lỗi',
+        requestId: rows[0].requestId,
+      });
+    });
+
+    it('records the approval under the caller actor when one is passed', async () => {
+      const { service, prisma } = createService();
+      const actor = auditActor.user({ id: 7, name: 'Lan' }, 'http', 'op-1');
+      await service.create(
+        { kind: 'EXPENSE_HN', clientUuid: 'uuid-1', branchId: 6, form: hnForm },
+        7,
+        actor,
+      );
+      expect(auditRows(prisma)[0]).toMatchObject({
+        requestId: 'op-1',
+        userName: 'Lan',
+      });
+    });
+
+    it('scans recent Lark orders as the cron, one operation per order', async () => {
+      const larkMirror = {
+        ...larkMirrorStub(),
+        listInstanceCodes: jest.fn().mockResolvedValue(['A', 'B']),
+      };
+      const { service } = createService({ larkMirror });
+      const sync = jest
+        .spyOn(service, 'syncLarkInstance')
+        .mockResolvedValue('UNCHANGED');
+      await service.syncRecentLarkInstances();
+      const actors = sync.mock.calls.map(([, , options]) => options!.actor!);
+      expect(actors.length).toBeGreaterThan(0);
+      for (const actor of actors)
+        expect(actor).toMatchObject({
+          kind: 'CRON',
+          trigger: 'cron:syncRecentLarkInstances',
+        });
+      expect(new Set(actors.map((actor) => actor.opId)).size).toBe(
+        actors.length,
+      );
+    });
   });
   describe('Lark-created PHIẾU CHI', () => {
     const voucherCode = '2A4BC15D-09F4-44FB-8B51-FD3174D5963B';
@@ -1500,6 +1872,10 @@ describe('ApprovalLifecycleService', () => {
 
     it('ingests an approved cash voucher and posts it to the warehouse fund', async () => {
       const f = voucherService(voucherForm('Tiền Mặt', 'Tiền Mặt Kho HN'));
+      // Bản sao Lark đã gắn người đề xuất với tài khoản POS #9.
+      f.prisma.larkApprovalInstance.findUnique.mockResolvedValue({
+        requesterId: 9,
+      });
       await f.service.handleInstanceEvent(approvedEvent);
       expect(f.requests[0]).toMatchObject({
         kind: 'PAYMENT_VOUCHER',
@@ -1515,6 +1891,80 @@ describe('ApprovalLifecycleService', () => {
       });
       expect(f.fundLedger.applyPaymentVoucher).toHaveBeenCalledTimes(1);
       expect(f.events[0].approvalRequestId).toBe(50);
+      // Lịch sử: Lark tạo đơn thay người đề xuất, rồi đổi trạng thái (cùng opId).
+      const rows = auditRows(f.prisma);
+      expect(rows.map((row) => row.actionCode)).toEqual([
+        'FIN_APPROVAL_CREATE',
+        'FIN_APPROVAL_STATUS',
+      ]);
+      expect(rows[0]).toMatchObject({
+        entityId: '50',
+        entityCode: '202610010012',
+        branchId: 6,
+        message: 'Tạo đơn PHIẾU CHI 202610010012',
+        userName: 'Hệ thống (Lark Approval)',
+        metadata: expect.objectContaining({
+          actorKind: 'LARK',
+          onBehalfOfUserId: 9,
+          instanceCode: 'D2688DAB',
+        }),
+      });
+      expect(rows[1].requestId).toBe(rows[0].requestId);
+      expect(rows[1].metadata).toMatchObject({ onBehalfOfUserId: 9 });
+      expect(f.fundLedger.applyPaymentVoucher).toHaveBeenCalledWith(
+        f.prisma,
+        expect.objectContaining({ id: 50 }),
+        expect.objectContaining({ kind: 'LARK', opId: rows[0].requestId }),
+      );
+    });
+
+    it('logs no requester (not the fallback user 1) when the Lark requester has no POS account', async () => {
+      const f = voucherService(voucherForm('Tiền Mặt', 'Tiền Mặt Kho HN'));
+      (f.prisma.user as any).findFirst.mockResolvedValue(null);
+      await f.service.handleInstanceEvent(approvedEvent);
+      // createdById vẫn là user 1 dự phòng (cột bắt buộc).
+      expect(f.requests[0]).toMatchObject({ createdById: 1 });
+      const rows = auditRows(f.prisma);
+      expect(rows.map((row) => row.actionCode)).toEqual([
+        'FIN_APPROVAL_CREATE',
+        'FIN_APPROVAL_STATUS',
+      ]);
+      for (const row of rows)
+        expect(row.metadata).toMatchObject({ onBehalfOfUserId: null });
+      expect(f.prisma.larkApprovalInstance.findUnique).toHaveBeenCalledWith({
+        where: { instanceCode: 'D2688DAB' },
+        select: { requesterId: true },
+      });
+      expect(
+        f.fundLedger.applyPaymentVoucher.mock.calls[0][2].onBehalfOfUserId ??
+          null,
+      ).toBeNull();
+    });
+
+    it('keeps the requester unset for a later webhook on an unmapped Lark request', async () => {
+      const f = voucherService(voucherForm('Tiền Mặt', 'Tiền Mặt Kho HN'));
+      (f.prisma.user as any).findFirst.mockResolvedValue(null);
+      // Đơn đã nhận từ trước, đang chờ duyệt (createdById = 1 dự phòng).
+      f.requests.push({
+        id: 50,
+        kind: 'PAYMENT_VOUCHER',
+        sourceType: 'LARK_PAYMENT_VOUCHER',
+        clientUuid: 'LARK:D2688DAB',
+        instanceCode: 'D2688DAB',
+        approvalCode: voucherCode,
+        branchId: 6,
+        createdById: 1,
+        status: 'PENDING',
+        lastEventAt: null,
+      });
+      await f.service.handleInstanceEvent(approvedEvent);
+      const status = auditRows(f.prisma).find(
+        (row) => row.actionCode === 'FIN_APPROVAL_STATUS',
+      );
+      expect(status.metadata).toMatchObject({
+        actorKind: 'LARK',
+        onBehalfOfUserId: null,
+      });
     });
 
     it('uses only the cash part of a mixed transfer-and-cash voucher', async () => {
@@ -1695,12 +2145,36 @@ describe('ApprovalLifecycleService', () => {
       // bên Kho HN; bên VPHN đã có trong sổ quỹ Lark.
       expect(f.fundLedger.applyApproval.mock.calls[0][2]).toEqual({
         skipBranchIds: [4],
+        auditActor: larkActor(),
       });
 
+      // Lịch sử: đơn + lệnh chuyển quỹ Lark tạo.
+      const created = auditRows(f.prisma).filter((row) =>
+        ['FIN_APPROVAL_CREATE', 'FIN_FUND_TRANSFER_REQUEST'].includes(
+          row.actionCode,
+        ),
+      );
+      expect(created).toEqual([
+        expect.objectContaining({
+          actionCode: 'FIN_APPROVAL_CREATE',
+          message: 'Tạo đơn chuyển quỹ 202610090006',
+        }),
+        expect.objectContaining({
+          actionCode: 'FIN_FUND_TRANSFER_REQUEST',
+          entityType: 'internal_fund_transfers',
+          entityId: '4',
+          entityCode: 'QF-CHUYEN-test',
+          message:
+            'Tạo chuyển quỹ QF-CHUYEN-test 270.000.000 đ: Kho HN → Văn phòng HN',
+        }),
+      ]);
+
       // Sự kiện lặp lại không tạo lệnh chuyển thứ hai.
+      const before = auditRows(f.prisma).length;
       await f.service.handleInstanceEvent({ ...approvedEvent, uuid: 'again' });
       expect(f.transfers).toHaveLength(1);
       expect(f.requests).toHaveLength(1);
+      expect(auditRows(f.prisma)).toHaveLength(before);
     });
 
     it('posts only the leg whose fund is already on POS when the other is not yet', async () => {
@@ -1714,6 +2188,7 @@ describe('ApprovalLifecycleService', () => {
       expect(f.fundLedger.applyApproval).toHaveBeenCalledTimes(1);
       expect(f.fundLedger.applyApproval.mock.calls[0][2]).toEqual({
         skipBranchIds: [7],
+        auditActor: larkActor(),
       });
     });
 
@@ -1880,7 +2355,10 @@ describe('ApprovalLifecycleService', () => {
       expect(f.larkMirror.save).toHaveBeenCalledWith(
         expect.objectContaining({ approvalRequestId: 70 }),
       );
-      expect(f.larkMirror.ensureEntry).toHaveBeenCalledWith(70);
+      expect(f.larkMirror.ensureEntry).toHaveBeenCalledWith(
+        70,
+        expect.objectContaining({ kind: 'SYSTEM' }),
+      );
     });
 
     it('books the fund once when an order POS saw pending is now approved', async () => {

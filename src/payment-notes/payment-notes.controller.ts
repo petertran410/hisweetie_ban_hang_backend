@@ -12,7 +12,12 @@ export class PaymentNotesController {
     @Body() dto: CreatePaymentNoteDto,
     @Req() req: any,
   ) {
-    return this.service.createOrderNote(Number(id), dto, req.user?.id || 1);
+    return this.service.createOrderNote(
+      Number(id),
+      dto,
+      req.user?.id || 1,
+      req.user?.name || req.user?.email,
+    );
   }
 
   @Post('invoices/:id/payment-note')

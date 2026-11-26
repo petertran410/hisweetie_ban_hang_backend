@@ -20,6 +20,7 @@ import { randomBytes } from 'crypto';
 import { EventEncoder } from '@ag-ui/encoder';
 import { EventType } from '@ag-ui/core';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
+import { coalesceText } from './ai-stream.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { buildAiScope, type AiRequest } from './ai-scope';
@@ -280,9 +281,12 @@ export class AiAssistantController {
     res.on('close', () => {
       if (!res.writableFinished) abort.abort();
     });
-    const emit = (event: AgentEvent) => {
+    const write = (event: AgentEvent) => {
       if (!res.writableEnded) res.write(encoder.encodeBinary(event));
     };
+    // Gom mẩu chữ: ít lần ghi socket / ít lần trình duyệt vẽ lại hơn, thứ tự sự kiện giữ nguyên.
+    const stream = coalesceText(write);
+    const emit = (event: AgentEvent) => stream.push(event);
     // Comment SSE giữ cho proxy không cắt luồng im lặng khi công cụ đang chạy.
     const sse = encoder.getContentType().startsWith('text/event-stream');
     const heartbeat = setInterval(() => {
@@ -324,6 +328,7 @@ export class AiAssistantController {
         } as AgentEvent);
     } finally {
       clearInterval(heartbeat);
+      stream.end();
       res.end();
     }
   }

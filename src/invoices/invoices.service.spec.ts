@@ -509,7 +509,17 @@ describe('InvoicesService customer invoice debt guard', () => {
   });
 
   describe('createFromOrder', () => {
-    const createFromOrderService = (orderPaymentType: string) => {
+    const createFromOrderService = (
+      orderPaymentType: string,
+      overrides: {
+        grandTotal?: number;
+        payments?: Array<{ amount: number; status: number; code: string }>;
+        totalDebt?: number;
+      } = {},
+    ) => {
+      const payments = overrides.payments ?? [];
+      // Phiếu thu của các lần thanh toán còn hiệu lực trên đơn (đơn chưa có HĐ).
+      const activePayments = payments.filter((payment) => payment.status !== 2);
       const tx = {
         $queryRaw: jest.fn().mockResolvedValue([]),
         order: {
@@ -518,15 +528,37 @@ describe('InvoicesService customer invoice debt guard', () => {
             status: ORDER_STATUS.CONFIRMED,
             branchId: 1,
             customerId: 7,
-            grandTotal: 100,
+            grandTotal: overrides.grandTotal ?? 100,
             items: [],
-            payments: [],
+            payments,
             invoices: [],
             paymentNotes: [{ paymentType: orderPaymentType }],
-            customer: { id: 7, totalDebt: 0, debtPolicy: policy(true) },
+            customer: {
+              id: 7,
+              totalDebt: overrides.totalDebt ?? 0,
+              debtPolicy: policy(true),
+            },
           }),
         },
         debtTicketCustomer: { findFirst: jest.fn().mockResolvedValue(null) },
+        invoice: {
+          aggregate: jest.fn().mockResolvedValue({ _sum: { grandTotal: 0 } }),
+          findMany: jest.fn().mockResolvedValue([]),
+        },
+        orderPayment: {
+          findMany: jest
+            .fn()
+            .mockResolvedValue(
+              activePayments.map(({ code }) => ({ code, orderId: 1 })),
+            ),
+        },
+        cashFlow: {
+          findMany: jest
+            .fn()
+            .mockResolvedValue(
+              activePayments.map(({ code, amount }) => ({ code, amount })),
+            ),
+        },
       };
       const prisma = {
         $transaction: jest.fn((fn: (client: any) => unknown) => fn(tx)),
@@ -557,6 +589,25 @@ describe('InvoicesService customer invoice debt guard', () => {
       ).rejects.toThrow(
         'chọn Tiền mặt ở màn tạo hóa đơn không được miễn kiểm tra',
       );
+    });
+
+    it('không tính 2 lần tiền đã trả trên đơn (đơn 1M, trả 500k)', async () => {
+      // 500k trả trên đơn đã là phiếu thu → công nợ khách −500k. Trước khi sửa:
+      // 500k + 500k (công nợ âm) = đủ → tạo được HĐ còn nợ 500k.
+      const service = createFromOrderService('transfer', {
+        grandTotal: 1000000,
+        payments: [{ amount: 500000, status: 1, code: 'TTDH1-1' }],
+        totalDebt: -500000,
+      });
+
+      await expect(
+        service.createFromOrder(
+          1,
+          { paymentNoteType: 'transfer', paymentType: 'transfer' } as any,
+          1,
+          true,
+        ),
+      ).rejects.toThrow('Đơn hàng chưa được thanh toán đủ nên không thể tạo');
     });
 
     it('vẫn miễn kiểm tra khi chính đơn ghi chú thu tiền mặt', async () => {

@@ -17,6 +17,7 @@ import { join } from 'path';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { UploadService } from '../upload/upload.service';
+import { assertAllowedExtension } from '../upload/upload-paths.util';
 import { LarkUserDirectoryService } from '../lark-sync/services/lark-user-directory.service';
 import { LeadLinkService } from '../leads/lead-link/lead-link.service';
 import { repairUploadedFilename } from '../common/uploaded-filename.util';
@@ -813,6 +814,8 @@ export class SmaxChatService {
         }
         // Zalo đặt tên tệp theo phần cuối URL → lưu tên gốc trong thư mục ngẫu nhiên
         const name = safeFileName(originalName);
+        // uploads/ phục vụ công khai → không lưu .html/.svg/.js… (chạy được như trang web)
+        assertAllowedExtension(name);
         const dir = `${MEDIA_SUBFOLDER}/${randomBytes(8).toString('hex')}`;
         await mkdir(join(process.cwd(), 'uploads', dir), { recursive: true });
         await writeFile(join(process.cwd(), 'uploads', dir, name), f.buffer);

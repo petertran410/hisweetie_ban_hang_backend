@@ -15,6 +15,15 @@ import {
 import { VPSG_FUND_START } from '../approval-lifecycle/approval-lifecycle.constants';
 import { VPSG_BRANCH_ID } from '../internal-finance/internal-finance.constants';
 import { isVpsgTransaction, vpsgAccountNumbers } from './vpsg-cash.accounts';
+import {
+  FINANCE_AUDIT_ENTITY,
+  FinanceAuditService,
+  auditActor,
+  formatDate,
+  formatMoney,
+  previewText,
+  reasonSuffix,
+} from '../finance-audit';
 
 const sourceKeyOf = (transactionId: number) =>
   `${FUND_SOURCE_TYPE.SEPAY_VPSG}:${transactionId}`;
@@ -33,6 +42,7 @@ export class VpsgCashService {
     private readonly prisma: PrismaService,
     private readonly access: FinanceAccessService,
     private readonly ledger: InternalFundLedgerService,
+    private readonly financeAudit: FinanceAuditService,
   ) {}
 
   private can(user: FinanceActor, action: string) {
@@ -110,25 +120,69 @@ export class VpsgCashService {
       VPSG_BRANCH_ID,
       'internal_fund:adjust',
     );
-    return this.prisma.$transaction((tx) =>
-      this.ledger.postSystemTransaction(tx, {
+    const actor = auditActor.user(user);
+    const description =
+      transaction.transactionContent?.trim() ||
+      transaction.referenceNumber ||
+      'Thu từ tài khoản VPSG';
+    return this.prisma.$transaction(async (tx) => {
+      // Khóa quỹ rồi mới xem đã ghi chưa: ghi lại lần nữa (đã có dòng quỹ)
+      // không ghi lịch sử. Sổ quỹ khóa lại cùng khóa vẫn được.
+      await this.ledger.lock(tx, [VPSG_BRANCH_ID]);
+      const existing = await tx.internalFundTransaction.findUnique({
+        where: { sourceKey: sourceKeyOf(transaction.id) },
+        select: { id: true },
+      });
+      // Sổ quỹ ghi lịch sử dòng quỹ với cùng actor/opId.
+      const row = await this.ledger.postSystemTransaction(tx, {
         branchId: VPSG_BRANCH_ID,
         transactionType: 'RECEIPT',
         codeKind: 'THU',
         amount: transaction.amountIn,
         occurredAt,
-        description:
-          transaction.transactionContent?.trim() ||
-          transaction.referenceNumber ||
-          'Thu từ tài khoản VPSG',
+        description,
         sourceType: FUND_SOURCE_TYPE.SEPAY_VPSG,
         sourceKey: sourceKeyOf(transaction.id),
         sourceId: String(transaction.id),
         userId: user.id,
         assertOpen: true,
         adjust,
-      }),
-    );
+        auditActor: actor,
+      });
+      if (!existing)
+        await this.financeAudit.write(tx, {
+          action: 'FIN_VPSG_RECORD',
+          entityType: FINANCE_AUDIT_ENTITY.SEPAY,
+          entityId: transaction.id,
+          entityCode: transaction.referenceNumber || null,
+          branchId: VPSG_BRANCH_ID,
+          actor,
+          params: {
+            amount: Number(transaction.amountIn),
+            content: previewText(description, 120),
+          },
+          snapshot: {
+            lines: [
+              { label: 'Số tiền', value: formatMoney(transaction.amountIn) },
+              { label: 'Ngày giao dịch', value: formatDate(occurredAt) },
+              { label: 'Nội dung', value: description },
+              {
+                label: 'Mã tham chiếu',
+                value: transaction.referenceNumber || '—',
+              },
+              { label: 'Dòng quỹ', value: row.code },
+            ],
+          },
+          metadata: {
+            fundTransactionId: row.id,
+            fundTransactionCode: row.code,
+            sepayId: transaction.sepayId ?? null,
+            accountNumber: transaction.accountNumber ?? null,
+            subAccount: transaction.subAccount ?? null,
+          },
+        });
+      return row;
+    });
   }
 
   async cancel(
@@ -145,15 +199,58 @@ export class VpsgCashService {
       VPSG_BRANCH_ID,
       'internal_fund:adjust',
     );
+    const actor = auditActor.user(user);
     return this.prisma.$transaction(async (tx) => {
       await this.ledger.lock(tx, [VPSG_BRANCH_ID]);
-      const row = await tx.internalFundTransaction.findUnique({
+      const found = await tx.internalFundTransaction.findUnique({
         where: { sourceKey: sourceKeyOf(transactionId) },
       });
-      if (!row || row.status !== 'POSTED')
+      if (!found || found.status !== 'POSTED')
         throw new NotFoundException('Giao dịch chưa ghi vào quỹ VPSG');
+      // Chụp lại dòng quỹ trước khi hủy để ghi lịch sử.
+      const row = { ...found };
       await this.ledger.assertOpen(tx, row.branchId, row.occurredAt, adjust);
-      return this.ledger.releaseCancelled(tx, row, user.id, text);
+      // Sổ quỹ ghi lịch sử hủy dòng quỹ với cùng actor/opId.
+      const released = await this.ledger.releaseCancelled(
+        tx,
+        row,
+        user.id,
+        text,
+        actor,
+      );
+      const transaction = await tx.sepayTransaction.findUnique({
+        where: { id: transactionId },
+        select: { referenceNumber: true, transactionContent: true },
+      });
+      await this.financeAudit.write(tx, {
+        action: 'FIN_VPSG_CANCEL',
+        entityType: FINANCE_AUDIT_ENTITY.SEPAY,
+        entityId: transactionId,
+        entityCode: transaction?.referenceNumber || null,
+        branchId: VPSG_BRANCH_ID,
+        actor,
+        params: {
+          amount: Number(row.amount),
+          reasonSuffix: reasonSuffix(text),
+        },
+        snapshot: {
+          lines: [
+            { label: 'Dòng quỹ', value: row.code },
+            { label: 'Số tiền', value: formatMoney(row.amount) },
+            { label: 'Ngày ghi quỹ', value: formatDate(row.occurredAt) },
+            {
+              label: 'Nội dung',
+              value: row.description || transaction?.transactionContent || '—',
+            },
+            { label: 'Lý do hủy', value: text },
+          ],
+        },
+        metadata: {
+          fundTransactionId: row.id,
+          fundTransactionCode: row.code,
+        },
+      });
+      return released;
     });
   }
 }

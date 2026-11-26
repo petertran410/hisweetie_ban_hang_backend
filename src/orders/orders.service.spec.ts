@@ -1,6 +1,8 @@
 import { Prisma } from '@prisma/client';
 import { OrdersService } from './orders.service';
 import { INVOICE_STATUS } from '../invoices/dto';
+import * as orderPayments from './order-payments.service';
+import * as paymentNotes from '../payment-notes/payment-notes.service';
 
 describe('OrdersService findOne', () => {
   it('chỉ loại invoice đã hủy khỏi relation', async () => {
@@ -386,6 +388,8 @@ describe('OrdersService update — chặn xác nhận đơn theo công nợ', ()
     savedStatus: number;
     requireFullPayment?: boolean;
     stopDeliveryHold?: boolean;
+    items?: any[];
+    savedGrandTotal?: number;
   }) => {
     const baseOrder = {
       id: 1,
@@ -394,9 +398,17 @@ describe('OrdersService update — chặn xác nhận đơn theo công nợ', ()
       customerId: 3,
       statusValue: 'x',
       grandTotal: 100000,
-      items: [],
+      items: opts.items ?? [],
       customer: { id: 3, code: 'KH1', name: 'Khách' },
     };
+    // Phiếu thanh toán / ghi chú TM-CK tạo trong lần lưu (qua helper bên dưới)
+    // → assertCanConfirmOrder đọc lại được, như khi chạy cùng transaction thật.
+    const created = {
+      payments: [] as Array<{ amount: number; status: number; code: string }>,
+      notes: [] as Array<{ paymentType: string }>,
+    };
+    const createdPaid = () =>
+      created.payments.reduce((sum, payment) => sum + payment.amount, 0);
     const tx: any = {
       $queryRaw: jest.fn().mockResolvedValue([]),
       order: {
@@ -406,10 +418,11 @@ describe('OrdersService update — chặn xác nhận đơn theo công nợ', ()
             return Promise.resolve({
               customerId: 3,
               grandTotal: 100000,
-              payments: [],
-              paymentNotes: [],
+              payments: created.payments,
+              paymentNotes: [...created.notes].reverse(),
               customer: {
-                totalDebt: 0,
+                // Phiếu thu của lần thanh toán đơn làm công nợ khách giảm.
+                totalDebt: -createdPaid(),
                 debtPolicy: {
                   isActive: true,
                   requireFullPaymentForInvoice: !!opts.requireFullPayment,
@@ -421,6 +434,9 @@ describe('OrdersService update — chặn xác nhận đơn theo công nợ', ()
           return Promise.resolve({
             ...baseOrder,
             status: isFirstRead ? opts.currentStatus : opts.savedStatus,
+            grandTotal: isFirstRead
+              ? baseOrder.grandTotal
+              : (opts.savedGrandTotal ?? baseOrder.grandTotal),
           });
         }),
         update: jest.fn().mockResolvedValue({}),
@@ -430,22 +446,78 @@ describe('OrdersService update — chặn xác nhận đơn theo công nợ', ()
           .fn()
           .mockResolvedValue(opts.stopDeliveryHold ? { id: 10 } : null),
       },
+      // customerDebtForOrderPrepaidCheck: đơn chưa có HĐ, phiếu thu gắn đơn
+      // chính là các lần thanh toán tạo trong lần lưu.
+      invoice: {
+        aggregate: jest.fn().mockResolvedValue({ _sum: { grandTotal: 0 } }),
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      orderPayment: {
+        findMany: jest.fn().mockImplementation(() =>
+          Promise.resolve(
+            created.payments.map(({ code }) => ({ code, orderId: 1 })),
+          ),
+        ),
+      },
+      cashFlow: {
+        findMany: jest.fn().mockImplementation(() =>
+          Promise.resolve(
+            created.payments.map(({ code, amount }) => ({ code, amount })),
+          ),
+        ),
+      },
     };
     const prisma = {
       $transaction: jest.fn(async (cb: any) => cb(tx)),
     };
     const larkOrderNotification = { notifyOrderConfirmedAsync: jest.fn() };
+    const auditLogsService = { create: jest.fn().mockResolvedValue(undefined) };
     const service = new OrdersService(
       prisma as any,
       {} as any,
-      { create: jest.fn() } as any,
+      auditLogsService as any,
       {} as any,
       larkOrderNotification as any,
       {} as any,
     );
-    jest.spyOn(service as any, 'calculateTotals').mockResolvedValue(undefined);
-    return { service, tx, larkOrderNotification };
+    const calculateTotals = jest
+      .spyOn(service as any, 'calculateTotals')
+      .mockResolvedValue(undefined);
+    const createPayment = jest
+      .spyOn(orderPayments, 'createOrderPaymentInTx')
+      .mockImplementation(((_tx: any, dto: any) => {
+        created.payments.push({
+          amount: dto.amount,
+          status: 0,
+          code: `TTDH000001-${created.payments.length + 1}`,
+        });
+        return Promise.resolve({
+          payment: {},
+          cashFlow: {},
+          auditLog: { actionCode: 'ORDER_PAYMENT_CREATE' },
+        });
+      }) as any);
+    const createNote = jest
+      .spyOn(paymentNotes, 'createOrderPaymentNoteInTx')
+      .mockImplementation(((_tx: any, _id: number, dto: any) => {
+        created.notes.push({ paymentType: dto.paymentType });
+        return Promise.resolve({
+          note: {},
+          auditLog: { actionCode: 'ORDER_PAYMENT_NOTE_CHANGE' },
+        });
+      }) as any);
+    return {
+      service,
+      tx,
+      larkOrderNotification,
+      auditLogsService,
+      calculateTotals,
+      createPayment,
+      createNote,
+    };
   };
+
+  afterEach(() => jest.restoreAllMocks());
 
   it('chặn khách không công nợ chưa trả đủ, không gửi card Lark', async () => {
     const { service, tx, larkOrderNotification } = setup({
@@ -512,6 +584,236 @@ describe('OrdersService update — chặn xác nhận đơn theo công nợ', ()
       { id: 9 },
     );
     expect(confirmed.tx.debtTicketCustomer.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('kiểm tra lại khi đơn đã xác nhận bị tăng tổng tiền', async () => {
+    const { service } = setup({
+      currentStatus: CONFIRMED,
+      savedStatus: CONFIRMED,
+      requireFullPayment: true,
+      savedGrandTotal: 150000,
+    });
+
+    await expect(
+      service.update(1, { shippingFee: 50000 } as any, { id: 9 }),
+    ).rejects.toThrow('chưa được thanh toán đủ nên không thể xác nhận');
+  });
+
+  describe('khóa sản phẩm khi đơn không còn Phiếu tạm', () => {
+    const savedItems = [
+      {
+        productId: 1,
+        quantity: 10,
+        price: 50000,
+        lineType: 'normal',
+        product: { name: 'SP 1' },
+      },
+    ];
+
+    it('chặn thêm sản phẩm vào đơn đã xác nhận, không xóa dòng cũ', async () => {
+      const { service, tx } = setup({
+        currentStatus: CONFIRMED,
+        savedStatus: CONFIRMED,
+        items: savedItems,
+      });
+      tx.orderItem = { deleteMany: jest.fn() };
+
+      await expect(
+        service.update(
+          1,
+          {
+            items: [
+              { productId: 1, quantity: 10, unitPrice: 50000 },
+              { productId: 2, quantity: 1, unitPrice: 20000 },
+            ],
+          } as any,
+          { id: 9 },
+        ),
+      ).rejects.toThrow('không thể thêm hoặc sửa sản phẩm');
+      expect(tx.orderItem.deleteMany).not.toHaveBeenCalled();
+    });
+
+    it('cho lưu đơn đã xác nhận khi dòng hàng gửi lại y nguyên', async () => {
+      const { service, tx } = setup({
+        currentStatus: CONFIRMED,
+        savedStatus: CONFIRMED,
+        items: savedItems,
+      });
+      // Dòng hàng không đổi → dừng ở bước xử lý dòng hàng như cũ, không bị chặn.
+      tx.orderItem = {
+        deleteMany: jest.fn().mockRejectedValue(new Error('qua kiểm tra')),
+      };
+
+      await expect(
+        service.update(
+          1,
+          { items: [{ productId: 1, quantity: 10, unitPrice: 50000 }] } as any,
+          { id: 9 },
+        ),
+      ).rejects.toThrow('qua kiểm tra');
+    });
+
+    it('cho sửa sản phẩm khi đơn đang Phiếu tạm', async () => {
+      const { service, tx } = setup({
+        currentStatus: PENDING,
+        savedStatus: PENDING,
+        items: savedItems,
+      });
+      tx.orderItem = {
+        deleteMany: jest.fn().mockRejectedValue(new Error('qua kiểm tra')),
+      };
+
+      await expect(
+        service.update(
+          1,
+          { items: [{ productId: 1, quantity: 12, unitPrice: 50000 }] } as any,
+          { id: 9 },
+        ),
+      ).rejects.toThrow('qua kiểm tra');
+    });
+  });
+
+  describe('lưu tiền khách trả + TM/CK cùng 1 lần với đơn', () => {
+    it('TM chọn ở lần lưu này được miễn kiểm tra trả đủ ngay lần đó', async () => {
+      const { service, createNote, calculateTotals } = setup({
+        currentStatus: CONFIRMED,
+        savedStatus: CONFIRMED,
+        requireFullPayment: true,
+        savedGrandTotal: 150000,
+      });
+
+      await service.update(
+        1,
+        {
+          shippingFee: 50000,
+          paymentNote: { paymentType: 'cash', amount: 150000 },
+        } as any,
+        { id: 9, name: 'Nhân viên A' },
+      );
+
+      expect(createNote).toHaveBeenCalledWith(
+        expect.anything(),
+        1,
+        { paymentType: 'cash', amount: 150000 },
+        9,
+        'Nhân viên A',
+      );
+      // Ghi chú phải có TRƯỚC khi tính tổng + kiểm tra công nợ.
+      expect(createNote.mock.invocationCallOrder[0]).toBeLessThan(
+        calculateTotals.mock.invocationCallOrder[0],
+      );
+    });
+
+    it('tiền khách trả ở lần lưu này được tính khi kiểm tra trả đủ', async () => {
+      const { service, createPayment } = setup({
+        currentStatus: CONFIRMED,
+        savedStatus: CONFIRMED,
+        requireFullPayment: true,
+        savedGrandTotal: 150000,
+      });
+
+      await service.update(
+        1,
+        {
+          shippingFee: 50000,
+          payments: [{ amount: 100000, paymentMethod: 'transfer' }],
+          paymentNote: { paymentType: 'transfer' },
+        } as any,
+        { id: 9 },
+      );
+
+      expect(createPayment).toHaveBeenCalledWith(
+        expect.anything(),
+        {
+          orderId: 1,
+          amount: 100000,
+          paymentMethod: 'transfer',
+          accountId: undefined,
+        },
+        9,
+      );
+    });
+
+    it('lưu bị chặn ở bước kiểm tra → không ghi log phiếu thu (transaction rollback)', async () => {
+      const { service, auditLogsService } = setup({
+        currentStatus: CONFIRMED,
+        savedStatus: CONFIRMED,
+        requireFullPayment: true,
+        savedGrandTotal: 150000,
+      });
+
+      await expect(
+        service.update(
+          1,
+          {
+            shippingFee: 50000,
+            payments: [{ amount: 10000 }],
+            paymentNote: { paymentType: 'transfer' },
+          } as any,
+          { id: 9 },
+        ),
+      ).rejects.toThrow('chưa được thanh toán đủ nên không thể xác nhận');
+      expect(auditLogsService.create).not.toHaveBeenCalled();
+    });
+
+    it('dòng hàng bị chặn → chưa tạo phiếu thu, chưa ghi chú', async () => {
+      const { service, tx, createPayment, createNote } = setup({
+        currentStatus: CONFIRMED,
+        savedStatus: CONFIRMED,
+        items: [
+          {
+            productId: 1,
+            quantity: 10,
+            price: 50000,
+            lineType: 'normal',
+            product: { name: 'SP 1' },
+          },
+        ],
+      });
+      tx.orderItem = { deleteMany: jest.fn() };
+
+      await expect(
+        service.update(
+          1,
+          {
+            items: [{ productId: 1, quantity: 11, unitPrice: 50000 }],
+            payments: [{ amount: 500000 }],
+            paymentNote: { paymentType: 'cash', amount: 500000 },
+          } as any,
+          { id: 9 },
+        ),
+      ).rejects.toThrow('không thể thêm hoặc sửa sản phẩm');
+      expect(createPayment).not.toHaveBeenCalled();
+      expect(createNote).not.toHaveBeenCalled();
+    });
+
+    it('lưu thành công → ghi log phiếu thu + đổi TM/CK sau commit', async () => {
+      const { service, auditLogsService } = setup({
+        currentStatus: PENDING,
+        savedStatus: PENDING,
+      });
+
+      await service.update(
+        1,
+        {
+          payments: [{ amount: 200000, paymentMethod: 'cash' }],
+          paymentNote: { paymentType: 'cash', amount: 200000 },
+        } as any,
+        { id: 9 },
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+
+      const codes = auditLogsService.create.mock.calls.map(
+        ([log]: any[]) => log.actionCode,
+      );
+      expect(codes).toEqual(
+        expect.arrayContaining([
+          'ORDER_PAYMENT_CREATE',
+          'ORDER_PAYMENT_NOTE_CHANGE',
+          'ORDER_UPDATE',
+        ]),
+      );
+    });
   });
 });
 

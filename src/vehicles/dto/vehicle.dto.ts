@@ -5,6 +5,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Max,
   MaxLength,
   Min,
 } from 'class-validator';
@@ -20,6 +21,13 @@ export class VehicleQueryDto {
   @IsOptional()
   @IsIn(['true', 'false'])
   includeInactive?: string;
+}
+
+export class VehicleFuelSummaryQueryDto {
+  @IsOptional()
+  @IsInt()
+  @Type(() => Number)
+  branchId?: number;
 }
 
 export class CreateVehicleDto {
@@ -59,6 +67,13 @@ export class CreateVehicleDto {
   @Min(0)
   @Type(() => Number)
   costPerKmMax?: number | null;
+
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.1)
+  @Max(100)
+  @Type(() => Number)
+  fuelNorm?: number | null;
 
   @IsOptional()
   @IsInt()
@@ -106,6 +121,13 @@ export class UpdateVehicleDto {
   @Min(0)
   @Type(() => Number)
   costPerKmMax?: number | null;
+
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0.1)
+  @Max(100)
+  @Type(() => Number)
+  fuelNorm?: number | null;
 
   @IsOptional()
   @IsInt()

@@ -24,6 +24,7 @@ import {
   MANUFACTURER_STOCK_VARIABLES,
   mapManufacturerStock,
 } from './manufacturer-stock-print';
+import { escapeHtml, TrustedHtml, trustedHtml } from './print-html.util';
 
 /**
  * Loại mẫu in có biến + mẫu mặc định dựng sẵn trong code (không cần seed): biến
@@ -285,26 +286,23 @@ export class PrintTemplatesService {
         })
         .join('');
 
-      content = content.replace(row, clonedRows);
+      // Hàm thay thế: chuỗi thường sẽ diễn giải `$&`, `$'`… có trong tên hàng.
+      content = content.replace(row, () => clonedRows);
     }
 
     return content;
   }
 
+  /**
+   * Mọi giá trị đều được escape; chỉ HTML do service tự dựng (TrustedHtml) giữ
+   * nguyên. Ghi chú giữ xuống dòng bằng <br />.
+   */
   private formatVariableValue(key: string, value: any): string {
-    const text = value?.toString() || '';
-    if (!key.startsWith('Ghi_Chu')) return text;
+    if (value instanceof TrustedHtml) return value.html;
+    const escaped = escapeHtml(value?.toString() || '');
+    if (!key.startsWith('Ghi_Chu')) return escaped;
 
-    return this.escapeHtml(text).replace(/\r\n|\r|\n/g, '<br />');
-  }
-
-  private escapeHtml(value: string): string {
-    return value
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
+    return escaped.replace(/\r\n|\r|\n/g, '<br />');
   }
 
   // ==================== DISPATCHER ====================
@@ -846,7 +844,7 @@ export class PrintTemplatesService {
       // Địa chỉ hành chính cũ (trước sáp nhập) — rỗng khi không có / trùng mới.
       Dia_Chi_Cu_Giao_Hang: oldAddress,
       Dong_Dia_Chi_Cu_Giao_Hang: oldAddress
-        ? `<br>(Địa chỉ cũ: ${this.escapeHtml(oldAddress)})`
+        ? trustedHtml(`<br>(Địa chỉ cũ: ${escapeHtml(oldAddress)})`)
         : '',
       Ghi_Chu_Giao_Hang: delivery?.noteForDriver || '',
       Trang_Thai_Giao_Hang: delivery?.statusValue || '',
@@ -904,7 +902,9 @@ export class PrintTemplatesService {
     );
 
     return {
-      Ma_QR_Code: `<img src="${url}" alt="QR thanh toan" style="width:160px;height:160px;" />`,
+      Ma_QR_Code: trustedHtml(
+        `<img src="${escapeHtml(url)}" alt="QR thanh toan" style="width:160px;height:160px;" />`,
+      ),
       Ten_Ngan_Hang_QR: bank.bankName || '',
       So_Tai_Khoan_QR: bank.accountNumber || '',
       Chu_Tai_Khoan_QR: bank.accountHolder || '',
@@ -922,7 +922,9 @@ export class PrintTemplatesService {
       },
     );
     return {
-      Ma_QR_Chung_Tu: `<img src="${dataUrl}" alt="QR chung tu" style="width:120px;height:120px;" />`,
+      Ma_QR_Chung_Tu: trustedHtml(
+        `<img src="${dataUrl}" alt="QR chung tu" style="width:120px;height:120px;" />`,
+      ),
     };
   }
 
@@ -946,7 +948,7 @@ export class PrintTemplatesService {
       Phi_Giao_Hang: this.money(shippingFee),
       Dong_Phi_Giao_Hang:
         shippingFee > 0
-          ? `<div>Phí giao hàng: ${this.money(shippingFee)}</div>`
+          ? trustedHtml(`<div>Phí giao hàng: ${this.money(shippingFee)}</div>`)
           : '',
       Style_Dong_Phi_Giao_Hang: shippingFee > 0 ? '' : 'display:none;',
     };
@@ -1274,13 +1276,15 @@ export class PrintTemplatesService {
     };
   }
 
-  private internalUseProductName(item: any): string {
-    const baseName = item.productName || item.product?.name || '';
+  private internalUseProductName(item: any): string | TrustedHtml {
+    const baseName = escapeHtml(item.productName || item.product?.name || '');
     const conditionType = item.conditionType || 'normal';
     if (conditionType === 'damaged') {
-      return `${baseName} <span style="font-size:7pt;font-weight:bold;font-style:italic">(Bục rách)</span>`;
+      return trustedHtml(
+        `${baseName} <span style="font-size:7pt;font-weight:bold;font-style:italic">(Bục rách)</span>`,
+      );
     }
-    if (conditionType !== 'near_expiry') return baseName;
+    if (conditionType !== 'near_expiry') return trustedHtml(baseName);
 
     let monthYear = '';
     if (item.soldExpiryDate) {
@@ -1292,7 +1296,9 @@ export class PrintTemplatesService {
     const label = monthYear
       ? `(Cận date ${monthYear})`
       : '(Cận date - Chưa xác định NSX)';
-    return `${baseName} <span style="font-size:7pt;font-weight:bold;font-style:italic">${label}</span>`;
+    return trustedHtml(
+      `${baseName} <span style="font-size:7pt;font-weight:bold;font-style:italic">${label}</span>`,
+    );
   }
 
   private mapCashFlow(cf: any) {
@@ -1383,7 +1389,10 @@ export class PrintTemplatesService {
 
     return {
       Ma_Hang: item.productCode || item.product?.code || '',
-      Ten_Hang_Hoa: baseName + conditionSuffix + nameSuffix,
+      // Nhãn (Bục rách)/(Cận date)/(KM) là HTML hằng; tên hàng phải escape.
+      Ten_Hang_Hoa: trustedHtml(
+        escapeHtml(baseName) + conditionSuffix + nameSuffix,
+      ),
       Don_Vi_Tinh: item.product?.unit || '',
       So_Luong: Number(item.quantity),
       Don_Gia: this.money(item.price),

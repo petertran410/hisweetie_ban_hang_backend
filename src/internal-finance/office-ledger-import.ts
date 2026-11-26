@@ -1,10 +1,22 @@
 import { randomUUID } from 'crypto';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { larkLedgerCutoff } from '../approval-lifecycle/approval-lifecycle.constants';
+import { branchLabel } from '../finance-audit';
 import {
   FUND_SOURCE_TYPE,
   InternalFundLedgerService,
 } from '../internal-fund/internal-fund-ledger.service';
+import {
+  ENTRY_AUDIT_SELECT,
+  flushScriptLog,
+  pushEntryScriptUpdate,
+  pushFundRestore,
+  pushFundScriptUpdate,
+  pushScriptRun,
+  scriptRun,
+  type ScriptCount,
+  type ScriptRun,
+} from './finance-script-audit';
 import {
   LEDGER_PREFIX,
   REASON,
@@ -90,6 +102,8 @@ const sum = (rows: Array<{ transactionType: string; amount: unknown }>) =>
   );
 const vnDate = (value: Date) =>
   value.toLocaleDateString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+const money = (value: Prisma.Decimal) =>
+  Number(value).toLocaleString('vi-VN', { maximumFractionDigits: 0 });
 
 /** Lý do hủy dòng POS tự ghi trước mốc, vd. "... tới hết 31/10/2026". */
 export const voidReason = (until: Date) =>
@@ -352,38 +366,155 @@ export function assertApplyUntil(branchId: number, until: Date) {
     );
 }
 
+/** Tên script ghi trong lịch sử (Cài đặt → Lịch sử). */
+export const OFFICE_LEDGER_SCRIPT = 'import-office-ledger';
+
 export async function applyLedgerImport(
   prisma: PrismaClient,
   records: LarkRecord[],
   branchId: number,
   userId: number,
   until = larkLedgerCutoff(branchId),
+  /** Tham số dòng lệnh, ghi vào lịch sử lần chạy. */
+  args: string[] = [],
 ) {
   assertApplyUntil(branchId, until);
-  const ledger = new InternalFundLedgerService();
+  const run = scriptRun(OFFICE_LEDGER_SCRIPT, userId, args);
+  const ledger = new InternalFundLedgerService(run.service);
   return prisma.$transaction(
     async (tx) => {
       await ledger.lock(tx, [branchId]);
       const plan = await planLedgerImport(tx, records, branchId, until);
-      await applyLedgerPlan(tx, plan, userId, ledger);
+      const applied = await applyLedgerPlan(tx, plan, userId, ledger, run);
+      pushScriptRun(
+        run,
+        ledgerRunSummary(plan),
+        ledgerRunCounts(plan, applied),
+        { branchId, metadata: ledgerRunMetadata(plan) },
+      );
+      await flushScriptLog(tx, run);
       return plan;
     },
     { timeout: 600000, maxWait: 60000 },
   );
 }
 
-/** Ghi kế hoạch nhập sổ (trong transaction đã khóa quỹ). */
+/** Kết quả ghi kế hoạch nhập sổ ngoài những gì đọc được từ kế hoạch. */
+export interface LedgerApplyResult {
+  /** Số phiếu mang dấu "Đã trừ quỹ trên Lark" vì dòng quỹ của nó bị hủy. */
+  entriesFlagged: number;
+}
+
+/** Tóm tắt lần nhập sổ cho dòng FIN_SCRIPT_RUN. */
+export function ledgerRunSummary(plan: LedgerImportPlan) {
+  const parts = [
+    ['thêm', plan.add.length],
+    ['Lark sửa tiền/ngày', plan.changed.length],
+    ['sửa nội dung', plan.renamed.length],
+    ['hủy theo Lark', plan.removed.length],
+    ['hủy dòng POS tự ghi', plan.voids.length],
+    ['bật lại', plan.restored.length],
+  ] as const;
+  const changes = parts
+    .filter(([, count]) => count > 0)
+    .map(([label, count]) => `${label} ${count}`);
+  return `Sổ quỹ ${branchLabel(plan.branchId)} tới hết ${vnDate(new Date(plan.until.getTime() - 1))}: ${changes.length ? changes.join(', ') : 'không có thay đổi'}`;
+}
+
+export function ledgerRunCounts(
+  plan: LedgerImportPlan,
+  applied: LedgerApplyResult,
+): ScriptCount[] {
+  return [
+    { key: 'restored', label: 'Dòng sổ bật lại', value: plan.restored.length },
+    { key: 'added', label: 'Dòng sổ Lark thêm', value: plan.add.length },
+    {
+      key: 'changed',
+      label: 'Lark sửa tiền / ngày / Thu-Chi (hủy rồi thêm lại)',
+      value: plan.changed.length,
+    },
+    {
+      key: 'renamed',
+      label: 'Lark chỉ sửa nội dung',
+      value: plan.renamed.length,
+    },
+    {
+      key: 'removed',
+      label: 'Hủy theo Lark (hủy / xóa / dời qua mốc)',
+      value: plan.removed.length,
+    },
+    { key: 'voids', label: 'Hủy dòng POS tự ghi', value: plan.voids.length },
+    {
+      key: 'entriesFlagged',
+      label: 'Phiếu mang dấu "Đã trừ quỹ trên Lark"',
+      value: applied.entriesFlagged,
+    },
+    {
+      key: 'existing',
+      label: 'Dòng sổ không đổi',
+      value: plan.existing.length,
+    },
+    { key: 'skipped', label: 'Dòng Lark bỏ qua', value: plan.skipped.length },
+    {
+      key: 'posBalance',
+      label: 'Số dư POS tới mốc',
+      value: `${money(plan.posBefore)} → ${money(plan.posAfter)} (sổ Lark ${money(plan.larkBalance)})`,
+    },
+  ];
+}
+
+export function ledgerRunMetadata(plan: LedgerImportPlan) {
+  return {
+    until: plan.until,
+    larkBalance: plan.larkBalance,
+    posBefore: plan.posBefore,
+    posAfter: plan.posAfter,
+  };
+}
+
+const RESTORE_REASON = 'Nhập lại sổ quỹ Lark';
+
+/**
+ * Ghi kế hoạch nhập sổ (trong transaction đã khóa quỹ). Có `run` (script
+ * --apply): thêm dòng lịch sử vào `run.log` (người gọi ghi bằng
+ * flushScriptLog) và truyền người chạy vào ledger.
+ */
 export async function applyLedgerPlan(
   tx: Prisma.TransactionClient,
   plan: LedgerImportPlan,
   userId: number,
   ledger: InternalFundLedgerService,
-) {
+  run?: ScriptRun,
+): Promise<LedgerApplyResult> {
   const { branchId, until } = plan;
   const reason = voidReason(until);
+  const actor = run?.actor;
 
-  // 0. Bật lại dòng sổ đã bị hủy hàng loạt: giữ mã, id, khóa gốc.
-  for (const row of plan.restored)
+  // 0. Bật lại dòng sổ đã bị hủy hàng loạt: giữ mã, id, khóa gốc. Lịch sử giữ
+  // thông tin hủy cũ (đọc trước khi sửa).
+  const restoredBefore =
+    run && plan.restored.length
+      ? new Map(
+          (
+            await tx.internalFundTransaction.findMany({
+              where: { id: { in: plan.restored.map((row) => row.id) } },
+              select: {
+                id: true,
+                code: true,
+                branchId: true,
+                status: true,
+                sourceKey: true,
+                amount: true,
+                occurredAt: true,
+                cancelledAt: true,
+                cancelledBy: true,
+                cancelReason: true,
+              },
+            })
+          ).map((row) => [row.id, row]),
+        )
+      : null;
+  for (const row of plan.restored) {
     await tx.internalFundTransaction.update({
       where: { id: row.id },
       data: {
@@ -394,10 +525,33 @@ export async function applyLedgerPlan(
         cancelReason: null,
       },
     });
+    const before = restoredBefore?.get(row.id);
+    if (run && before)
+      pushFundRestore(
+        run,
+        before,
+        { status: 'POSTED', sourceKey: row.sourceKey },
+        RESTORE_REASON,
+      );
+  }
 
   // 3. Hủy dòng POS tự ghi trước; phiếu gắn với nó giữ Đã chi và mang dấu.
+  const flaggedIds = [
+    ...new Set(
+      plan.voids
+        .map((item) => item.pos.entryId)
+        .filter((id): id is number => Boolean(id)),
+    ),
+  ];
+  const entriesBefore =
+    run && flaggedIds.length
+      ? await tx.internalFinanceEntry.findMany({
+          where: { id: { in: flaggedIds } },
+          select: ENTRY_AUDIT_SELECT,
+        })
+      : [];
   for (const { pos } of plan.voids) {
-    await ledger.releaseCancelled(tx, pos, userId, reason);
+    await ledger.releaseCancelled(tx, pos, userId, reason, actor);
     if (pos.entryId)
       await tx.$executeRaw`
             UPDATE internal_finance_entries
@@ -406,26 +560,55 @@ export async function applyLedgerPlan(
                 "cashIssuedReason" = ${REASON.ledgerRecorded}
             WHERE id = ${pos.entryId}`;
   }
+  if (run)
+    for (const entry of entriesBefore)
+      pushEntryScriptUpdate(run, entry, {
+        cashIssuedReason: REASON.ledgerRecorded,
+        sourceSnapshot: {
+          ...((entry.sourceSnapshot as object | null) || {}),
+          larkLedgerRecorded: true,
+        },
+      });
 
   // 2. Dòng đã nhập mà Lark đổi: hủy (hoặc nhả khóa của dòng đã hủy) rồi thêm lại.
   for (const { pos, reason: removedReason } of plan.removed)
-    await ledger.releaseCancelled(tx, pos, userId, removedReason);
+    await ledger.releaseCancelled(tx, pos, userId, removedReason, actor);
   for (const { pos } of plan.changed) {
     if (pos.status === 'POSTED')
-      await ledger.releaseCancelled(tx, pos, userId, CHANGED_REASON);
-    else
+      await ledger.releaseCancelled(tx, pos, userId, CHANGED_REASON, actor);
+    else {
+      const sourceKey = `${pos.sourceKey}:CANCELLED:${pos.id}`;
+      if (run)
+        pushFundScriptUpdate(
+          run,
+          pos,
+          { sourceKey: pos.sourceKey },
+          { sourceKey },
+          'Nhả khóa dòng đã hủy để thêm lại theo sổ Lark',
+        );
       await tx.internalFundTransaction.update({
         where: { id: pos.id },
-        data: { sourceKey: `${pos.sourceKey}:CANCELLED:${pos.id}` },
+        data: { sourceKey },
       });
+    }
   }
-  for (const { pos, lark } of plan.renamed)
+  for (const { pos, lark } of plan.renamed) {
+    if (run)
+      pushFundScriptUpdate(
+        run,
+        pos,
+        { description: pos.description },
+        { description: lark.description },
+        'Lark sửa nội dung dòng sổ',
+      );
     await tx.internalFundTransaction.update({
       where: { id: pos.id },
       data: { description: lark.description },
     });
+  }
 
-  // 1. Thêm dòng sổ Lark còn thiếu và dòng vừa sửa.
+  // 1. Thêm dòng sổ Lark còn thiếu và dòng vừa sửa (số lượng ghi ở dòng
+  // FIN_SCRIPT_RUN, không ghi lịch sử từng dòng).
   const inserts = [...plan.add, ...plan.changed.map((item) => item.lark)];
   const usedCodes = new Set(
     (
@@ -465,5 +648,8 @@ export async function applyLedgerPlan(
       tx,
       branchId,
       new Date(Math.min(...touched.map((date) => date.getTime()))),
+      'nhập sổ quỹ Lark',
+      actor,
     );
+  return { entriesFlagged: flaggedIds.length };
 }

@@ -122,6 +122,10 @@ function fakeDb() {
   const entries: any[] = [
     {
       id: 80,
+      code: 'TCNB-80',
+      category: 'CASH_FUND_EXPENSE',
+      branchId: 7,
+      cashIssued: true,
       sourceKey: 'LARK_APPROVAL:I1',
       status: 'POSTED',
       sourceSnapshot: { formKind: 'PHIEU_CHI' },
@@ -129,6 +133,10 @@ function fakeDb() {
     },
     {
       id: 81,
+      code: 'TCNB-81',
+      category: 'CASH_FUND_EXPENSE',
+      branchId: 7,
+      cashIssued: true,
       sourceKey: 'LARK_APPROVAL:I2',
       status: 'POSTED',
       sourceSnapshot: { larkLedgerRecorded: true },
@@ -136,6 +144,10 @@ function fakeDb() {
     },
     {
       id: 82,
+      code: 'TCNB-82',
+      category: 'CASH_FUND_EXPENSE',
+      branchId: 7,
+      cashIssued: true,
       sourceKey: 'LARK_APPROVAL:I3',
       status: 'POSTED',
       sourceSnapshot: { larkLedgerRecorded: true },
@@ -143,6 +155,10 @@ function fakeDb() {
     },
     {
       id: 83,
+      code: 'TCNB-83',
+      category: 'CASH_FUND_EXPENSE',
+      branchId: 7,
+      cashIssued: true,
       sourceKey: 'LARK_APPROVAL:I5',
       status: 'POSTED',
       sourceSnapshot: { larkLedgerRecorded: true },
@@ -214,12 +230,23 @@ function fakeDb() {
         ),
       ),
     },
-    internalFundDailyClosing: { updateMany: jest.fn() },
+    internalFundDailyClosing: {
+      updateMany: jest.fn(),
+      findMany: jest.fn(async () => []),
+    },
+    auditLog: { createMany: jest.fn() },
+    user: { findMany: jest.fn(async () => []) },
     $executeRaw: jest.fn(),
     $transaction: jest.fn(async (fn: any) => fn(db)),
   };
   return { db, rows, entries };
 }
+
+/** Mọi dòng lịch sử đã ghi (gộp các lần createMany). */
+const auditRows = (db: any): any[] =>
+  db.auditLog.createMany.mock.calls.flatMap(([args]: any) => args.data);
+const byCode = (rows: any[], code: string) =>
+  rows.filter((row) => row.actionCode === code);
 
 const ids = (items: Array<{ request: { id: number } }>) =>
   items.map((item) => item.request.id);
@@ -301,7 +328,68 @@ describe('VPSG ledger + approvals merge', () => {
       false,
     );
 
+    // Lịch sử: một dòng chạy script; dòng quỹ thêm/hủy do ledger ghi; script
+    // sửa dòng quỹ (gắn phiếu) và phiếu (dấu Lark), tất cả cùng opId.
+    const history = auditRows(db);
+    const runs = byCode(history, 'FIN_SCRIPT_RUN');
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      entityType: 'finance_scripts',
+      entityCode: 'import-office-ledger',
+      branchId: 7,
+      userId: 5,
+    });
+    expect(runs[0].metadata.counts).toMatchObject({
+      added: 4,
+      matched: 2,
+      approvalVoids: 1,
+      marks: 1,
+      posts: 2,
+      attaches: 1,
+    });
+    expect(runs[0].message).toContain('ghi quỹ đơn sổ thiếu 2');
+    expect(
+      byCode(history, 'FIN_FUND_TXN_CANCEL').map((row) => row.entityId),
+    ).toEqual(['60']);
+    expect(
+      byCode(history, 'FIN_FUND_TXN_POST').map((row) => row.metadata.sourceKey),
+    ).toEqual(['PAYMENT_VOUCHER:2', 'PAYMENT_VOUCHER:6']);
+    const fundUpdates = byCode(history, 'FIN_FUND_TXN_SCRIPT_UPDATE');
+    expect(
+      fundUpdates.map((row) => [
+        row.entityId,
+        row.changes[0].label,
+        row.changes[0].to,
+      ]),
+    ).toEqual([
+      [String(posted2.id), 'Phiếu gắn với dòng quỹ', '#81'],
+      ['61', 'Phiếu gắn với dòng quỹ', '#83'],
+    ]);
+    const entryUpdates = byCode(history, 'FIN_ENTRY_UPDATE');
+    expect(entryUpdates.map((row) => row.entityId)).toEqual(['80', '81', '83']);
+    expect(entryUpdates[1].changes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          label: 'Lý do Đã chi',
+          from: 'Đã trừ quỹ trên Lark',
+          to: LARK_APPROVED_REASON,
+        }),
+        expect.objectContaining({
+          label: 'Đã trừ quỹ trên Lark',
+          from: 'Có',
+          to: 'Không',
+        }),
+      ]),
+    );
+    expect(new Set(history.map((row) => row.requestId)).size).toBe(1);
+    expect(new Set(history.map((row) => row.metadata.actorKind))).toEqual(
+      new Set(['SCRIPT']),
+    );
+
+    const written = db.auditLog.createMany.mock.calls.length;
     const again = await planVpsgMerge(db, records);
+    // Chạy thử không ghi lịch sử.
+    expect(db.auditLog.createMany.mock.calls.length).toBe(written);
     expect(again.ledger.add).toEqual([]);
     expect(again.voids).toEqual([]);
     expect(again.marks).toEqual([]);
@@ -332,6 +420,7 @@ describe('VPSG ledger + approvals merge', () => {
       applyVpsgMerge(db, records, 5, undefined, { inLedger: [2, 5, 99] }),
     ).rejects.toThrow('#99');
     expect(rows.find((row) => row.id === 61).status).toBe('POSTED');
+    expect(db.auditLog.createMany).not.toHaveBeenCalled();
 
     await applyVpsgMerge(db, records, 5, undefined, { inLedger: [2, 5] });
     expect(rows.find((row) => row.id === 61)).toMatchObject({

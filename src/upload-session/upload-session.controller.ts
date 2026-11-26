@@ -10,15 +10,26 @@ import {
   Req,
   Res,
   UploadedFiles,
+  UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { Response } from 'express';
+import { memoryStorage } from 'multer';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Public } from '../auth/decorators/public.decorator';
 import { UploadSessionService } from './upload-session.service';
 import { CreateUploadSessionDto } from './dto/create-upload-session.dto';
 import { renderMobileUploadPage } from './mobile-upload.page';
+import { UploadSessionTokenGuard } from './upload-session-token.guard';
+
+// Bằng giới hạn của UploadModule (MulterModule.register không áp sang module này).
+const PHONE_UPLOAD_LIMITS = {
+  fileSize: 50 * 1024 * 1024,
+  files: 30,
+  fields: 10,
+  parts: 40,
+};
 
 @ApiTags('Upload Sessions')
 @Controller('upload-sessions')
@@ -82,10 +93,17 @@ export class UploadSessionController {
     }
   }
 
-  // Điện thoại upload ảnh — công khai, xác thực bằng token.
+  // Điện thoại upload ảnh — công khai, xác thực bằng token (guard kiểm token
+  // trước khi đọc file; multer giới hạn kích thước/số file).
   @Public()
   @Post(':id/images')
-  @UseInterceptors(FilesInterceptor('files', 30))
+  @UseGuards(UploadSessionTokenGuard)
+  @UseInterceptors(
+    FilesInterceptor('files', 30, {
+      storage: memoryStorage(),
+      limits: PHONE_UPLOAD_LIMITS,
+    }),
+  )
   async uploadImages(
     @Param('id') id: string,
     @Query('t') token: string,

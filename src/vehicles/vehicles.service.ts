@@ -5,27 +5,72 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import type { Vehicle } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { FinanceAccessService } from '../auth/finance-access.service';
-import { fundDayStart } from '../internal-fund/internal-fund-ledger.service';
+import {
+  EMPTY_VALUE,
+  FINANCE_AUDIT_ENTITY,
+  FinanceAuditService,
+  auditActor,
+  fieldLabel,
+  formatFieldValue,
+  type FinanceAuditEntry,
+} from '../finance-audit';
 import {
   CreateVehicleDto,
   UpdateVehicleDto,
+  VehicleFuelSummaryQueryDto,
   VehicleQueryDto,
 } from './dto/vehicle.dto';
 import {
-  FUEL_NORM_BASELINE_FROM,
   VEHICLE_SCOPES,
   VEHICLE_SERVICE,
   type VehiclePermissionAction,
 } from './vehicles.constants';
 import {
+  analyzeFuel,
   computeFuelMetrics,
-  type CostThreshold,
   type FuelMetrics,
+  type FuelRow,
+  type VehicleThreshold,
 } from './vehicle-metrics';
+import { summarizeFuel } from './vehicle-fuel-summary';
 
 const NOT_CANCELLED = { not: 'CANCELLED' };
+
+/** Người dùng đăng nhập (req.user) dùng cho lịch sử. */
+type AuditUser = { id: number; name?: string | null; email?: string | null };
+
+// Trường của xe in ra khi thêm xe (lịch sử tài chính nội bộ).
+const VEHICLE_LINE_FIELDS = [
+  'label',
+  'plate',
+  'vehicleType',
+  'fuelType',
+  'branchId',
+  'driverId',
+  'costPerKmMin',
+  'costPerKmMax',
+  'fuelNorm',
+  'oilChangeIntervalKm',
+  'note',
+] as const;
+
+/** Tên xe kèm biển số cho câu lịch sử. */
+const vehicleLabel = (vehicle: Pick<Vehicle, 'label' | 'plate'>) =>
+  vehicle.plate ? `${vehicle.label} (${vehicle.plate})` : vehicle.label;
+
+function vehicleLines(vehicle: Vehicle, driverName?: string | null) {
+  return VEHICLE_LINE_FIELDS.map((field) => ({
+    label: fieldLabel(FINANCE_AUDIT_ENTITY.VEHICLE, field),
+    value:
+      field === 'driverId'
+        ? driverName ||
+          (vehicle.driverId ? `#${vehicle.driverId}` : EMPTY_VALUE)
+        : formatFieldValue(FINANCE_AUDIT_ENTITY.VEHICLE, field, vehicle[field]),
+  }));
+}
 const ALL_ACTIONS: VehiclePermissionAction[] = [
   'view',
   'create',
@@ -38,6 +83,7 @@ export class VehiclesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly access: FinanceAccessService,
+    private readonly financeAudit: FinanceAuditService,
   ) {}
 
   scopeForBranch(branchId: number) {
@@ -104,7 +150,7 @@ export class VehiclesService {
       category: 'VEHICLE_CARE',
       status: NOT_CANCELLED,
     };
-    const [odoRows, registrationRows, insuranceRows, oilRows] =
+    const [odoRows, registrationRows, insuranceRows, oilRows, fuel] =
       await Promise.all([
         this.prisma.internalFinanceEntry.groupBy({
           by: ['vehicleId'],
@@ -139,7 +185,9 @@ export class VehiclesService {
           },
           _max: { vehicleOdo: true },
         }),
+        this.loadFuel(ids),
       ]);
+    const consumption = analyzeFuel(fuel.rows, fuel.thresholds).vehicles;
     const odo = new Map(
       odoRows.map((row) => [row.vehicleId, row._max.vehicleOdo]),
     );
@@ -171,8 +219,62 @@ export class VehiclesService {
           vehicle.oilChangeIntervalKm && kmSinceOilChange !== null
             ? kmSinceOilChange >= vehicle.oilChangeIntervalKm
             : false,
+        // L/100km thực tế gần đây, để đối chiếu khi đặt định mức.
+        recentLitersPer100Km:
+          consumption.get(vehicle.id)?.litersPer100Km ?? null,
+        recentFuelSamples: consumption.get(vehicle.id)?.samples ?? 0,
       };
     });
+  }
+
+  /**
+   * Tab "Tổng hợp" xăng dầu theo xe: định mức đang cài, km, lít và L/100km
+   * thực tế FUEL_RECENT_MONTHS tháng gần nhất.
+   */
+  async fuelSummary(query: VehicleFuelSummaryQueryDto, user: any) {
+    const allowed = await this.allowedBranches(user, ['view']);
+    if (!allowed.length) {
+      throw new ForbiddenException('Không có quyền xem báo cáo xăng dầu');
+    }
+    if (query.branchId !== undefined && !allowed.includes(query.branchId)) {
+      throw new ForbiddenException(
+        'Không có quyền xem báo cáo xăng dầu của chi nhánh này',
+      );
+    }
+    const branchIds = query.branchId ? [query.branchId] : allowed;
+    const vehicles = await this.prisma.vehicle.findMany({
+      where: { branchId: { in: branchIds } },
+      select: {
+        id: true,
+        branchId: true,
+        label: true,
+        plate: true,
+        vehicleType: true,
+        fuelType: true,
+        isActive: true,
+        fuelNorm: true,
+        branch: { select: { id: true, name: true } },
+      },
+    });
+    const { rows } = await this.loadFuel(vehicles.map((vehicle) => vehicle.id));
+    const summary = summarizeFuel(
+      vehicles.map((vehicle) => ({
+        ...vehicle,
+        fuelNorm: toNumber(vehicle.fuelNorm),
+      })),
+      rows,
+      VEHICLE_SCOPES.flatMap((scope) => [...scope.branchIds]),
+    );
+    const branchNames = new Map(
+      vehicles.map((vehicle) => [vehicle.branchId, vehicle.branch?.name]),
+    );
+    return {
+      ...summary,
+      groups: summary.groups.map((group) => ({
+        ...group,
+        branchName: branchNames.get(group.branchId) || null,
+      })),
+    };
   }
 
   async create(dto: CreateVehicleDto, user: any) {
@@ -184,21 +286,37 @@ export class VehiclesService {
       throw new BadRequestException('Cần nhập tên xe và biển số');
     }
     await this.assertLabelFree(dto.branchId, label);
-    await this.assertDriver(dto.driverId);
-    return this.prisma.vehicle.create({
-      data: {
-        branchId: dto.branchId,
-        label,
-        plate,
-        vehicleType: dto.vehicleType || 'CAR',
-        fuelType: dto.fuelType || null,
-        driverId: dto.driverId || null,
-        costPerKmMin: dto.costPerKmMin ?? null,
-        costPerKmMax: dto.costPerKmMax ?? null,
-        oilChangeIntervalKm: dto.oilChangeIntervalKm ?? null,
-        note: dto.note?.trim() || null,
-        createdBy: user.id,
-      },
+    const driver = await this.assertDriver(dto.driverId);
+    const actor = auditActor.user(user as AuditUser);
+    // Thêm xe và ghi lịch sử trong cùng transaction.
+    return this.prisma.$transaction(async (tx) => {
+      const vehicle = await tx.vehicle.create({
+        data: {
+          branchId: dto.branchId,
+          label,
+          plate,
+          vehicleType: dto.vehicleType || 'CAR',
+          fuelType: dto.fuelType || null,
+          driverId: dto.driverId || null,
+          costPerKmMin: dto.costPerKmMin ?? null,
+          costPerKmMax: dto.costPerKmMax ?? null,
+          fuelNorm: dto.fuelNorm ?? null,
+          oilChangeIntervalKm: dto.oilChangeIntervalKm ?? null,
+          note: dto.note?.trim() || null,
+          createdBy: user.id,
+        },
+      });
+      await this.financeAudit.write(tx, {
+        action: 'FIN_VEHICLE_CREATE',
+        entityType: FINANCE_AUDIT_ENTITY.VEHICLE,
+        entityId: vehicle.id,
+        entityCode: vehicle.plate,
+        branchId: vehicle.branchId,
+        actor,
+        params: { label: vehicleLabel(vehicle) },
+        snapshot: { lines: vehicleLines(vehicle, driver?.name) },
+      });
+      return vehicle;
     });
   }
 
@@ -224,6 +342,7 @@ export class VehiclesService {
       await this.assertLabelFree(vehicle.branchId, label);
     }
     if (dto.driverId) await this.assertDriver(dto.driverId);
+    const actor = auditActor.user(user as AuditUser);
 
     return this.prisma.$transaction(async (tx) => {
       const updated = await tx.vehicle.update({
@@ -236,20 +355,82 @@ export class VehiclesService {
           driverId: dto.driverId,
           costPerKmMin: dto.costPerKmMin,
           costPerKmMax: dto.costPerKmMax,
+          fuelNorm: dto.fuelNorm,
           oilChangeIntervalKm: dto.oilChangeIntervalKm,
           note: dto.note !== undefined ? dto.note?.trim() || null : undefined,
           isActive: dto.isActive,
         },
       });
       // vehicleName là bản sao tên xe trên phiếu, phiếu chi kho đang đọc cột này.
+      let renamedEntries = 0;
       if (label && label !== vehicle.label) {
-        await tx.internalFinanceEntry.updateMany({
+        const renamed = await tx.internalFinanceEntry.updateMany({
           where: { vehicleId: id },
           data: { vehicleName: label },
         });
+        renamedEntries = renamed.count;
       }
+      await this.financeAudit.write(
+        tx,
+        this.updateEntries(vehicle, updated, renamedEntries, actor),
+      );
       return updated;
     });
+  }
+
+  /**
+   * Lịch sử sửa xe: đổi tên (kèm số phiếu cũ đổi theo), ngừng/dùng lại và các
+   * trường khác tách thành từng dòng; không đổi gì thì không ghi.
+   */
+  private updateEntries(
+    before: Vehicle,
+    after: Vehicle,
+    renamedEntries: number,
+    actor: FinanceAuditEntry['actor'],
+  ): FinanceAuditEntry[] {
+    const changes = this.financeAudit.diff(
+      FINANCE_AUDIT_ENTITY.VEHICLE,
+      before,
+      after,
+    );
+    const base = {
+      entityType: FINANCE_AUDIT_ENTITY.VEHICLE,
+      entityId: after.id,
+      entityCode: after.plate,
+      branchId: after.branchId,
+      actor,
+    };
+    const entries: FinanceAuditEntry[] = [];
+    const fieldChanges = changes.filter(
+      (change) => change.field !== 'label' && change.field !== 'isActive',
+    );
+    if (fieldChanges.length)
+      entries.push({
+        ...base,
+        action: 'FIN_VEHICLE_UPDATE',
+        params: { label: vehicleLabel(after) },
+        changes: fieldChanges,
+      });
+    const rename = changes.find((change) => change.field === 'label');
+    if (rename)
+      entries.push({
+        ...base,
+        action: 'FIN_VEHICLE_RENAME',
+        params: { from: before.label, to: after.label, count: renamedEntries },
+        changes: [rename],
+        metadata: { renamedEntries },
+      });
+    const active = changes.find((change) => change.field === 'isActive');
+    if (active)
+      entries.push({
+        ...base,
+        action: after.isActive
+          ? 'FIN_VEHICLE_REACTIVATE'
+          : 'FIN_VEHICLE_DEACTIVATE',
+        params: { label: vehicleLabel(after) },
+        changes: [active],
+      });
+    return entries;
   }
 
   /** Xe hợp lệ để gắn vào một phiếu của chi nhánh. */
@@ -270,6 +451,16 @@ export class VehiclesService {
   async fuelMetrics(vehicleIds: number[]): Promise<Map<number, FuelMetrics>> {
     const ids = Array.from(new Set(vehicleIds.filter(Boolean)));
     if (!ids.length) return new Map();
+    const { rows, thresholds } = await this.loadFuel(ids);
+    return computeFuelMetrics(rows, thresholds);
+  }
+
+  /** Phiếu xăng chưa hủy và ngưỡng (đ/km, định mức L/100km) của các xe. */
+  private async loadFuel(ids: number[]): Promise<{
+    rows: FuelRow[];
+    thresholds: Map<number, VehicleThreshold>;
+  }> {
+    if (!ids.length) return { rows: [], thresholds: new Map() };
     const [rows, vehicles] = await Promise.all([
       this.prisma.internalFinanceEntry.findMany({
         where: {
@@ -288,20 +479,16 @@ export class VehiclesService {
       }),
       this.prisma.vehicle.findMany({
         where: { id: { in: ids } },
-        select: { id: true, costPerKmMin: true, costPerKmMax: true },
+        select: {
+          id: true,
+          costPerKmMin: true,
+          costPerKmMax: true,
+          fuelNorm: true,
+        },
       }),
     ]);
-    const thresholds = new Map<number, CostThreshold>(
-      vehicles.map((vehicle) => [
-        vehicle.id,
-        {
-          min: toNumber(vehicle.costPerKmMin),
-          max: toNumber(vehicle.costPerKmMax),
-        },
-      ]),
-    );
-    return computeFuelMetrics(
-      rows.map((row) => ({
+    return {
+      rows: rows.map((row) => ({
         id: row.id,
         vehicleId: row.vehicleId as number,
         odo: toNumber(row.vehicleOdo),
@@ -309,9 +496,17 @@ export class VehiclesService {
         liters: toNumber(row.vehicleLiters),
         occurredAt: row.occurredAt,
       })),
-      thresholds,
-      fundDayStart(FUEL_NORM_BASELINE_FROM),
-    );
+      thresholds: new Map(
+        vehicles.map((vehicle) => [
+          vehicle.id,
+          {
+            min: toNumber(vehicle.costPerKmMin),
+            max: toNumber(vehicle.costPerKmMax),
+            fuelNorm: toNumber(vehicle.fuelNorm),
+          },
+        ]),
+      ),
+    };
   }
 
   private assertThresholds(min?: number | null, max?: number | null) {
@@ -333,12 +528,13 @@ export class VehiclesService {
   }
 
   private async assertDriver(driverId?: number | null) {
-    if (!driverId) return;
+    if (!driverId) return null;
     const driver = await this.prisma.user.findUnique({
       where: { id: driverId },
-      select: { id: true },
+      select: { id: true, name: true },
     });
     if (!driver) throw new BadRequestException('Không tìm thấy lái xe');
+    return driver;
   }
 }
 

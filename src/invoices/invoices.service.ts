@@ -81,6 +81,8 @@ import {
   assertCanCreateInvoiceForCustomer,
   assertCanDeliverForCustomer,
   assertPrepaidPolicySatisfied,
+  customerDebtForOrderPrepaidCheck,
+  requiresFullPayment,
 } from '../common/debt-delivery.util';
 import { USER_PUBLIC_SELECT } from '../common/user-select.util';
 import {
@@ -4412,11 +4414,26 @@ export class InvoicesService {
         (dto.paymentNoteType || dto.paymentType) === 'cash' &&
         orderPaymentMethod !== 'cash';
 
+      // Tiền đã trả trên đơn (activeOrderPaid) đã là phiếu thu nằm trong
+      // totalDebt → dùng công nợ đã bỏ phần của đơn này và tiền gắn đơn khác,
+      // tránh tính 2 lần. Chỉ truy vấn thêm khi thật sự phải kiểm tra trả đủ.
+      const orderTotalDebt = Number(order.customer?.totalDebt || 0);
+      const currentCustomerDebt =
+        order.customerId &&
+        requiresFullPayment(order.customer?.debtPolicy) &&
+        orderPaymentMethod !== 'cash'
+          ? await customerDebtForOrderPrepaidCheck(tx, {
+              orderId: order.id,
+              customerId: order.customerId,
+              totalDebt: orderTotalDebt,
+            })
+          : orderTotalDebt;
+
       this.assertCustomerInvoiceCanBeCreated({
         policy: order.customer?.debtPolicy,
         paidAmount: activeOrderPaid,
         grandTotal: Number(order.grandTotal),
-        currentCustomerDebt: Number(order.customer?.totalDebt || 0),
+        currentCustomerDebt,
         mode: 'order',
         paymentMethod: orderPaymentMethod,
         message: switchedToCash

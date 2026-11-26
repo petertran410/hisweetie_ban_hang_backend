@@ -5,8 +5,6 @@ import {
   UploadedFile,
   UploadedFiles,
   BadRequestException,
-  Delete,
-  Param,
   Query,
   Logger,
   Body,
@@ -156,12 +154,6 @@ export class UploadController {
     }
 
     return { items, errors };
-  }
-
-  @Delete(':filename')
-  async deleteFile(@Param('filename') filename: string) {
-    await this.uploadService.deleteFile(filename);
-    return { message: 'File deleted successfully' };
   }
 
   @Post('file')

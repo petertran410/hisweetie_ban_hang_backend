@@ -10,6 +10,9 @@
  * danh sách biến lấy từ DB, mẫu mặc định được tạo một lần khi mở danh sách mẫu
  * của loại này mà chưa có mẫu nào.
  */
+
+import { escapeHtml, trustedHtml } from './print-html.util';
+
 export const PRODUCTION_EXTERNAL = 'production_external';
 
 export interface BuiltinPrintVariable {
@@ -129,13 +132,8 @@ const STATUS_LABEL: Record<number, string> = {
   5: 'Nhận một phần',
 };
 
-const escapeHtml = (value: unknown) =>
-  String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+/** Giá trị thô cho biến mẫu in — PrintTemplatesService escape khi thay biến. */
+const str = (value: unknown) => String(value ?? '');
 
 const qty = (value: unknown, digits = 4) =>
   value == null || value === ''
@@ -181,25 +179,26 @@ export function mapProductionExternal(p: any) {
     Nam: date ? String(date.getFullYear()) : '',
     Kho_Gui: p.sourceBranchName || p.sourceBranch?.name || '',
     Kho_Nhan: p.destinationBranchName || p.destinationBranch?.name || '',
-    Nguoi_Lap: escapeHtml(p.createdByName || p.creator?.name),
+    Nguoi_Lap: str(p.createdByName || p.creator?.name),
     Ghi_Chu: p.note || '',
     Tong_So_Mat_Hang: String(components.length),
-    Nguyen_Lieu_NSX: nsxMaterialsTable(p.manufacturerMaterials),
-    Ma_Nha_San_Xuat: escapeHtml(p.manufacturer?.code),
-    Nha_San_Xuat: escapeHtml(p.manufacturer?.name),
-    Dien_Thoai_Nha_San_Xuat: escapeHtml(p.manufacturer?.contactNumber),
-    Dia_Chi_Nha_San_Xuat: escapeHtml(p.manufacturer?.address),
+    // Bảng HTML tự dựng, chữ bên trong đã escape.
+    Nguyen_Lieu_NSX: trustedHtml(nsxMaterialsTable(p.manufacturerMaterials)),
+    Ma_Nha_San_Xuat: str(p.manufacturer?.code),
+    Nha_San_Xuat: str(p.manufacturer?.name),
+    Dien_Thoai_Nha_San_Xuat: str(p.manufacturer?.contactNumber),
+    Dia_Chi_Nha_San_Xuat: str(p.manufacturer?.address),
     items: components.map((line: any, index: number) => ({
       STT: String(index + 1),
-      Ma_Hang: escapeHtml(line.componentCode),
-      Ten_Hang_Hoa: escapeHtml(line.componentName),
+      Ma_Hang: str(line.componentCode),
+      Ten_Hang_Hoa: str(line.componentName),
       // Dòng lấy từ tồn nguyên liệu gửi trước tại NSX: không đi kèm chuyến hàng này.
       Lay_Tu: line.source === 'manufacturer' ? 'Tồn tại NSX' : 'Kho gửi',
       Luong_Gui: qty(line.actualGrams),
-      Don_Vi_Gui: escapeHtml(line.unit === 'unit' ? line.componentProduct?.unit : line.unit),
+      Don_Vi_Gui: str(line.unit === 'unit' ? line.componentProduct?.unit : line.unit),
       // Phiếu tạm chưa trừ kho: để trống thay vì 0.
       So_Luong_Tru_Kho: p.status === 1 ? '' : qty(line.unitsDeducted),
-      Don_Vi_Tinh: p.status === 1 ? '' : escapeHtml(line.componentProduct?.unit),
+      Don_Vi_Tinh: p.status === 1 ? '' : str(line.componentProduct?.unit),
     })),
   };
 }

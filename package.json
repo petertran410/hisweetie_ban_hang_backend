@@ -102,6 +102,7 @@
     "add:vpsg-cash-permissions": "ts-node prisma/scripts/add-vpsg-cash-permissions.ts",
     "sync:salary-advances": "ts-node prisma/scripts/sync-salary-advances.ts",
     "fix:approval-fund-dates": "ts-node prisma/scripts/fix-approval-fund-dates.ts",
+    "fix:orphan-order-payment-mirrors": "ts-node prisma/scripts/cancel-orphan-order-payment-mirrors.ts",
     "backfill:lead-links": "ts-node prisma/scripts/backfill-lead-links.ts",
     "backfill:group-page-pids": "ts-node prisma/scripts/backfill-group-page-pids.ts",
     "seed:internal-use-print": "ts-node prisma/seeds/add-internal-use-print-template.ts",

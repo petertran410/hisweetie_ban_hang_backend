@@ -7,11 +7,7 @@ import {
   type SmaxRecentThread,
 } from './smax-api.service';
 import { SmaxChatService } from './smax-chat.service';
-import {
-  ARCHIVE_DAYS,
-  SmaxArchiveService,
-  archiveEnabled,
-} from './smax-archive.service';
+import { SmaxArchiveService, archiveEnabled } from './smax-archive.service';
 
 const DAY_MS = 86_400_000;
 /** Quét lại chồng 5 phút so với lượt trước (tin tới trễ / đồng hồ lệch). */
@@ -103,11 +99,9 @@ export class SmaxArchiveSyncService {
         },
       });
     }
-    // Không quét xa hơn 30 ngày (backend tắt lâu)
-    const floor = Math.max(
-      row.backfillFrom.getTime(),
-      now.getTime() - ARCHIVE_DAYS * DAY_MS,
-    );
+    // Kho lưu vĩnh viễn: backend tắt lâu thì lượt sau quét bù cả khoảng đã lỡ (tới mốc bắt đầu
+    // lưu), để `covered` không báo "đủ" cho khoảng DB chưa có tin.
+    const floor = row.backfillFrom.getTime();
     const from = new Date(
       Math.max(row.syncedUntil.getTime() - OVERLAP_MS, floor),
     );

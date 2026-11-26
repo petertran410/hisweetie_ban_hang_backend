@@ -62,16 +62,16 @@ afterEach(() => {
 });
 
 describe('SmaxArchiveService', () => {
-  it('lưu tin: bỏ tin > 30 ngày, bỏ trùng, cập nhật tin thu hồi và hội thoại', async () => {
+  it('lưu tin: giữ cả tin cũ (lưu vĩnh viễn), bỏ trùng, cập nhật tin thu hồi và hội thoại', async () => {
     const prisma = makePrisma();
     const archive = new SmaxArchiveService(prisma as any);
     await archive.save('zlwA', 'zlw1', [
-      chatMsg('old', iso(NOW.getTime() - 31 * 86_400_000)) as any,
+      chatMsg('old', iso(NOW.getTime() - 400 * 86_400_000)) as any,
       chatMsg('m1', iso(NOW.getTime() - min), { recalled: true }) as any,
     ]);
     const call = prisma.smaxMessage.createMany.mock.calls[0][0];
     expect(call.skipDuplicates).toBe(true);
-    expect(call.data.map((d: any) => d.msgPid)).toEqual(['m1']);
+    expect(call.data.map((d: any) => d.msgPid)).toEqual(['old', 'm1']);
     expect(prisma.smaxMessage.updateMany).toHaveBeenCalledWith({
       where: { pagePid: 'zlwA', msgPid: { in: ['m1'] }, recalled: false },
       data: { recalled: true },
@@ -269,6 +269,20 @@ describe('SmaxArchiveSyncService', () => {
       where: { pagePid: 'zlwOther' },
       data: { syncedUntil: NOW, lastError: null, name: 'Kênh A' },
     });
+  });
+
+  it('backend tắt > 30 ngày: lượt sau quét bù cả khoảng đã lỡ, không cắt ở 30 ngày', async () => {
+    const { prisma, smaxApi, sync } = setup();
+    const day = 86_400_000;
+    prisma.smaxSyncChannel.findUnique.mockResolvedValue({
+      pagePid: 'zlwA',
+      syncedUntil: new Date(NOW.getTime() - 45 * day),
+      backfillFrom: new Date(NOW.getTime() - 90 * day),
+    });
+    await sync.syncChannel(page as any, NOW);
+    expect(smaxApi.listRecentThreads.mock.calls[0][3].from).toEqual(
+      new Date(NOW.getTime() - 45 * day - 5 * min),
+    );
   });
 
   it('hội thoại lỗi: ghi lastError, không đẩy synced_until (lượt sau quét lại)', async () => {

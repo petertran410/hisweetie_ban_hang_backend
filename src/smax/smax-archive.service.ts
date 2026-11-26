@@ -1,13 +1,9 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron } from '@nestjs/schedule';
 import { Prisma, type SmaxMessage } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import type { SmaxRecentThread } from './smax-api.service';
 import type { ChatMessage } from './smax-chat.service';
 
-/** Tin giữ trong DB bao lâu. */
-export const ARCHIVE_DAYS = 30;
-const DAY_MS = 86_400_000;
 /** Đồng bộ nền chạy 5 phút/lần → DB "đủ" nếu đã quét tới cách đây tối đa 10 phút. */
 const COVER_LAG_MS = 10 * 60_000;
 
@@ -41,8 +37,9 @@ type ThreadInfo = {
 };
 
 /**
- * Kho tin nhắn Smax trên Postgres (30 ngày). Ghi: tin POS vừa tải (khung chat) và đồng bộ nền
- * (SmaxArchiveSyncService). Đọc: Trợ lý AI, báo cáo chat cuối ngày — chỉ khi `covered`.
+ * Kho tin nhắn Smax trên Postgres, lưu vĩnh viễn (không có lịch xoá). Ghi: tin POS vừa tải
+ * (khung chat) và đồng bộ nền (SmaxArchiveSyncService). Đọc: Trợ lý AI, báo cáo chat cuối ngày —
+ * chỉ khi `covered`.
  */
 @Injectable()
 export class SmaxArchiveService {
@@ -50,20 +47,16 @@ export class SmaxArchiveService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Lưu tin đã chuẩn hoá (bỏ tin cũ hơn 30 ngày, tin trùng bỏ qua) + cập nhật hội thoại. */
+  /** Lưu tin đã chuẩn hoá (mọi mốc thời gian, tin trùng bỏ qua) + cập nhật hội thoại. */
   async save(
     pagePid: string,
     tid: string,
     messages: ChatMessage[],
     thread: ThreadInfo = {},
   ) {
-    const cutoff = Date.now() - ARCHIVE_DAYS * DAY_MS;
-    const keep = messages.filter(
-      (m) => new Date(m.createdAt).getTime() >= cutoff,
-    );
-    if (keep.length) {
+    if (messages.length) {
       await this.prisma.smaxMessage.createMany({
-        data: keep.map((m) => ({
+        data: messages.map((m) => ({
           pagePid,
           tid,
           msgPid: m.id,
@@ -81,14 +74,14 @@ export class SmaxArchiveService {
         skipDuplicates: true,
       });
       // Tin đổi sang "đã thu hồi" sau khi lưu (chỉ khung chat Zalo cá nhân biết)
-      const recalled = keep.filter((m) => m.recalled).map((m) => m.id);
+      const recalled = messages.filter((m) => m.recalled).map((m) => m.id);
       if (recalled.length)
         await this.prisma.smaxMessage.updateMany({
           where: { pagePid, msgPid: { in: recalled }, recalled: false },
           data: { recalled: true },
         });
     }
-    const last = keep.filter((m) => m.type !== 'system').at(-1);
+    const last = messages.filter((m) => m.type !== 'system').at(-1);
     const lastAt =
       thread.lastMessageAt ?? (last ? new Date(last.createdAt) : null);
     if (!lastAt && !thread.name) return;
@@ -262,32 +255,5 @@ export class SmaxArchiveService {
       name: thread?.name ?? null,
       messages: rows.reverse().map(toChatMessage),
     };
-  }
-
-  /** 3:00 sáng xoá tin / hội thoại cũ hơn 30 ngày. */
-  @Cron('0 3 * * *', { timeZone: 'Asia/Ho_Chi_Minh' })
-  async purge() {
-    if (!archiveEnabled()) return;
-    const cutoff = new Date(Date.now() - ARCHIVE_DAYS * DAY_MS);
-    try {
-      const [messages, threads] = await Promise.all([
-        this.prisma.smaxMessage.deleteMany({
-          where: { createdAt: { lt: cutoff } },
-        }),
-        this.prisma.smaxThread.deleteMany({
-          where: { lastMessageAt: { lt: cutoff } },
-        }),
-      ]);
-      // Kênh lưu từ trước 30 ngày: DB chỉ còn đủ từ mốc dọn
-      await this.prisma.smaxSyncChannel.updateMany({
-        where: { backfillFrom: { lt: cutoff } },
-        data: { backfillFrom: cutoff },
-      });
-      this.logger.log(
-        `Dọn tin Smax > ${ARCHIVE_DAYS} ngày: ${messages.count} tin, ${threads.count} hội thoại`,
-      );
-    } catch (error) {
-      this.logger.error(`Dọn tin Smax lỗi: ${String(error)}`);
-    }
   }
 }

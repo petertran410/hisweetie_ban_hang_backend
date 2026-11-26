@@ -34,12 +34,31 @@ export const VEHICLE_SCOPES = [
   { key: 'sg', branchIds: [1] },
 ] as const;
 
-export type VehiclePermissionAction = 'view' | 'create' | 'update' | 'manage';
+export type VehiclePermissionAction =
+  | 'view'
+  | 'create'
+  | 'update'
+  | 'manage'
+  | 'export';
 
 export const VEHICLE_CHECK = {
   NORMAL: 'NORMAL',
   ABNORMAL: 'ABNORMAL',
 } as const;
 
-// Lark chỉ lấy các lần đổ từ 13/04/2026 làm mốc tính định mức tiêu hao.
-export const FUEL_NORM_BASELINE_FROM = '2026-04-13';
+/** Cờ ODO của phiếu xăng (xét theo thứ tự ngày đổ). */
+export const VEHICLE_ODO_CHECK = {
+  /** ODO lệch thứ tự: cao hơn các lần đổ sau hoặc thấp hơn các lần đổ trước. */
+  BACKWARD: 'BACKWARD',
+  /** Km tới lần đổ kế tiếp vượt FUEL_MAX_KM_BETWEEN_FILLS (ODO sai hoặc thiếu phiếu). */
+  JUMP: 'JUMP',
+} as const;
+
+/** Km giữa hai lần đổ vượt mức này thì không tính tiêu hao cho cặp đó. */
+export const FUEL_MAX_KM_BETWEEN_FILLS = 2000;
+
+/** Chênh lệch cho phép (L/100km) quanh định mức của xe, cả hai chiều. */
+export const FUEL_NORM_TOLERANCE = 1;
+
+/** Số tháng gần nhất dùng để tính "L/100km thực tế" (Danh sách xe, tab Tổng hợp). */
+export const FUEL_RECENT_MONTHS = 2;
