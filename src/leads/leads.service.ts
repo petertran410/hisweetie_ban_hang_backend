@@ -821,16 +821,29 @@ export class LeadsService {
   }
 
   /** ID Zalo đã biết (hội thoại Zalo cá nhân đã gắn / đã tra) hoặc SĐT Zalo để tra. */
-  private leadZaloSource(lead: {
-    zaloUid: string | null;
-    zaloPhone: string | null;
-    conversations: { tid: string; isGroup: boolean }[];
-  }) {
+  private leadZaloSource(
+    lead: {
+      zaloUid: string | null;
+      zaloPhone: string | null;
+      conversations: { tid: string; pagePid: string; isGroup: boolean }[];
+    },
+    pagePid?: string,
+  ) {
+    // Mỗi tài khoản Zalo thấy cùng một khách dưới ID khác nhau: gửi từ kênh `pagePid` thì chỉ dùng ID
+    // của hội thoại trên đúng kênh đó; không có thì tra lại theo SĐT trên kênh đó (zaloUid đã lưu không
+    // rõ thuộc kênh nào → chỉ dùng khi không có SĐT).
     const conv = lead.conversations.find(
-      (c) => !c.isGroup && ZALOWEB_TID.test(c.tid),
+      (c) =>
+        !c.isGroup &&
+        ZALOWEB_TID.test(c.tid) &&
+        (!pagePid || c.pagePid === pagePid),
     );
-    const uid = lead.zaloUid || (conv ? ZALOWEB_TID.exec(conv.tid)![1] : null);
     const phone = normalizeVnPhone(lead.zaloPhone);
+    const uid = conv
+      ? ZALOWEB_TID.exec(conv.tid)![1]
+      : pagePid && phone
+        ? null
+        : lead.zaloUid;
     return uid || phone ? { uid, phone } : null;
   }
 
@@ -946,7 +959,7 @@ export class LeadsService {
     const zaloUid = async () => {
       if (uid) return uid;
       await this.smaxChat.userZaloChannel(sale.id, h.pagePid);
-      const src = this.leadZaloSource(lead);
+      const src = this.leadZaloSource(lead, h.pagePid);
       if (!src) throw new Error('Lead chưa có SĐT Zalo cá nhân');
       uid = src.uid;
       if (!uid) {

@@ -102,13 +102,13 @@ export class AiAssistantController {
   @Get('config')
   async config(@Req() req: AiRequest) {
     const { config, ready } = this.chat;
-    const asked = await this.chat.askedToday(req.user.id);
+    const asked = await this.chat.askedLastHour(req.user.id);
     return {
       enabled: ready,
       ready,
       maxQuestionChars: MAX_QUESTION_CHARS,
-      rateLimitPerDay: config.rateLimitPerDay,
-      remaining: Math.max(0, config.rateLimitPerDay - asked),
+      rateLimitPerHour: config.rateLimitPerHour,
+      remaining: Math.max(0, config.rateLimitPerHour - asked),
       retentionDays: config.retentionDays,
     };
   }
@@ -245,7 +245,7 @@ export class AiAssistantController {
     return { ok: true };
   }
 
-  // Lượt hỏi đã giới hạn theo ngày (AI_RATE_LIMIT_PER_DAY); đây chặn bấm dồn.
+  // Lượt hỏi đã giới hạn theo giờ (AI_RATE_LIMIT_PER_HOUR); đây chặn bấm dồn.
   @Post('agent')
   @Throttle({ default: { limit: 10, ttl: 60000 } })
   async agent(@Req() req: Request & AiRequest, @Res() res: Response) {

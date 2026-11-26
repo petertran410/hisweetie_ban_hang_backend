@@ -10,8 +10,8 @@ export type AiChatConfig = {
   /** Số công cụ (truy vấn DB) của trợ lý chạy cùng lúc trên toàn hệ thống; còn lại xếp hàng. */
   maxToolConcurrency: number;
   timeoutMs: number;
-  /** Số câu mỗi người được hỏi trong một ngày (theo lịch giờ VN, đặt lại lúc 00:00). */
-  rateLimitPerDay: number;
+  /** Số câu mỗi người được hỏi trong 60 phút gần nhất. */
+  rateLimitPerHour: number;
   retentionDays: number;
   /** Số tin cũ của hội thoại gửi kèm câu hỏi mới. */
   historyMessages: number;
@@ -33,7 +33,7 @@ const bool = (value: string | undefined) =>
  *   không mất cache khi hai câu hỏi cách nhau quá 5 phút.
  * - AI_API_KEY + AI_BASE_URL → cổng OpenAI-compatible (9Router): AI_MODEL rồi AI_MODEL_FALLBACK
  *   dự phòng khi Claude lỗi. AI_DISABLE_THINKING (mặc định true) tắt suy nghĩ của model cổng.
- * - AI_MAX_TOOL_ROUNDS (6), AI_TIMEOUT_MS (120000), AI_RATE_LIMIT_PER_DAY (100),
+ * - AI_MAX_TOOL_ROUNDS (6), AI_TIMEOUT_MS (300000), AI_RATE_LIMIT_PER_HOUR (20),
  *   AI_CHAT_RETENTION_DAYS (90), AI_HISTORY_MESSAGES (12).
  * - AI_MAX_TOOL_CONCURRENCY (1, tối đa 5): số lượt tra cứu của trợ lý chạy cùng lúc trên cả hệ
  *   thống, để trợ lý không chiếm pool kết nối DB mà màn hình bán hàng đang dùng (một lượt tra
@@ -66,8 +66,8 @@ export function loadAiConfig(env: NodeJS.ProcessEnv = process.env): {
         : gatewayModels,
       maxToolRounds: Math.min(int(env.AI_MAX_TOOL_ROUNDS, 6), 8),
       maxToolConcurrency: Math.min(int(env.AI_MAX_TOOL_CONCURRENCY, 1), 5),
-      timeoutMs: int(env.AI_TIMEOUT_MS, 120_000),
-      rateLimitPerDay: int(env.AI_RATE_LIMIT_PER_DAY, 100),
+      timeoutMs: int(env.AI_TIMEOUT_MS, 300_000),
+      rateLimitPerHour: int(env.AI_RATE_LIMIT_PER_HOUR, 20),
       retentionDays: int(env.AI_CHAT_RETENTION_DAYS, 90),
       historyMessages: int(env.AI_HISTORY_MESSAGES, 12),
     },

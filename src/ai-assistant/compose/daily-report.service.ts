@@ -1,10 +1,17 @@
-import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+  Optional,
+} from '@nestjs/common';
 import * as lark from '@larksuiteoapi/node-sdk';
 import { PrismaService } from '../../prisma/prisma.service';
 import { AuditLogsService } from '../../audit-logs/audit-logs.service';
 import { LARK_CLIENT } from '../../lark-sync/lark-client.provider';
 import { SmaxApiService } from '../../smax/smax-api.service';
 import { SmaxChatService } from '../../smax/smax-chat.service';
+import { SmaxArchiveService } from '../../smax/smax-archive.service';
 import { AiChatService } from '../ai-chat.service';
 import { LlmError, type ChatMessage } from '../llm/openai-chat-client';
 import { chatLine } from '../tools/smax-chats.tool';
@@ -17,7 +24,8 @@ export const AUDIT_DAILY_REPORT_SAVED = 'AI_DAILY_REPORT_SAVED';
 /** Nhóm Lark nhận báo cáo (user chốt); đổi bằng env LARK_AI_DAILY_CHAT_ID. */
 const DEFAULT_CHAT_ID = 'oc_92ea2a2bbcca2116111809a3461f5795';
 const THREADS_PER_PAGE = 150;
-const MAX_THREADS = 400;
+/** Trần số hội thoại AI phân tích mỗi báo cáo (chi phí AI); đổi bằng AI_DAILY_REPORT_MAX_THREADS. */
+const MAX_THREADS = 800;
 const MAX_LINES = 40;
 const CHUNK = 12;
 const CONCURRENCY = 5;
@@ -26,7 +34,13 @@ const ITEM_LIMIT = 10;
 
 export type DailyReport = {
   day: string;
-  stats: { channels: number; threads: number; messages: number };
+  /** skipped: số hội thoại có tin nhưng chưa phân tích vì vượt trần */
+  stats: {
+    channels: number;
+    threads: number;
+    messages: number;
+    skipped?: number;
+  };
   complaints: {
     customer: string;
     channel: string;
@@ -183,7 +197,7 @@ export function buildDailyCard(report: DailyReport, posUrl?: string | null): Rec
         md(
           [
             '**TỔNG QUAN**',
-            `**${num(report.stats.threads)}** hội thoại  ·  **${num(report.stats.messages)}** tin nhắn`,
+            `**${num(report.stats.threads)}** hội thoại  ·  **${num(report.stats.messages)}** tin nhắn${report.stats.skipped ? `  ·  <font color="grey">chưa phân tích ${num(report.stats.skipped)} hội thoại (vượt giới hạn)</font>` : ''}`,
             `🔴 **${num(complaints.length)}** khiếu nại  ·  🟠 **${num(pending.length)}** yêu cầu cần rà soát  ·  💰 **${num(discrepancies.length)}** cảnh báo giá`,
           ].join('\n'),
         ),
@@ -267,6 +281,7 @@ export class DailyReportService {
     private readonly smaxChat: SmaxChatService,
     private readonly chat: AiChatService,
     @Inject(LARK_CLIENT) private readonly lark: lark.Client,
+    @Optional() private readonly archive?: SmaxArchiveService,
   ) {}
 
   async build(day = vnDayKey(new Date())): Promise<DailyReport> {
@@ -278,8 +293,25 @@ export class DailyReportService {
       tid: string;
       name: string;
       channel: string;
+      db?: boolean;
     }[] = [];
     for (const page of pages) {
+      // Kênh đã lưu đủ tin trong ngày → đọc DB (không giới hạn số hội thoại / kênh)
+      if (await this.archive?.covered(page.pid, start, end - 1)) {
+        for (const t of await this.archive!.threadsInRange(
+          page.pid,
+          start,
+          end - 1,
+        ))
+          candidates.push({
+            pagePid: t.pagePid,
+            tid: t.tid,
+            name: t.name,
+            channel: channelLabel(page),
+            db: true,
+          });
+        continue;
+      }
       const threads = await this.smaxApi
         .listRecentThreads([page.pid], THREADS_PER_PAGE)
         .catch(() => []);
@@ -296,7 +328,9 @@ export class DailyReportService {
     }
     const texts: ThreadText[] = [];
     let messages = 0;
-    const list = candidates.slice(0, MAX_THREADS);
+    const maxThreads =
+      Number(process.env.AI_DAILY_REPORT_MAX_THREADS) || MAX_THREADS;
+    const list = candidates.slice(0, maxThreads);
     for (let i = 0; i < list.length; i += CONCURRENCY) {
       const batch = await Promise.all(
         list
@@ -372,7 +406,14 @@ export class DailyReportService {
     });
     return {
       day,
-      stats: { channels: pages.length, threads: texts.length, messages },
+      stats: {
+        channels: pages.length,
+        threads: texts.length,
+        messages,
+        ...(candidates.length > list.length
+          ? { skipped: candidates.length - list.length }
+          : {}),
+      },
       complaints,
       pending,
       discrepancies: findDiscrepancies(quotes, products),
@@ -598,16 +639,35 @@ export class DailyReportService {
 
   /** Tin trong ngày của một hội thoại (tối đa 3 trang Smax), dạng dòng có tên người gửi. */
   private async threadText(
-    t: { pagePid: string; tid: string; name: string; channel: string },
+    t: {
+      pagePid: string;
+      tid: string;
+      name: string;
+      channel: string;
+      db?: boolean;
+    },
     start: number,
     end: number,
   ): Promise<ThreadText | null> {
     try {
-      const [thread, ...pages] = await this.loadPages(t.pagePid, t.tid, start);
-      const raw = pages.flat();
-      const normalized = this.smaxChat
-        .normalize(raw, t.pagePid, thread?.members ?? {})
-        .filter((m) => {
+      const all = t.db
+        ? (
+            await this.archive!.messagesInRange(
+              t.pagePid,
+              t.tid,
+              start,
+              end - 1,
+            )
+          ).messages
+        : await this.loadPages(t.pagePid, t.tid, start).then(
+            ([thread, ...pages]) =>
+              this.smaxChat.normalize(
+                pages.flat(),
+                t.pagePid,
+                thread?.members ?? {},
+              ),
+          );
+      const normalized = all.filter((m) => {
           const at = new Date(m.createdAt).getTime();
           return m.type !== 'system' && at >= start && at < end;
         });

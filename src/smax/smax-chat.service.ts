@@ -44,6 +44,7 @@ import {
   ThreadMessagePart,
   ZalowebContent,
 } from './smax-api.service';
+import { SmaxArchiveService } from './smax-archive.service';
 
 /** Người dùng đang gọi (rút gọn từ req.user). */
 export interface ChatActor {
@@ -272,6 +273,7 @@ export class SmaxChatService {
     config: ConfigService,
     private readonly larkDirectory: LarkUserDirectoryService,
     private readonly leadLink?: LeadLinkService,
+    private readonly archive?: SmaxArchiveService,
   ) {
     const base = config.get<string>('SMAX_MEDIA_PUBLIC_URL')?.trim().replace(/\/+$/, '');
     this.mediaPublicUrl = base && /^https:\/\//.test(base) ? base : null;
@@ -556,15 +558,23 @@ export class SmaxChatService {
         avatar: friendAvatars[pid] ?? thread?.memberAvatars?.[pid] ?? null,
       };
     }
+    const messages = this.normalize(raw, channel.pid, members, {
+      // Ảnh trong customer_reactions hay hết hạn → ưu tiên ảnh bạn bè (mới), ảnh kênh
+      ...(thread?.memberAvatars ?? {}),
+      ...(raw.some((m) => m.zaloweb?.customer_reactions?.length) ? this.peekFriendAvatars(channel.pid) : {}),
+      ...(channel.picture ? { [channel.pid]: channel.picture } : {}),
+    });
+    // Lưu luôn tin vừa tải vào DB (không chờ, lỗi không ảnh hưởng khung chat)
+    this.archive?.saveQuietly(
+      channel.pid,
+      tid,
+      messages,
+      thread ? { platform: channel.platform, name: thread.name, isGroup: thread.chatType === 'group' } : {},
+    );
     return {
       thread: thread ? { name: thread.name, chatType: thread.chatType } : null,
       senders,
-      messages: this.normalize(raw, channel.pid, members, {
-        // Ảnh trong customer_reactions hay hết hạn → ưu tiên ảnh bạn bè (mới), ảnh kênh
-        ...(thread?.memberAvatars ?? {}),
-        ...(raw.some((m) => m.zaloweb?.customer_reactions?.length) ? this.peekFriendAvatars(channel.pid) : {}),
-        ...(channel.picture ? { [channel.pid]: channel.picture } : {}),
-      }),
+      messages,
       hasMore: raw.length >= 20,
       // Thả cảm xúc, thu hồi / xoá tin: Zalo cá nhân + SMAX_USER_TOKEN (API nội bộ Smax)
       canReact: channel.platform === 'zaloweb' && this.smaxApi.canReact,
@@ -1597,7 +1607,15 @@ export class SmaxChatService {
    * hoặc gợi ý theo mã khách trong tên nhóm / SĐT khách Smax thu được (Facebook…).
    * Không truyền pagePid = mọi kênh Zalo cá nhân; truyền pagePid = đúng kênh đó (mọi nền tảng).
    */
-  async recentChats(actorId: number, pagePid?: string, limit = 30, q?: string, fresh = false) {
+  async recentChats(
+    actorId: number,
+    pagePid?: string,
+    limit = 30,
+    q?: string,
+    fresh = false,
+    // Hội thoại lấy sẵn từ DB lưu tin (Trợ lý AI) → bỏ bước gọi Smax, giữ phần gắn khách / nhãn
+    preloaded?: SmaxRecentThread[],
+  ) {
     // Thanh thu gọn xin thêm khi bấm "…" (Smax: 100 hội thoại ~2s, nên chỉ lấy khi cần)
     const take = Math.min(200, Math.max(10, Math.round(limit)));
     const keyword = q?.trim().slice(0, 100) || undefined;
@@ -1609,14 +1627,15 @@ export class SmaxChatService {
     const key = `${pagePids.join(',')}:${take}:${keyword ?? ''}`;
     let cached = this.recentCache.get(key);
     // fresh (nút ⟳): lấy mới, nhưng dùng chung kết quả vừa lấy < 2s (bấm liên tục / nhiều người cùng kênh)
-    if (!cached || Date.now() - cached.at > (fresh ? 2_000 : RECENT_TTL_MS)) {
+    if (!preloaded && (!cached || Date.now() - cached.at > (fresh ? 2_000 : RECENT_TTL_MS))) {
       // Mỗi từ khoá tìm là 1 mục cache → dọn mục hết hạn để map không phình
       for (const [k, v] of this.recentCache) if (Date.now() - v.at > RECENT_TTL_MS) this.recentCache.delete(k);
       cached = { at: Date.now(), threads: this.smaxApi.listRecentThreads(pagePids, take, keyword) };
       this.recentCache.set(key, cached);
       cached.threads.catch(() => this.recentCache.delete(key));
     }
-    let threads = await cached.threads;
+    // preloaded: không gọi Smax (khối trên bỏ qua) → cached chỉ dùng khi không có preloaded
+    let threads = preloaded ?? (await cached!.threads);
     // Tên gợi nhớ Zalo của kênh ưu tiên hơn tên Smax (như app Smax); không sửa mảng trong cache
     const zalowebPages = [...new Set(threads.filter((t) => !t.isGroup && /^zlw\d+$/.test(t.tid)).map((t) => t.pagePid))];
     const aliasByPage = new Map(
