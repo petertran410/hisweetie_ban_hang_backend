@@ -121,6 +121,42 @@ describe('createAnthropicChatClient: cache', () => {
       cacheWriteTokens: 300,
     });
   });
+
+  it('fallback phía server: Sonnet có, Haiku không gửi (Haiku không hỗ trợ)', async () => {
+    const sent: Anthropic.Beta.Messages.MessageCreateParamsStreaming[] = [];
+    const client = createAnthropicChatClient({
+      apiKey: 'test',
+      effort: 'medium',
+      stream: (params) => {
+        sent.push(params);
+        return {
+          on: () => undefined,
+          finalMessage: () =>
+            Promise.resolve({
+              model: params.model,
+              stop_reason: 'end_turn',
+              content: [{ type: 'text', text: 'ok' }],
+              usage: { input_tokens: 1, output_tokens: 1 },
+            } as unknown as Anthropic.Beta.Messages.BetaMessage),
+        };
+      },
+    });
+    await client.complete({
+      model: 'claude-sonnet-5-5',
+      messages: CONVERSATION,
+    });
+    await client.complete({
+      model: 'claude-haiku-5-5',
+      messages: CONVERSATION,
+    });
+    expect(sent[0]).toMatchObject({
+      betas: ['server-side-fallback-2026-07-01'],
+      fallbacks: 'default',
+    });
+    expect(sent[1]).not.toHaveProperty('fallbacks');
+    expect(sent[1]).not.toHaveProperty('betas');
+    expect(sent[1].output_config).toEqual({ effort: 'medium' });
+  });
 });
 
 describe('toOpenAiMessages', () => {

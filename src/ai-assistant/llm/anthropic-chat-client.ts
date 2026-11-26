@@ -34,6 +34,11 @@ export type AnthropicChatClientConfig = {
 
 /** Server-side fallback on a refusal: the API re-runs the request on a model it picks, in the same call. */
 const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
+/**
+ * Claude Haiku has no server-side fallback: `fallbacks: "default"` does nothing there (a declined
+ * request stays declined) and a model list is a 400, so Haiku requests go without it.
+ */
+const hasServerFallback = (model: string) => !model.startsWith('claude-haiku-');
 
 /**
  * The assistant's conversation (OpenAI chat shape, shared with the gateway client) as a Messages
@@ -197,8 +202,9 @@ export function createAnthropicChatClient(
         // Automatic breakpoint on the last block: the next tool round (same prefix + new blocks)
         // reads everything so far from cache. With the `cache` breakpoints that makes at most 3 of 4.
         cache_control: { type: 'ephemeral' },
-        betas: [FALLBACK_BETA],
-        fallbacks: 'default',
+        ...(hasServerFallback(request.model)
+          ? { betas: [FALLBACK_BETA], fallbacks: 'default' }
+          : {}),
         stream: true,
       };
       let message: Anthropic.Beta.Messages.BetaMessage;
@@ -225,7 +231,8 @@ export function createAnthropicChatClient(
           null,
         );
       }
-      // The whole fallback chain declined: let the assistant try its own fallback model.
+      // Declined (after the server-side fallback chain, where the model has one): let the
+      // assistant try its own fallback model.
       if (message.stop_reason === 'refusal')
         throw new LlmError('anthropic_refusal', null);
 
