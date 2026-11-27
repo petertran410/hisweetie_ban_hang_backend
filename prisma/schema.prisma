@@ -2056,7 +2056,7 @@ model OrderItem {
   discount       Decimal    @default(0) @db.Decimal(18, 2)
   discountRatio  Decimal    @default(0) @db.Decimal(18, 4)
   totalPrice     Decimal    @default(0) @db.Decimal(18, 2)
-  lineVatRate    Decimal @default(0) @map("line_vat_rate") @db.Decimal(5, 2) // % GTGT chọn trên dòng POS (0|5) — chỉ để nhớ, giá đã gồm GTGT
+  lineVatRate    Decimal? @default(0) @map("line_vat_rate") @db.Decimal(5, 2) // % GTGT dòng POS (0|5), giá đã gồm GTGT; NULL = dòng chứng từ cũ (lập trước đổi bảng giá 28/11, chưa trừ 8%)
   note           String?
   conditionType  String     @default("normal")
   serialNumbers  String?
@@ -2310,7 +2310,7 @@ model InvoiceDetail {
   discount           Decimal             @default(0)
   discountRatio      Decimal             @default(0)
   totalPrice         Decimal
-  lineVatRate        Decimal @default(0) @map("line_vat_rate") @db.Decimal(5, 2) // % GTGT chọn trên dòng POS (0|5) — chỉ để nhớ, giá đã gồm GTGT
+  lineVatRate        Decimal? @default(0) @map("line_vat_rate") @db.Decimal(5, 2) // % GTGT dòng POS (0|5), giá đã gồm GTGT; NULL = dòng chứng từ cũ (lập trước đổi bảng giá 28/11, chưa trừ 8%)
   note               String?
   serialNumbers      String?
   createdAt          DateTime            @default(now())
@@ -3559,7 +3559,7 @@ model ConsignmentItem {
   discount      Decimal     @default(0) @db.Decimal(18, 2)
   discountRatio Decimal     @default(0) @db.Decimal(18, 4)
   totalPrice    Decimal     @default(0) @db.Decimal(18, 2)
-  lineVatRate   Decimal @default(0) @map("line_vat_rate") @db.Decimal(5, 2) // % GTGT chọn trên dòng POS (0|5) — chỉ để nhớ, giá đã gồm GTGT
+  lineVatRate   Decimal? @default(0) @map("line_vat_rate") @db.Decimal(5, 2) // % GTGT dòng POS (0|5), giá đã gồm GTGT; NULL = dòng chứng từ cũ (lập trước đổi bảng giá 28/11, chưa trừ 8%)
   note          String?
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
