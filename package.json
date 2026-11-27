@@ -100,6 +100,8 @@
     "mirror:office-entries": "ts-node prisma/scripts/mirror-office-entries.ts",
     "balance:vpsg-fund": "ts-node prisma/scripts/balance-vpsg-fund.ts",
     "add:vpsg-cash-permissions": "ts-node prisma/scripts/add-vpsg-cash-permissions.ts",
+    "add:new-product-price-permissions": "ts-node prisma/scripts/add-new-product-price-permissions.ts",
+    "add:price-change-permissions": "ts-node prisma/scripts/add-price-change-permissions.ts",
     "sync:salary-advances": "ts-node prisma/scripts/sync-salary-advances.ts",
     "fix:approval-fund-dates": "ts-node prisma/scripts/fix-approval-fund-dates.ts",
     "fix:orphan-order-payment-mirrors": "ts-node prisma/scripts/cancel-orphan-order-payment-mirrors.ts",

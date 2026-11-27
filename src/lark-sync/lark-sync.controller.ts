@@ -5,7 +5,6 @@ import { LarkOrderSyncService } from './services/lark-order-sync.service';
 import { LarkCustomerSyncService } from './services/lark-customer-sync.service';
 import { LarkProductSyncService } from './services/lark-product-sync.service';
 import { LarkSyncCron } from './lark-sync.cron';
-import { Public } from 'src/auth/decorators/public.decorator';
 import { IsBoolean } from 'class-validator';
 
 class ToggleCronDto {
@@ -39,7 +38,6 @@ export class LarkSyncController {
     return { ok: true, ...result, timestamp: new Date().toISOString() };
   }
 
-  @Public()
   @Post('orders/sync-now')
   @ApiOperation({
     summary: 'Sync tất cả orders lên Lark ngay lập tức (3 tháng)',
@@ -65,14 +63,22 @@ export class LarkSyncController {
     return { ok: true, ...result, timestamp: new Date().toISOString() };
   }
 
-  @Public()
   @Post('customers/sync-now')
   @ApiOperation({
-    summary: 'Sync khách hàng PENDING/FAILED lên Lark ngay lập tức',
+    summary:
+      'Chạy nền đồng bộ khách hàng đang hoạt động lên Lark — trả về ngay, xem kết quả ở GET customers/sync-status',
   })
-  async syncCustomersNow() {
-    const result = await this.customerSync.syncPendingAndFailed();
-    return { ok: true, ...result, timestamp: new Date().toISOString() };
+  syncCustomersNow() {
+    const { started, status } = this.customerSync.startBulkSyncInBackground();
+    return { ok: true, started, status };
+  }
+
+  @Get('customers/sync-status')
+  @ApiOperation({
+    summary: 'Trạng thái phiên đồng bộ khách hàng lên Lark (đang chạy / kết quả lần gần nhất)',
+  })
+  getCustomerSyncStatus() {
+    return this.customerSync.getBulkSyncStatus();
   }
 
   @Post('products/full')
@@ -91,7 +97,6 @@ export class LarkSyncController {
     return { ok: true, ...result, timestamp: new Date().toISOString() };
   }
 
-  @Public()
   @Post('products/sync-now')
   @ApiOperation({
     summary: 'Sync sản phẩm PENDING/FAILED lên Lark ngay lập tức',

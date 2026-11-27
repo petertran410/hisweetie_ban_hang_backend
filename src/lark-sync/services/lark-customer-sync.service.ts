@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   Injectable,
   Logger,
   OnModuleInit,
@@ -41,6 +42,21 @@ const CUSTOMER_INCLUDE = {
   },
 } as const;
 
+/** Trạng thái phiên đồng bộ hàng loạt (giữ trong bộ nhớ tiến trình). */
+export interface CustomerBulkSyncStatus {
+  running: boolean;
+  startedAt: string | null;
+  finishedAt: string | null;
+  success: number | null;
+  failed: number | null;
+  error: string | null;
+}
+
+const BULK_ALREADY_RUNNING_MSG =
+  'Đang có phiên đồng bộ khách hàng lên Lark chạy, vui lòng đợi hoàn tất';
+
+type BulkResult = { success: number; failed: number };
+
 @Injectable()
 export class LarkCustomerSyncService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(LarkCustomerSyncService.name);
@@ -54,6 +70,19 @@ export class LarkCustomerSyncService implements OnModuleInit, OnModuleDestroy {
   // đồng thời gộp nhiều lần recalc trong 1 thao tác thành 1 lần đẩy.
   private readonly DEBOUNCE_MS = 4000;
   private readonly pendingTimers = new Map<number, NodeJS.Timeout>();
+
+  // ★ Khoá chống chạy chồng: 2 phiên bulk song song cùng đọc bảng Lark trước
+  // khi phiên kia batchCreate xong → mỗi phiên tạo 1 bản → record trùng.
+  private bulkStatus: CustomerBulkSyncStatus = {
+    running: false,
+    startedAt: null,
+    finishedAt: null,
+    success: null,
+    failed: null,
+    error: null,
+  };
+  // KH có biến động trong lúc bulk chạy — hoãn sync lẻ, đẩy lại khi bulk xong
+  private readonly deferredSingles = new Set<number>();
 
   constructor(
     private readonly larkBase: LarkCustomerBaseService,
@@ -120,6 +149,14 @@ export class LarkCustomerSyncService implements OnModuleInit, OnModuleDestroy {
   async syncSingle(customerId: number): Promise<void> {
     if (!this.isEnabled()) return;
     const tableId = this.tableId!;
+
+    // ★ Bulk đang chạy: KH này có thể vừa bị reset larkRecordId và nằm trong
+    // lô batchCreate → sync lẻ lúc này (search không thấy → create) sẽ tạo
+    // thêm 1 record trùng. Hoãn lại, bulk xong sẽ đẩy lại bằng dữ liệu mới nhất.
+    if (this.bulkStatus.running) {
+      this.deferredSingles.add(customerId);
+      return;
+    }
 
     try {
       const customer = await this.prisma.customer.findUnique({
@@ -240,10 +277,86 @@ export class LarkCustomerSyncService implements OnModuleInit, OnModuleDestroy {
   }
 
   // =============================================
-  // CRON JOB — retry FAILED + sync PENDING
+  // BULK SYNC — khoá chống chạy chồng + chạy nền
   // =============================================
 
-  async syncPendingAndFailed(): Promise<{ success: number; failed: number }> {
+  getBulkSyncStatus(): CustomerBulkSyncStatus {
+    return { ...this.bulkStatus };
+  }
+
+  /**
+   * Chạy nền đồng bộ toàn bộ KH, trả về ngay. Request HTTP không chờ nổi:
+   * ~4.000 KH mất hơn 1 phút, vượt timeout 30s của web và 100s của Cloudflare.
+   * Web theo dõi kết quả qua getBulkSyncStatus().
+   */
+  startBulkSyncInBackground(): {
+    started: boolean;
+    status: CustomerBulkSyncStatus;
+  } {
+    if (this.bulkStatus.running) {
+      return { started: false, status: this.getBulkSyncStatus() };
+    }
+    this.runBulk(() => this.syncAllActive()).catch(() => {
+      // Lỗi đã được log + ghi vào bulkStatus.error trong runBulk
+    });
+    return { started: true, status: this.getBulkSyncStatus() };
+  }
+
+  async syncPendingAndFailed(): Promise<BulkResult> {
+    return this.runBulk(() => this.syncAllActive());
+  }
+
+  private async runBulk(task: () => Promise<BulkResult>): Promise<BulkResult> {
+    // Kiểm tra + bật cờ trước await đầu tiên → không có khe cho phiên thứ 2
+    if (this.bulkStatus.running) {
+      throw new ConflictException(BULK_ALREADY_RUNNING_MSG);
+    }
+    this.bulkStatus = {
+      running: true,
+      startedAt: new Date().toISOString(),
+      finishedAt: null,
+      success: null,
+      failed: null,
+      error: null,
+    };
+
+    try {
+      const result = await task();
+      this.bulkStatus = {
+        ...this.bulkStatus,
+        running: false,
+        finishedAt: new Date().toISOString(),
+        success: result.success,
+        failed: result.failed,
+      };
+      return result;
+    } catch (error: any) {
+      this.logger.error(`❌ Bulk customer sync error: ${error?.message}`);
+      this.bulkStatus = {
+        ...this.bulkStatus,
+        running: false,
+        finishedAt: new Date().toISOString(),
+        error: error?.message || 'Lỗi không xác định',
+      };
+      throw error;
+    } finally {
+      this.flushDeferredSingles();
+    }
+  }
+
+  private flushDeferredSingles(): void {
+    if (this.deferredSingles.size === 0) return;
+    this.logger.log(
+      `🔁 Re-queue ${this.deferredSingles.size} customers changed during bulk sync`,
+    );
+    for (const id of this.deferredSingles) this.enqueueSync(id);
+    this.deferredSingles.clear();
+  }
+
+  /**
+   * Đẩy toàn bộ KH đang hoạt động (trừ SYNCING) lên Lark. Chỉ gọi qua runBulk.
+   */
+  private async syncAllActive(): Promise<BulkResult> {
     if (!this.isEnabled()) {
       this.logger.warn('Customer sync disabled — bỏ qua');
       return { success: 0, failed: 0 };
@@ -342,9 +455,21 @@ export class LarkCustomerSyncService implements OnModuleInit, OnModuleDestroy {
         `📝 Processing ${toCreate.length} customers (fetch all + match)...`,
       );
 
-      const larkCodeMap = await this.larkBase.fetchAllRecords(tableId, [
-        LARK_CUSTOMER_FIELDS.MA_KHACH_HANG,
-      ]);
+      let larkCodeMap: Map<string, string>;
+      try {
+        larkCodeMap = await this.larkBase.fetchAllRecords(tableId, [
+          LARK_CUSTOMER_FIELDS.MA_KHACH_HANG,
+        ]);
+      } catch (error: any) {
+        // Danh sách thiếu → mã không thấy bị coi là "mới" → tạo trùng record
+        // đang có. Bỏ qua bước tạo, lần chạy sau sẽ match lại.
+        this.logger.error(
+          `❌ Không lấy được danh sách record Lark, bỏ qua ${toCreate.length} KH cần tạo/match: ${error.message}`,
+        );
+        failed += toCreate.length;
+        this.logger.log(`🎯 Sync done: ${success} success, ${failed} failed`);
+        return { success, failed };
+      }
       this.logger.log(
         `📋 Fetched ${larkCodeMap.size} existing records from Lark`,
       );
@@ -462,23 +587,25 @@ export class LarkCustomerSyncService implements OnModuleInit, OnModuleDestroy {
   // FULL SYNC — manual trigger
   // =============================================
 
-  async fullSync(): Promise<{ success: number; failed: number }> {
-    if (!this.isEnabled()) {
-      this.logger.warn('Customer sync disabled — bỏ qua');
-      return { success: 0, failed: 0 };
-    }
+  async fullSync(): Promise<BulkResult> {
+    return this.runBulk(async () => {
+      if (!this.isEnabled()) {
+        this.logger.warn('Customer sync disabled — bỏ qua');
+        return { success: 0, failed: 0 };
+      }
 
-    // Reset tất cả khách hàng đang hoạt động về PENDING để xử lý
-    const result = await this.prisma.customer.updateMany({
-      where: { isActive: true, code: { not: null } },
-      data: { larkSyncStatus: 'PENDING' },
+      // Reset tất cả khách hàng đang hoạt động về PENDING để xử lý
+      const result = await this.prisma.customer.updateMany({
+        where: { isActive: true, code: { not: null } },
+        data: { larkSyncStatus: 'PENDING' },
+      });
+
+      this.logger.log(
+        `📋 Marked ${result.count} customers as PENDING for full sync`,
+      );
+
+      return this.syncAllActive();
     });
-
-    this.logger.log(
-      `📋 Marked ${result.count} customers as PENDING for full sync`,
-    );
-
-    return this.syncPendingAndFailed();
   }
 
   // =============================================

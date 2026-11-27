@@ -103,6 +103,8 @@ import { InventorySnapshotModule } from './inventory-snapshot/inventory-snapshot
 import { PublicApiModule } from './public-api/public-api.module';
 import { CustomerDemandModule } from './customer-demand/customer-demand.module';
 import { ProductQualityModule } from './product-quality/product-quality.module';
+import { NewProductPriceModule } from './new-product-price/new-product-price.module';
+import { PriceChangeModule } from './price-change/price-change.module';
 import { InternalFinanceModule } from './internal-finance/internal-finance.module';
 import { InternalFundModule } from './internal-fund/internal-fund.module';
 import { VpsgCashModule } from './vpsg-cash/vpsg-cash.module';
@@ -225,6 +227,8 @@ import { ManufacturersModule } from './manufacturers/manufacturers.module';
     PublicApiModule,
     CustomerDemandModule,
     ProductQualityModule,
+    NewProductPriceModule,
+    PriceChangeModule,
     InternalFinanceModule,
     InternalFundModule,
     VpsgCashModule,

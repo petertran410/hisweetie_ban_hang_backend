@@ -12,6 +12,8 @@ export const ALLOWED_UPLOAD_SUBFOLDERS: ReadonlySet<string> = new Set<string>([
   'products',
   'products/cong-bo',
   'product-quality',
+  'new-product-price',
+  'price-change',
   'vehicle-shipments',
   'bao-gia',
   'recipes',
