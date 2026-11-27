@@ -347,7 +347,7 @@ export class CreateInvoiceFromOrderDto {
     discount: number;
     discountRatio: number;
     totalPrice: number;
-    lineVatRate?: number; // % GTGT dòng POS (0|5) — chỉ để nhớ, giá đã gồm GTGT
+    lineVatRate?: number | null; // % GTGT dòng POS (0|5), giá đã gồm GTGT; null = dòng cũ
     note?: string;
     conditionType?: string; // "normal" | "damaged" | "near_expiry"
     soldExpiryDate?: string; // lô cận date khi conditionType = near_expiry

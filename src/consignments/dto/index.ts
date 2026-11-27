@@ -352,7 +352,7 @@ export class CreateInvoiceFromConsignmentDto {
     discount: number;
     discountRatio: number;
     totalPrice: number;
-    lineVatRate?: number; // % GTGT dòng POS (0|5) — chỉ để nhớ, giá đã gồm GTGT
+    lineVatRate?: number | null; // % GTGT dòng POS (0|5), giá đã gồm GTGT; null = dòng cũ
     note?: string;
     conditionType?: string;
   }[];

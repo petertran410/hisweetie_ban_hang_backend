@@ -4532,7 +4532,7 @@ export class InvoicesService {
               lineType: (item as any).lineType || 'normal',
               isGift: (item as any).isGift || false,
               promotionId: (item as any).promotionId ?? null,
-              lineVatRate: Number((item as any).lineVatRate ?? 0),
+              lineVatRate: (item as any).lineVatRate ?? null, // giữ NULL = dòng cũ
             }));
 
       // Stamp promotionId lên dòng thường (X) để mở lại HĐ còn opt-in KM.
@@ -4732,7 +4732,7 @@ export class InvoicesService {
               lineType: item.lineType || 'normal',
               isGift: item.isGift || false,
               promotionId: item.promotionId ?? null,
-              lineVatRate: Number(item.lineVatRate ?? 0),
+              lineVatRate: item.lineVatRate == null ? null : Number(item.lineVatRate),
             })),
           },
           ...(order.delivery && {
@@ -5333,7 +5333,7 @@ export class InvoicesService {
                 item.remainingQuantity,
               note: item.note,
               conditionType: 'normal',
-              lineVatRate: Number(item.lineVatRate ?? 0),
+              lineVatRate: (item as any).lineVatRate ?? null, // giữ NULL = dòng cũ
             }));
 
       const totalAmount = itemsToInvoice.reduce(
@@ -5401,7 +5401,7 @@ export class InvoicesService {
               discount: item.discount,
               discountRatio: item.discountRatio,
               totalPrice: item.totalPrice,
-              lineVatRate: Number(item.lineVatRate ?? 0),
+              lineVatRate: item.lineVatRate == null ? null : Number(item.lineVatRate),
               note: item.note,
               conditionType: item.conditionType || 'normal',
               soldExpiryDate: item.soldExpiryDate
