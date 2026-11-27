@@ -116,6 +116,23 @@ const foldVi = (s: string) =>
   s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/đ/gi, 'd').toLowerCase();
 // Mã khách POS trong tên nhóm Zalo, vd "… DIỆP TRÀ KH005844", "KH241166031.1"
 const CUSTOMER_CODE_IN_NAME = /\bKH\d{3,}(?:\.\d+)?\b/gi;
+/** Audit hội thoại đã tự gắn khách POS (mỗi hội thoại 1 lần). */
+const AUTO_LINK_AUDIT = 'SMAX_AUTO_LINK';
+/** Thương hiệu ghép đầu / cuối tên hội thoại: "Diệp Trà - …", "… - Diệp Trà" (cả "Diep Tra"). */
+const BRAND_IN_NAME = /^di[eệ]p tr[aà] ?- ?| ?- ?di[eệ]p tr[aà]$/iu;
+/** Nhãn Sale cuối tên khách POS: "(Sale 4)", "(Sale 2 - A2)" — tên nhóm Zalo thường không có. */
+const SALE_TAG = /\s*\(\s*sale\s*\d+[^)]*\)$/i;
+const normName = (s: string) => s.normalize('NFC').replace(/\s+/g, ' ').trim();
+/** Từ chung chung không dùng để đối chiếu tên nhóm với tên khách (thương hiệu, xưng hô, khu vực, nhãn Sale). */
+const GENERIC_NAME_WORDS = new Set(
+  'diep tra lermao gau dt sale ms mr chi anh em hcm hn ha noi quan tp cn nhom bo cua hang chuoi va setup ko vat nl x'.split(' '),
+);
+const nameWords = (s: string) =>
+  new Set(
+    foldVi(s)
+      .split(/[^a-z0-9]+/)
+      .filter((w) => w.length >= 2 && !/^\d+$/.test(w) && !GENERIC_NAME_WORDS.has(w)),
+  );
 // SĐT VN khách gõ trong tin (vd "0365692400", "+84 912 345 678", "091.234.5678")
 const PHONE_IN_TEXT = /(?:\+?84|0)(?:[\s.-]?\d){9}(?!\d)/g;
 const MEDIA_SUBFOLDER = 'smax-chat';
@@ -246,6 +263,11 @@ export class SmaxChatService {
   private readonly sendLog = new Map<number, number[]>();
   // Chỉ mục nhóm theo kênh (quét Smax ~15s) — dùng chung giữa các khách
   private readonly recentCache = new Map<string, { at: number; threads: Promise<SmaxRecentThread[]> }>();
+  /** Khách có nhãn Sale cuối tên, theo tên bỏ nhãn (tự gắn hội thoại) — làm mới 10 phút/lần. */
+  private salelessCache?: {
+    at: number;
+    map: Promise<Map<string, { id: number; code: string | null; name: string }[]>>;
+  };
   // Nhóm Zalo: Smax coi tin của nhân viên ở kênh khác trong nhóm là "của khách" → kiểm người gửi tin cuối
   // (chạy nền, cache theo thời điểm tin cuối; null = đang kiểm)
   private readonly groupLastSender = new Map<string, { at: string; fromCustomer: boolean | null }>();
@@ -1752,6 +1774,16 @@ export class SmaxChatService {
             [] as { id: number; code: string | null; name: string; contactNumber: string | null; phone: string | null }[],
           ),
     ]);
+    // Danh sách chat POS (không phải Trợ lý AI đọc DB): tự gắn hội thoại chưa gắn khi chắc chắn
+    if (!preloaded) {
+      const open = threads.filter(
+        (t) =>
+          !t.isComment &&
+          !leadOf(t) &&
+          !contacts.some((c) => c.zaloId === idOf(t) && (zalowebTid(t) || c.pagePid === t.pagePid)),
+      );
+      contacts.push(...(await this.autoLink(actorId, open, byCode)));
+    }
     // 1 nhóm có thể gắn nhiều khách (vd nhóm chung các chi nhánh) → giữ tất cả, khách gắn trước đứng đầu
     const contactsByZalo = new Map<string, (typeof contacts)[number][]>();
     for (const c of contacts) contactsByZalo.set(c.zaloId, [...(contactsByZalo.get(c.zaloId) ?? []), c]);
@@ -1819,6 +1851,216 @@ export class SmaxChatService {
         };
       }),
     };
+  }
+
+  private salelessNames() {
+    if (!this.salelessCache || Date.now() - this.salelessCache.at > 10 * 60_000) {
+      const map = this.prisma.customer
+        .findMany({
+          where: { name: { contains: '(sale', mode: 'insensitive' }, isActive: true },
+          select: { id: true, code: true, name: true },
+        })
+        .then((rows) => {
+          const m = new Map<string, (typeof rows)[number][]>();
+          for (const c of rows) {
+            const name = normName(c.name);
+            if (!SALE_TAG.test(name)) continue;
+            const k = name.replace(SALE_TAG, '').toLowerCase();
+            m.set(k, [...(m.get(k) ?? []), c]);
+          }
+          return m;
+        });
+      this.salelessCache = { at: Date.now(), map };
+      map.catch(() => (this.salelessCache = undefined));
+    }
+    return this.salelessCache.map;
+  }
+
+  /**
+   * Khách theo tin "Báo đơn BD… / Hoá đơn: HD… / Khách hàng: …" trong hội thoại (kho tin DB): khách của hoá
+   * đơn, tên khách trong tin phải trùng tên khách POS. Mọi tin báo đơn của hội thoại phải cùng 1 khách, hoặc
+   * cặp mã A1/A2 của cùng khách (KH… và KH….1) → trả cả cặp; khác khách (vd nhóm nội bộ nhận báo đơn nhiều
+   * khách) → null (không gắn). Không có tin báo đơn → không có mục.
+   */
+  private async reportedCustomers(threads: SmaxRecentThread[]) {
+    type Reported = { customer: { id: number; code: string | null; name: string }; invoice: string };
+    const out = new Map<string, Reported[] | null>();
+    if (!threads.length) return out;
+    const rows = await this.prisma.smaxMessage.findMany({
+      where: {
+        pagePid: { in: [...new Set(threads.map((t) => t.pagePid))] },
+        tid: { in: threads.map((t) => t.tid) },
+        text: { contains: 'Báo đơn BD' },
+      },
+      select: { pagePid: true, tid: true, text: true },
+    });
+    const reports = rows.flatMap((r) => {
+      const text = r.text.normalize('NFC');
+      const invoice = text.match(/H(?:oá|óa) đơn:\s*(HD[\w.]+)/)?.[1];
+      const name = text.match(/Khách hàng:\s*([^\n]+)/)?.[1];
+      return invoice && name ? [{ key: `${r.pagePid}:${r.tid}`, invoice, name: normName(name).toLowerCase() }] : [];
+    });
+    if (!reports.length) return out;
+    const invoices = await this.prisma.invoice.findMany({
+      where: { code: { in: [...new Set(reports.map((r) => r.invoice))] } },
+      select: { code: true, customer: { select: { id: true, code: true, name: true } } },
+    });
+    const byCode = new Map(invoices.map((i) => [i.code, i.customer]));
+    // Mã khách bỏ hậu tố ".1" / ".01": KH003326 và KH003326.1 là cặp A1/A2 của cùng khách
+    const base = (c: { id: number; code: string | null }) => c.code?.replace(/\.\d+$/, '') ?? `#${c.id}`;
+    for (const r of reports) {
+      const prev = out.get(r.key);
+      if (prev === null) continue;
+      const customer = byCode.get(r.invoice);
+      const ok =
+        !!customer &&
+        normName(customer.name).toLowerCase() === r.name &&
+        (!prev || base(prev[0].customer) === base(customer));
+      if (!ok) out.set(r.key, null);
+      else if (!prev) out.set(r.key, [{ customer, invoice: r.invoice }]);
+      else if (!prev.some((p) => p.customer.id === customer.id)) prev.push({ customer, invoice: r.invoice });
+    }
+    return out;
+  }
+
+  /**
+   * Tự gắn hội thoại chưa gắn với khách POS khi chắc chắn: tên chứa đúng 1 mã khách có thật, hoặc tên
+   * (nhóm / cá nhân, bỏ "Diệp Trà - " đầu / " - Diệp Trà" cuối) trùng khít tên đúng 1 khách đang hoạt
+   * động (tên khách được bỏ nhãn "(Sale N)" cuối), hoặc tin báo đơn (cả cặp mã A1/A2). Nhóm "nội bộ" không
+   * tự gắn theo luật nào. Chat cá nhân chỉ gắn khi khách chưa có ID cùng loại
+   * (không thay ID đã gắn) và không có hội thoại cá nhân khác cùng khớp khách đó. Mỗi hội thoại chỉ tự
+   * gắn 1 lần (audit SMAX_AUTO_LINK) → nhân viên gỡ thì không gắn lại. Lỗi bỏ qua, không chặn danh sách.
+   */
+  private async autoLink(
+    actorId: number,
+    open: SmaxRecentThread[],
+    byCode: { id: number; code: string | null; name: string }[],
+  ) {
+    // Nhóm nội bộ (vd "… (NỘI BỘ)") có tên / mã / báo đơn của khách nhưng không phải hội thoại với khách
+    const threads = open.filter((t) => !/\bnoi bo\b/.test(foldVi(t.name)));
+    const done: {
+      id: number;
+      kind: string;
+      zaloId: string;
+      pagePid: string | null;
+      customer: { id: number; code: string | null; name: string };
+    }[] = [];
+    if (!threads.length) return done;
+    try {
+      const customerByCode = new Map(byCode.map((c) => [c.code!.toUpperCase(), c]));
+      const codeOf = (t: SmaxRecentThread) => {
+        const codes = [...new Set((t.name.match(CUSTOMER_CODE_IN_NAME) ?? []).map((c: string) => c.toUpperCase()))];
+        return codes.length === 1 ? customerByCode.get(codes[0]) : undefined;
+      };
+      const norm = normName;
+      // Tên hội thoại = tên khách kèm thương hiệu đầu / cuối ("Diệp Trà - Mr Long - Năm Căn…")
+      const unbrand = (s: string) => norm(s).replace(BRAND_IN_NAME, '').trim();
+      const names = [
+        ...new Set(threads.filter((t) => !codeOf(t)).flatMap((t) => [norm(t.name), unbrand(t.name)])),
+      ].filter((n) => n.length >= 2);
+      const sameName = names.length
+        ? await this.prisma.customer.findMany({
+            // Khách ngừng hoạt động (bản trùng cũ) không tính
+            where: { name: { in: names, mode: 'insensitive' }, isActive: true },
+            select: { id: true, code: true, name: true },
+          })
+        : [];
+      const byName = new Map<string, (typeof sameName)[number][]>();
+      for (const c of sameName) {
+        const k = norm(c.name).toLowerCase();
+        byName.set(k, [...(byName.get(k) ?? []), c]);
+      }
+      const saleless = await this.salelessNames();
+      // Thứ tự: tên nguyên → bỏ "Diệp Trà" → tên khách bỏ nhãn Sale; bước nào có khách mà không duy nhất thì dừng
+      let picks = threads.flatMap((t) => {
+        const code = codeOf(t);
+        if (code) return [{ t, customer: code, reason: 'mã khách trong tên' }];
+        const keys = [norm(t.name), unbrand(t.name)].map((k) => k.toLowerCase());
+        const steps = [
+          { found: byName.get(keys[0]) ?? [], reason: 'tên trùng khít' },
+          { found: byName.get(keys[1]) ?? [], reason: 'tên trùng khít (bỏ "Diệp Trà")' },
+          { found: saleless.get(keys[0]) ?? [], reason: 'tên trùng khít (bỏ nhãn Sale)' },
+          { found: saleless.get(keys[1]) ?? [], reason: 'tên trùng khít (bỏ "Diệp Trà", nhãn Sale)' },
+        ];
+        const hit = steps.find((s) => s.found.length);
+        return hit?.found.length === 1 ? [{ t, customer: hit.found[0], reason: hit.reason }] : [];
+      });
+      // Tin "Báo đơn" trong hội thoại → khách của hoá đơn; lệch với khách khớp theo tên / mã thì không gắn
+      const reported = await this.reportedCustomers(threads);
+      picks = picks.filter((p) => {
+        const r = reported.get(`${p.t.pagePid}:${p.t.tid}`);
+        return r === undefined || !!r?.some((x) => x.customer.id === p.customer.id);
+      });
+      for (const t of threads) {
+        const r = reported.get(`${t.pagePid}:${t.tid}`);
+        if (!r) continue;
+        const mine = picks.filter((p) => p.t === t);
+        // Chưa khớp tên / mã: nhóm nhà cung cấp cũng có tin báo đơn → tên nhóm phải có từ riêng chung với tên khách
+        const words = nameWords(r[0].customer.name);
+        if (!mine.length && ![...nameWords(t.name)].some((w) => words.has(w))) continue;
+        // Cặp mã A1/A2 cùng khách → gắn cả hai
+        for (const { customer, invoice } of r)
+          if (!mine.some((p) => p.customer.id === customer.id))
+            picks.push({ t, customer, reason: `báo đơn hoá đơn ${invoice}` });
+      }
+      if (!picks.length) return done;
+      // Đã tự gắn trước đây (có thể nhân viên đã gỡ) → không gắn lại
+      const keyOf = (t: SmaxRecentThread) => `${t.pagePid}:${t.tid}`;
+      const before = await this.prisma.auditLog.findMany({
+        where: { actionCode: AUTO_LINK_AUDIT, entityId: { in: picks.map((p) => keyOf(p.t)) } },
+        select: { entityId: true },
+      });
+      const seen = new Set(before.map((b) => b.entityId));
+      picks = picks.filter((p) => !seen.has(keyOf(p.t)));
+      // Chat cá nhân: khách chưa có ID cùng loại, và chỉ 1 hội thoại khớp khách đó
+      const personal = picks.filter((p) => !p.t.isGroup);
+      const userContacts = personal.length
+        ? await this.prisma.customerZaloContact.findMany({
+            where: { kind: 'user', customerId: { in: personal.map((p) => p.customer.id) } },
+            select: { customerId: true, zaloId: true, pagePid: true },
+          })
+        : [];
+      picks = picks.filter(
+        (p) =>
+          p.t.isGroup ||
+          (personal.filter((o) => o.customer.id === p.customer.id).length === 1 &&
+            !userContacts.some(
+              (c) =>
+                c.customerId === p.customer.id &&
+                (/^zlw\d+$/.test(p.t.tid) ? isZaloContact(c) : !isZaloContact(c) && c.pagePid === p.t.pagePid),
+            )),
+      );
+      if (!picks.length) return done;
+      const user = await this.prisma.user.findUnique({ where: { id: actorId }, select: { name: true } });
+      const actor = { id: actorId, name: user?.name ?? '' };
+      for (const { t, customer, reason } of picks) {
+        try {
+          const kind = t.isGroup ? 'group' : 'user';
+          const contact = await this.createContact(customer.id, actor, {
+            kind,
+            zaloId: t.tid,
+            name: t.name,
+            pagePid: t.pagePid,
+          });
+          done.push({ id: contact.id, kind, zaloId: contact.zaloId, pagePid: contact.pagePid, customer });
+          await this.auditLogs.create({
+            actionType: 'POST',
+            actionCode: AUTO_LINK_AUDIT,
+            entityType: 'smax_threads',
+            entityId: keyOf(t),
+            message: `Tự gắn ${t.isGroup ? 'nhóm' : 'hội thoại'} "${t.name}" với khách ${customer.code ?? customer.name} (${reason})`,
+            userId: actor.id,
+            userName: actor.name,
+            metadata: { pagePid: t.pagePid, tid: t.tid, customerId: customer.id, contactId: contact.id, reason },
+          });
+        } catch (e) {
+          this.logger.warn(`Tự gắn hội thoại ${keyOf(t)} lỗi: ${(e as Error).message}`);
+        }
+      }
+    } catch (e) {
+      this.logger.warn(`Tự gắn hội thoại lỗi: ${(e as Error).message}`);
+    }
+    return done;
   }
 
   /**
