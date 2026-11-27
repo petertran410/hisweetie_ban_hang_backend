@@ -18,7 +18,6 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { NPP_STAGE, NppStage, PERM } from './new-product-price.constants';
 import { NewProductPriceService, NppUser } from './new-product-price.service';
 import { NewProductPriceApplyService } from './new-product-price-apply.service';
-import { NewProductPriceImportService } from './new-product-price-import.service';
 import { NewProductPriceConfigService } from './new-product-price-config.service';
 import { NewProductPriceReminderCron } from './new-product-price-reminder.cron';
 import { MisaDictionaryService } from '../misa-sync/misa-dictionary.service';
@@ -28,7 +27,6 @@ import {
   NppConfigDto,
   NppCustomerSearchDto,
   NppDecisionDto,
-  NppLarkImportDto,
   NppQueryDto,
   NppReasonDto,
   UpdateNppDto,
@@ -49,7 +47,6 @@ export class NewProductPriceController {
   constructor(
     private readonly service: NewProductPriceService,
     private readonly applyService: NewProductPriceApplyService,
-    private readonly importService: NewProductPriceImportService,
     private readonly configService: NewProductPriceConfigService,
     private readonly reminders: NewProductPriceReminderCron,
     private readonly misaDictionary: MisaDictionaryService,
@@ -103,13 +100,6 @@ export class NewProductPriceController {
   async updateConfig(@Body() dto: NppConfigDto, @CurrentUser() user: NppUser) {
     await this.configService.update(dto, user);
     return this.service.getConfigView();
-  }
-
-  @Post('import/lark')
-  @RequirePermissions(PERM.IMPORT)
-  @ApiOperation({ summary: 'Nhập phiếu từ Lark Base (dryRun mặc định true)' })
-  importLark(@Body() dto: NppLarkImportDto, @CurrentUser() user: NppUser) {
-    return this.importService.run(dto, user);
   }
 
   @Post('reminders/run')

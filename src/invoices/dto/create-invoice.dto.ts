@@ -49,6 +49,13 @@ class CreateInvoiceDetailDto {
   @IsNumber()
   totalPrice: number;
 
+  // % GTGT chọn trên dòng POS (0 | 5). Chỉ để nhớ lựa chọn: price/discount/
+  // totalPrice FE gửi lên ĐÃ gồm GTGT, BE không tính lại.
+  @IsOptional()
+  @Type(() => Number)
+  @IsIn([0, 5])
+  lineVatRate?: number;
+
   @IsOptional()
   @IsString()
   note?: string;
@@ -340,6 +347,7 @@ export class CreateInvoiceFromOrderDto {
     discount: number;
     discountRatio: number;
     totalPrice: number;
+    lineVatRate?: number; // % GTGT dòng POS (0|5) — chỉ để nhớ, giá đã gồm GTGT
     note?: string;
     conditionType?: string; // "normal" | "damaged" | "near_expiry"
     soldExpiryDate?: string; // lô cận date khi conditionType = near_expiry

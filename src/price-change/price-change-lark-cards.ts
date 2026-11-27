@@ -1,6 +1,11 @@
 // Dựng card Lark (interactive) cho từng sự kiện của phiếu thay đổi giá; nút mở phiếu trên POS.
 import { cellDiff, toNum } from './price-change.calc';
 import type { CostLine, PriceLine } from './price-change.constants';
+import {
+  actorText,
+  buildTopicReplyPost,
+  type TopicMention,
+} from '../lark-sync/lark-topic';
 
 export type PcNotifyKind =
   | 'TO_KTT'
@@ -36,8 +41,6 @@ export interface CardContext {
   /** Bước của người từ chối (Kế toán trưởng / CEO). */
   decidedByRole?: string | null;
   ended?: boolean;
-  /** Gửi thử: dòng ghi chú đặt đầu tin (người nhận thật là ai). */
-  testNote?: string | null;
 }
 
 export interface BuiltCard {
@@ -197,12 +200,143 @@ export function buildTicketCard(
       break;
   }
 
-  const test = ctx.testNote ? `${ctx.testNote}\n\n` : '';
   const content =
-    `${test}${hi}${[...baseLines(t), ...extra].join('\n')}\n\n${itemLines(t.items).join('\n')}\n\n${ask}`.trim();
+    `${hi}${[...baseLines(t), ...extra].join('\n')}\n\n${itemLines(t.items).join('\n')}\n\n${ask}`.trim();
   return {
     title,
-    body: `${ctx.testNote ? '[Gửi thử] ' : ''}${t.code} — ${typeLabel(t)}, ${t.items.length} sản phẩm. ${ask}`.trim(),
+    body: `${t.code} — ${typeLabel(t)}, ${t.items.length} sản phẩm. ${ask}`.trim(),
     card: card(title, template, content, [{ label: button, url: ctx.link }]),
   };
+}
+
+// ───────────── Nhắc việc hằng ngày (tin riêng, 1 tin / bước) ─────────────
+
+export interface ReminderItem {
+  code: string;
+  hasCost: boolean;
+  hasSale: boolean;
+  itemCount: number;
+  /** Sản phẩm đầu tiên của phiếu ("SP007648 Siro …"). */
+  firstProduct: string | null;
+  /** Số ngày đã chờ ở bước hiện tại. */
+  days: number;
+}
+
+const MAX_REMINDER_ROWS = 20;
+
+/** Tin tổng hợp các phiếu đang chờ ở 1 bước (khuôn nhắc việc của Bảng giá SP mới). */
+export function buildReminderCard(
+  stageLabel: string,
+  items: ReminderItem[],
+  listLink: string,
+  greetingNames: string[] = [],
+): BuiltCard {
+  const shown = items.slice(0, MAX_REMINDER_ROWS);
+  const more = items.length - shown.length;
+  const hi = greetingNames.length ? `Gửi ${greetingNames.join(', ')},\n` : '';
+  const lines = shown.map((i) => {
+    const product = i.firstProduct
+      ? ` · ${i.firstProduct}${i.itemCount > 1 ? ` +${i.itemCount - 1} SP` : ''}`
+      : ` · ${i.itemCount} SP`;
+    return `• **${i.code}** – ${typeLabel(i)}${product} (${i.days} ngày)`;
+  });
+  if (more > 0) lines.push(`… và ${more} phiếu khác`);
+  const title = 'Nhắc việc: Thay đổi giá sản phẩm';
+  const head = `Phiếu thay đổi giá **đang chờ xử lý** tại **${stageLabel}** (${items.length} phiếu). Vui lòng kiểm tra và xử lý để giá mới được áp dụng.`;
+  return {
+    title,
+    body: `${items.length} phiếu thay đổi giá đang chờ xử lý tại ${stageLabel}`,
+    card: card(title, 'orange', `${hi}${head}\n\n${lines.join('\n')}`, [
+      { label: 'Xem danh sách', url: listLink },
+    ]),
+  };
+}
+
+// ───────────── Nhóm Lark dạng topic: 1 topic / phiếu, mỗi bước 1 trả lời ─────────────
+// Bố cục tin theo chuẩn chung của các luồng duyệt: lark-sync/lark-topic.ts
+
+export interface GroupReplyContext {
+  link: string;
+  /** Người phụ trách bước mới (được tag). */
+  mentions: TopicMention[];
+  /** Topic đã có sẵn khi gửi Kế toán trưởng = người đề xuất gửi lại sau khi bị trả về. */
+  resubmit?: boolean;
+  reason?: string | null;
+  decidedByName?: string | null;
+  decidedByRole?: string | null;
+  ended?: boolean;
+}
+
+/** Tin mở đầu topic của phiếu trong nhóm. */
+export function buildGroupRootCard(t: CardTicket, link: string) {
+  const content =
+    `${baseLines(t).join('\n')}\n\n${itemLines(t.items).join('\n')}`.trim();
+  return card(`Đề xuất thay đổi giá ${t.code}`, 'blue', content, [
+    { label: 'Xem phiếu', url: link },
+  ]);
+}
+
+/**
+ * Trả lời trong chủ đề khi phiếu tới bước mới — dạng tin nhắn (post) như Bảng giá SP mới:
+ * tiêu đề · tag người phụ trách · nội dung "Đề nghị …" · link mở phiếu.
+ */
+export function buildGroupReply(kind: PcNotifyKind, ctx: GroupReplyContext) {
+  const by = actorText(ctx.decidedByName, ctx.decidedByRole);
+  const reason = `**Lý do:** ${text(ctx.reason)}`;
+  let title: string;
+  let lines: string[];
+  let label: 'Mở phiếu để xử lý' | 'Xem phiếu' = 'Mở phiếu để xử lý';
+
+  switch (kind) {
+    case 'TO_KTT':
+      title = 'Kế toán trưởng duyệt thay đổi giá';
+      lines = [
+        `${by} ${ctx.resubmit ? 'đã sửa và gửi lại phiếu' : 'đã gửi đề xuất'}.`,
+        'Đề nghị Kế toán trưởng kiểm tra và duyệt thay đổi giá.',
+      ];
+      break;
+    case 'TO_CEO':
+      title = 'CEO duyệt thay đổi giá vốn';
+      lines = [`${by} đã duyệt.`, 'Đề nghị CEO duyệt thay đổi giá vốn.'];
+      break;
+    case 'TO_DATA':
+      title = 'Phòng Dữ Liệu áp dụng thay đổi giá';
+      lines = [
+        `${by} đã duyệt.`,
+        'Đề nghị Phòng Dữ Liệu áp dụng giá mới trên POS.',
+      ];
+      break;
+    case 'REJECTED':
+      title = 'Thay đổi giá bị từ chối';
+      lines = [
+        `${by} từ chối.`,
+        reason,
+        ctx.ended
+          ? 'Phiếu đã kết thúc.'
+          : 'Đề nghị người đề xuất kiểm tra, chỉnh sửa và gửi duyệt lại.',
+      ];
+      label = 'Xem phiếu';
+      break;
+    case 'SENT_BACK':
+      title = 'Phòng Dữ Liệu trả về phiếu thay đổi giá';
+      lines = [
+        `${by} trả về phiếu.`,
+        reason,
+        'Đề nghị người đề xuất kiểm tra, chỉnh sửa và gửi duyệt lại.',
+      ];
+      label = 'Xem phiếu';
+      break;
+    case 'APPLIED':
+      title = 'Đã áp dụng thay đổi giá';
+      lines = [`${by} đã áp dụng giá mới trên POS. Phiếu hoàn thành.`];
+      label = 'Xem phiếu';
+      break;
+  }
+
+  return buildTopicReplyPost({
+    title,
+    mentions: ctx.mentions,
+    lines,
+    link: { label, url: ctx.link },
+  });
 }

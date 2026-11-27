@@ -1,4 +1,4 @@
-import { cellDiff, summarizeItems } from './price-change.calc';
+import { cellDiff, summarizeItems, daysSince } from './price-change.calc';
 
 describe('price-change calc', () => {
   it('chênh lệch và tỷ lệ = (mới − cũ) / cũ', () => {
@@ -31,5 +31,14 @@ describe('price-change calc', () => {
       increases: 1,
       decreases: 1,
     });
+  });
+});
+
+describe('daysSince', () => {
+  it('số ngày tròn, không âm', () => {
+    const now = new Date('2026-11-27T10:00:00Z');
+    expect(daysSince(new Date('2026-11-27T09:00:00Z'), now)).toBe(0);
+    expect(daysSince(new Date('2026-11-25T09:00:00Z'), now)).toBe(2);
+    expect(daysSince(new Date('2026-11-28T09:00:00Z'), now)).toBe(0);
   });
 });

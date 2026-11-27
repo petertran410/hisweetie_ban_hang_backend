@@ -3,6 +3,15 @@
 import { goodsPriceVnd, priceAnalysis, toNum } from './new-product-price.calc';
 import { NppStage, STAGE_LABELS } from './new-product-price.constants';
 
+import {
+  TopicMention,
+  TopicPost,
+  actorText,
+  buildTopicReplyPost,
+} from '../lark-sync/lark-topic';
+
+export type { TopicMention };
+
 export type NppNotifyKind =
   | 'ENTER_PURCHASING'
   | 'SENT_BACK'
@@ -53,8 +62,6 @@ export interface CardContext {
   decidedByName?: string | null;
   ended?: boolean;
   manufactured?: boolean;
-  /** Gửi thử: dòng ghi chú đặt đầu tin (người nhận thật là ai). */
-  testNote?: string | null;
 }
 
 export interface ReminderItem {
@@ -168,6 +175,8 @@ export interface BuiltCard {
   title: string;
   body: string;
   card: Record<string, unknown>;
+  /** Câu đề nghị (dùng lại cho tin trong chủ đề nhóm). */
+  ask?: string;
 }
 
 /** Card cho sự kiện của 1 phiếu. `body` = bản rút gọn dùng cho thông báo trong app. */
@@ -287,13 +296,112 @@ export function buildTicketCard(
       ask = '';
   }
 
-  const test = ctx.testNote ? `${ctx.testNote}\n\n` : '';
-  const content = `${test}${hi}${lines.join('\n')}\n\n${ask}`.trim();
+  const content = `${hi}${lines.join('\n')}\n\n${ask}`.trim();
   return {
     title,
-    body: `${ctx.testNote ? '[Gửi thử] ' : ''}${t.code} — ${t.productName}. ${ask}`.trim(),
+    body: `${t.code} — ${t.productName}. ${ask}`.trim(),
     card: card(title, template, content, buttons),
+    ask,
   };
+}
+
+/** Tin mở chủ đề của phiếu trong nhóm Lark (dạng chủ đề) — gửi 1 lần khi phiếu được gửi đi. */
+export function buildTopicRootCard(
+  t: CardTicket,
+  link: string,
+): Record<string, unknown> {
+  const content = [
+    `**${text(t.createdByName)}** vừa đề xuất sản phẩm mới.`,
+    '',
+    ...baseLines(t),
+    `**Ghi chú:** ${text(t.note)}`,
+    '',
+    'Các bước xử lý của phiếu được cập nhật trong chủ đề này.',
+  ].join('\n');
+  return card(
+    `Đề xuất sản phẩm mới ${t.code} — ${text(t.productName)}`,
+    'blue',
+    content,
+    [{ label: 'Xem phiếu', url: link }],
+  );
+}
+
+export interface TopicReplyContext {
+  /** Link mở phiếu (có &open=1 khi người nhận cần xử lý). */
+  link: string;
+  /** Người phụ trách bước mới — tag tất cả, kể cả người vừa thao tác. */
+  mentions: TopicMention[];
+  /** Người vừa thao tác. */
+  actorName?: string | null;
+  reason?: string | null;
+  decision?: 'APPROVED' | 'REJECTED';
+  decidedByName?: string | null;
+  ended?: boolean;
+  manufactured?: boolean;
+  productCode?: string | null;
+}
+
+/**
+ * Tin trả lời trong chủ đề khi phiếu tới bước mới — dạng tin nhắn (post), chuẩn chung
+ * ở lark-sync/lark-topic.ts: tiêu đề = tiêu đề tin riêng của bước · hàng tag ·
+ * "**Người làm** (vai trò) đã …" · "**Lý do:** …" · câu đề nghị của tin riêng · link.
+ */
+export function buildTopicReply(
+  kind: NppNotifyKind,
+  built: BuiltCard,
+  ctx: TopicReplyContext,
+): TopicPost {
+  const by = (role?: string) =>
+    actorText(ctx.decidedByName || ctx.actorName, role);
+  const approved = ctx.decision === 'APPROVED';
+  let done: string;
+  switch (kind) {
+    case 'ENTER_PURCHASING':
+      done = `${by('Người đề xuất')} đã gửi đề xuất.`;
+      break;
+    case 'SENT_BACK':
+      done = `${by()} trả về phiếu.`;
+      break;
+    case 'ENTER_ACCOUNTING':
+      done = `${by('Phòng Thu Mua')} đã hoàn tất bước.`;
+      break;
+    case 'KTT_REQUEST':
+      done = `${by('Phòng Kế Toán')} đã gửi Kế toán trưởng duyệt.`;
+      break;
+    case 'KTT_DECIDED':
+      done = `${by('Kế toán trưởng')} ${approved ? 'đã duyệt' : 'từ chối'} giá vốn.`;
+      break;
+    case 'ENTER_CEO':
+      done = `${by('Phòng Kinh Doanh')} đã cập nhật giá bán.`;
+      break;
+    case 'TO_DATA':
+      done = ctx.manufactured
+        ? `${by('Phòng Kinh Doanh')} đã hoàn tất (hàng sản xuất, không cần CEO duyệt).`
+        : `${by('CEO')} đã duyệt bảng giá.`;
+      break;
+    case 'CEO_REJECTED':
+      done = `${by('CEO')} từ chối.`;
+      break;
+    case 'PRODUCT_CREATED':
+      done = `${by('Phòng Dữ Liệu')} đã tạo sản phẩm${ctx.productCode ? ` **${ctx.productCode}**` : ''} trên POS.`;
+      break;
+    default:
+      done = '';
+  }
+  const reason = ctx.reason
+    ? `**${kind === 'KTT_DECIDED' && approved ? 'Ghi chú' : 'Lý do'}:** ${ctx.reason}`
+    : '';
+  const viewOnly =
+    kind === 'PRODUCT_CREATED' || (kind === 'CEO_REJECTED' && !!ctx.ended);
+  return buildTopicReplyPost({
+    title: built.title,
+    mentions: ctx.mentions,
+    lines: [done, reason, built.ask ?? ''],
+    link: {
+      label: viewOnly ? 'Xem phiếu' : 'Mở phiếu để xử lý',
+      url: ctx.link,
+    },
+  });
 }
 
 /** Card nhắc việc hằng ngày cho một bước. */
@@ -302,7 +410,6 @@ export function buildReminderCard(
   items: ReminderItem[],
   listLink: string,
   greetingNames: string[] = [],
-  testNote?: string | null,
 ): BuiltCard {
   const label = STAGE_LABELS[stage];
   const shown = items.slice(0, 20);
@@ -316,12 +423,9 @@ export function buildReminderCard(
   const head = `Bảng giá sản phẩm mới **Đang chờ xử lý** tại **${label}** (${items.length} phiếu). Vui lòng kiểm tra và hoàn tất để sản phẩm được đăng bán.`;
   return {
     title,
-    body: `${testNote ? '[Gửi thử] ' : ''}${items.length} phiếu đang chờ xử lý tại ${label}`,
-    card: card(
-      title,
-      'orange',
-      `${testNote ? `${testNote}\n\n` : ''}${hi}${head}\n\n${lines.join('\n')}`,
-      [{ label: 'Xem danh sách', url: listLink, primary: false }],
-    ),
+    body: `${items.length} phiếu đang chờ xử lý tại ${label}`,
+    card: card(title, 'orange', `${hi}${head}\n\n${lines.join('\n')}`, [
+      { label: 'Xem danh sách', url: listLink, primary: false },
+    ]),
   };
 }

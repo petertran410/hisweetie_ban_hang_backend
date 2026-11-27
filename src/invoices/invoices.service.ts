@@ -1670,6 +1670,7 @@ export class InvoicesService {
           discount: manualGift ? 0 : Number(it.discount || 0),
           discountRatio: Number(it.discountRatio || 0),
           totalPrice: manualGift ? 0 : Number(it.totalPrice),
+          lineVatRate: manualGift ? 0 : Number(it.lineVatRate ?? 0),
           note: it.note,
           conditionType: it.conditionType || 'normal',
           soldExpiryDate: it.soldExpiryDate
@@ -2171,6 +2172,7 @@ export class InvoicesService {
                   lineType: item.lineType || 'normal',
                   isGift: item.isGift || false,
                   promotionId: item.promotionId ?? null,
+                  lineVatRate: Number(item.lineVatRate ?? 0),
                 })),
               },
             },
@@ -2749,6 +2751,7 @@ export class InvoicesService {
           isGift: detail.isGift,
           lineType: detail.lineType,
           promotionId: detail.promotionId,
+          lineVatRate: detail.lineVatRate,
           manufactureDate: detail.manufactureDate,
           soldExpiryDate: detail.soldExpiryDate,
         })),
@@ -3400,6 +3403,7 @@ export class InvoicesService {
                 lineType: item.lineType || 'normal',
                 isGift: item.isGift || false,
                 promotionId: item.promotionId ?? null,
+                lineVatRate: Number(item.lineVatRate ?? 0),
               })),
             },
             ...(dto.delivery
@@ -4020,6 +4024,7 @@ export class InvoicesService {
             lineType: item.lineType || 'normal',
             isGift: item.isGift || false,
             promotionId: item.promotionId ?? null,
+            lineVatRate: Number(item.lineVatRate ?? 0),
           })),
         };
 
@@ -4527,6 +4532,7 @@ export class InvoicesService {
               lineType: (item as any).lineType || 'normal',
               isGift: (item as any).isGift || false,
               promotionId: (item as any).promotionId ?? null,
+              lineVatRate: Number((item as any).lineVatRate ?? 0),
             }));
 
       // Stamp promotionId lên dòng thường (X) để mở lại HĐ còn opt-in KM.
@@ -4726,6 +4732,7 @@ export class InvoicesService {
               lineType: item.lineType || 'normal',
               isGift: item.isGift || false,
               promotionId: item.promotionId ?? null,
+              lineVatRate: Number(item.lineVatRate ?? 0),
             })),
           },
           ...(order.delivery && {
@@ -5326,6 +5333,7 @@ export class InvoicesService {
                 item.remainingQuantity,
               note: item.note,
               conditionType: 'normal',
+              lineVatRate: Number(item.lineVatRate ?? 0),
             }));
 
       const totalAmount = itemsToInvoice.reduce(
@@ -5393,6 +5401,7 @@ export class InvoicesService {
               discount: item.discount,
               discountRatio: item.discountRatio,
               totalPrice: item.totalPrice,
+              lineVatRate: Number(item.lineVatRate ?? 0),
               note: item.note,
               conditionType: item.conditionType || 'normal',
               soldExpiryDate: item.soldExpiryDate

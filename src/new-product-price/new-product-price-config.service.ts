@@ -1,9 +1,7 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { normalizePriceBookName } from '../lark-sync/helpers/product-field-mapping';
-import { parseLarkAllowlist } from '../lark-sync/lark-message-guard';
 import {
   BASE_PRICE_TARGET,
   COST_GROUP_KEYS,
@@ -23,18 +21,9 @@ export interface NppConfig {
   approvers: Record<NppGroup, number[]>;
   priceTargets: Record<PriceTargetKey, PriceTarget>;
   costBranches: Record<CostGroupKey, number[]>;
+  /** Nhóm Lark dạng chủ đề nhận tin song song (mỗi phiếu 1 chủ đề). null = tắt. */
   larkChatId: string | null;
   remindersEnabled: boolean;
-  /**
-   * Gửi thử: khác rỗng → MỌI thông báo (trong app + Lark + nhắc việc) chỉ gửi tới
-   * những người này thay cho người nhận thật; không gửi nhóm chat.
-   */
-  testRecipients: number[];
-  /**
-   * true = môi trường có LARK_MESSAGE_ALLOWLIST (local/dev): luôn gửi thử tới người
-   * trong danh sách đó, không tắt được trên giao diện.
-   */
-  testLocked: boolean;
   /** Các mục đang dùng giá trị dò mặc định (chưa lưu cấu hình). */
   defaults: { priceTargets: PriceTargetKey[]; costBranches: CostGroupKey[] };
   updatedAt: Date | null;
@@ -42,8 +31,6 @@ export interface NppConfig {
 }
 
 const CONFIG_ID = 1;
-/** Khóa trong JSON `approvers` lưu danh sách người nhận khi gửi thử. */
-const TEST_RECIPIENTS_KEY = 'TEST_RECIPIENTS';
 
 function asRecord(
   value: Prisma.JsonValue | null | undefined,
@@ -71,23 +58,7 @@ function strip(value: string): string {
 
 @Injectable()
 export class NewProductPriceConfigService {
-  constructor(
-    private readonly prisma: PrismaService,
-    private readonly env: ConfigService,
-  ) {}
-
-  /** User có lark_user_id nằm trong LARK_MESSAGE_ALLOWLIST (null = không giới hạn). */
-  private async allowlistUserIds(): Promise<number[] | null> {
-    const allow = parseLarkAllowlist(
-      this.env.get<string>('LARK_MESSAGE_ALLOWLIST'),
-    );
-    if (!allow) return null;
-    const users = await this.prisma.user.findMany({
-      where: { larkUserId: { in: [...allow] }, isActive: true },
-      select: { id: true },
-    });
-    return users.map((u) => u.id);
-  }
+  constructor(private readonly prisma: PrismaService) {}
 
   /** Cấu hình đã chuẩn hóa; mục chưa lưu thì dò mặc định theo tên bảng giá / chi nhánh. */
   async get(): Promise<NppConfig> {
@@ -166,16 +137,12 @@ export class NewProductPriceConfigService {
       }
     }
 
-    // Local/dev (có LARK_MESSAGE_ALLOWLIST): luôn gửi thử, chỉ tới người trong danh sách.
-    const locked = await this.allowlistUserIds();
     return {
       approvers,
       priceTargets,
       costBranches,
       larkChatId: row?.larkChatId ?? null,
       remindersEnabled: row?.remindersEnabled ?? true,
-      testRecipients: locked ?? toIds(approversRaw[TEST_RECIPIENTS_KEY]),
-      testLocked: locked !== null,
       defaults,
       updatedAt: row?.updatedAt ?? null,
       updatedByName: row?.updatedByName ?? null,
@@ -195,21 +162,13 @@ export class NewProductPriceConfigService {
       updatedByName: actor.name ?? null,
     };
 
-    // Nhóm người duyệt + danh sách gửi thử cùng nằm trong JSON `approvers`.
-    if (dto.approvers || dto.testRecipients !== undefined) {
+    if (dto.approvers) {
       const approvers = {} as Record<string, number[]>;
       const allIds = new Set<number>();
       for (const g of NPP_GROUPS) {
-        approvers[g] = dto.approvers
-          ? toIds(dto.approvers[g])
-          : current.approvers[g];
+        approvers[g] = toIds(dto.approvers[g]);
         approvers[g].forEach((id) => allIds.add(id));
       }
-      approvers[TEST_RECIPIENTS_KEY] =
-        dto.testRecipients !== undefined
-          ? toIds(dto.testRecipients)
-          : current.testRecipients;
-      approvers[TEST_RECIPIENTS_KEY].forEach((id) => allIds.add(id));
       if (allIds.size) {
         const found = await this.prisma.user.count({
           where: { id: { in: [...allIds] } },
@@ -282,10 +241,7 @@ export class NewProductPriceConfigService {
       where: { id: CONFIG_ID },
       create: {
         id: CONFIG_ID,
-        approvers: (data.approvers as any) ?? {
-          ...current.approvers,
-          [TEST_RECIPIENTS_KEY]: current.testRecipients,
-        },
+        approvers: (data.approvers as any) ?? current.approvers,
         priceTargets: (data.priceTargets as any) ?? current.priceTargets,
         costBranches: (data.costBranches as any) ?? current.costBranches,
         larkChatId:

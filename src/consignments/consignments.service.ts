@@ -88,6 +88,7 @@ export class ConsignmentsService {
             discount,
             discountRatio,
             totalPrice,
+            lineVatRate: Number(item.lineVatRate ?? 0),
             note: item.note || null,
           };
         }),
@@ -307,6 +308,7 @@ export class ConsignmentsService {
               discount,
               discountRatio,
               totalPrice,
+              lineVatRate: Number(item.lineVatRate ?? 0),
               note: item.note || null,
             };
           }),

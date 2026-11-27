@@ -440,7 +440,11 @@ export class PriceChangeService {
       `Tạo phiếu thay đổi giá ${ticket!.code} (${built.length} sản phẩm)`,
     );
     if (dto.submit)
-      this.notify.send('TO_KTT', ticket!.id, { actorId: user.id });
+      this.notify.send('TO_KTT', ticket!.id, {
+        actorId: user.id,
+        decidedByName: user.name,
+        decidedByRole: 'Người đề xuất',
+      });
     return this.findOne(ticket!.id, user);
   }
 
@@ -652,7 +656,11 @@ export class PriceChangeService {
       'price_change.submit',
       `Gửi duyệt phiếu thay đổi giá ${ticket.code}`,
     );
-    this.notify.send('TO_KTT', id, { actorId: user.id });
+    this.notify.send('TO_KTT', id, {
+      actorId: user.id,
+      decidedByName: user.name,
+      decidedByRole: 'Người đề xuất',
+    });
     return this.findOne(id, user);
   }
 
@@ -708,6 +716,8 @@ export class PriceChangeService {
       );
       this.notify.send(toStage === PC_STAGE.CEO ? 'TO_CEO' : 'TO_DATA', id, {
         actorId: user.id,
+        decidedByName: user.name,
+        decidedByRole: roleLabel,
       });
       return this.findOne(id, user);
     }
@@ -779,7 +789,12 @@ export class PriceChangeService {
       'price_change.send_back',
       `Trả về phiếu thay đổi giá ${ticket.code}: ${note}`,
     );
-    this.notify.send('SENT_BACK', id, { actorId: user.id, reason: note });
+    this.notify.send('SENT_BACK', id, {
+      actorId: user.id,
+      reason: note,
+      decidedByName: user.name,
+      decidedByRole: 'Phòng Dữ Liệu',
+    });
     return this.findOne(id, user);
   }
 
@@ -835,12 +850,7 @@ export class PriceChangeService {
 
   async getConfigView() {
     const cfg = await this.pcConfig.get();
-    const ids = [
-      ...new Set([
-        ...PC_GROUPS.flatMap((g) => cfg.approvers[g]),
-        ...cfg.testRecipients,
-      ]),
-    ];
+    const ids = [...new Set(PC_GROUPS.flatMap((g) => cfg.approvers[g]))];
     const users = ids.length
       ? await this.prisma.user.findMany({
           where: { id: { in: ids } },

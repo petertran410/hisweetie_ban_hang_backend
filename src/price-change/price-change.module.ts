@@ -10,7 +10,7 @@ import { PriceChangeConfigService } from './price-change-config.service';
 import { PriceChangeReferenceService } from './price-change-reference.service';
 import { PriceChangeNotifyService } from './price-change-notify.service';
 import { PriceChangeApplyService } from './price-change-apply.service';
-import { PriceChangeImportService } from './price-change-import.service';
+import { PriceChangeReminderCron } from './price-change-reminder.cron';
 
 @Module({
   imports: [
@@ -27,7 +27,7 @@ import { PriceChangeImportService } from './price-change-import.service';
     PriceChangeReferenceService,
     PriceChangeNotifyService,
     PriceChangeApplyService,
-    PriceChangeImportService,
+    PriceChangeReminderCron,
   ],
 })
 export class PriceChangeModule {}

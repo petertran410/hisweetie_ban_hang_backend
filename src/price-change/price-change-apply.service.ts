@@ -520,7 +520,11 @@ export class PriceChangeApplyService {
       'price_change.apply',
       `Áp dụng phiếu thay đổi giá ${ticket.code} (${applied.length} sản phẩm)`,
     );
-    this.notify.send('APPLIED', id, { actorId: user.id });
+    this.notify.send('APPLIED', id, {
+      actorId: user.id,
+      decidedByName: user.name,
+      decidedByRole: 'Phòng Dữ Liệu',
+    });
     return this.service.findOne(id, user);
   }
 }

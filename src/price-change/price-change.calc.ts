@@ -64,3 +64,10 @@ export function summarizeItems(items: ItemLike[]): TicketSummary {
   }
   return out;
 }
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Số ngày tròn từ `from` tới `now` (≥ 0) — số ngày phiếu đã chờ ở bước hiện tại. */
+export function daysSince(from: Date, now: Date = new Date()): number {
+  return Math.max(0, Math.floor((now.getTime() - from.getTime()) / DAY_MS));
+}

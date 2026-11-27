@@ -15,19 +15,18 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
-import { PERM } from './price-change.constants';
+import { PERM, PcStage, REMINDER_STAGES } from './price-change.constants';
 import { PcUser, PriceChangeService } from './price-change.service';
 import { PriceChangeApplyService } from './price-change-apply.service';
-import { PriceChangeImportService } from './price-change-import.service';
 import { PriceChangeConfigService } from './price-change-config.service';
 import { PriceChangeReferenceService } from './price-change-reference.service';
+import { PriceChangeReminderCron } from './price-change-reminder.cron';
 import {
   CreatePcDto,
   PcCommentDto,
   PcConfigDto,
   PcCurrentValuesDto,
   PcDecisionDto,
-  PcLarkImportDto,
   PcQueryDto,
   PcReasonDto,
   UpdatePcDto,
@@ -41,9 +40,9 @@ export class PriceChangeController {
   constructor(
     private readonly service: PriceChangeService,
     private readonly applyService: PriceChangeApplyService,
-    private readonly importService: PriceChangeImportService,
     private readonly configService: PriceChangeConfigService,
     private readonly reference: PriceChangeReferenceService,
+    private readonly reminders: PriceChangeReminderCron,
   ) {}
 
   @Get()
@@ -84,7 +83,7 @@ export class PriceChangeController {
 
   @Get('config')
   @RequirePermissions(PERM.VIEW)
-  @ApiOperation({ summary: 'Cấu hình người duyệt & gửi thử' })
+  @ApiOperation({ summary: 'Cấu hình người duyệt từng bước' })
   getConfig() {
     return this.service.getConfigView();
   }
@@ -96,11 +95,18 @@ export class PriceChangeController {
     return this.service.getConfigView();
   }
 
-  @Post('import/lark')
-  @RequirePermissions(PERM.IMPORT)
-  @ApiOperation({ summary: 'Nhập phiếu từ Lark Base (dryRun mặc định true)' })
-  importLark(@Body() dto: PcLarkImportDto, @CurrentUser() user: PcUser) {
-    return this.importService.run(dto, user);
+  @Post('reminders/run')
+  @RequirePermissions(PERM.CONFIG)
+  @ApiOperation({
+    summary: 'Gửi nhắc việc ngay (kể cả khi đang tắt nhắc việc)',
+  })
+  runReminders(@Query('stage') stage?: string) {
+    if (stage && !REMINDER_STAGES.includes(stage as PcStage))
+      throw new BadRequestException('Bước nhắc việc không hợp lệ');
+    return this.reminders.runStages(
+      stage ? [stage as PcStage] : REMINDER_STAGES,
+      true,
+    );
   }
 
   @Get('by-code/:code')
