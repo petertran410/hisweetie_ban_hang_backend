@@ -693,6 +693,7 @@ describe('SmaxChatService', () => {
           ? [
               { id: 77, code: 'KH005844', name: 'Mr Vũ' },
               { id: 99, code: 'KH000999', name: 'Khách cũ' },
+              { id: 95, code: 'KH003326', name: 'Khách buôn Ms. Thảo - Thanh Hóa (Sale 1 - A1)' },
             ]
           : where.name?.contains
             ? [
@@ -728,6 +729,11 @@ describe('SmaxChatService', () => {
         // nhóm nhà cung cấp / nội bộ có tin báo đơn của khách
         { pagePid: PAGE, tid: 'zlw5650000001', text: report('BD5', 'HD5', 'Ms Hải Anh - Biên Hòa (Sale 4)') },
         { pagePid: PAGE, tid: 'zlw5660000001', text: report('BD6', 'HD6', 'Mr. Hải Setup - Gò Vấp (Sale 1)') },
+        // báo đơn của cặp mã A1/A2 cùng khách (KH… và KH….1)
+        { pagePid: PAGE, tid: 'zlw5670000001', text: report('BD7', 'HD7', 'Khách buôn Ms. Thảo - Thanh Hóa (Sale 1 - A1)') },
+        { pagePid: PAGE, tid: 'zlw5670000001', text: report('BD8', 'HD8', 'Khách buôn Ms. Thảo - Thanh Hóa (Sale 2 - A2)') },
+        { pagePid: PAGE, tid: 'zlw5680000001', text: report('BD9', 'HD9', 'Khách buôn Ms Trang - Q6 (Sale 1 - A1)') },
+        { pagePid: PAGE, tid: 'zlw5680000001', text: report('BD10', 'HD10', 'Khách buôn Ms Trang - Q6 (Sale 2 - A2)') },
       ]),
     };
     prisma.invoice.findMany = jest.fn().mockResolvedValue([
@@ -737,6 +743,10 @@ describe('SmaxChatService', () => {
       { code: 'HD3', customer: { id: 92, code: 'KH92', name: 'Chị Lan Hai' } },
       { code: 'HD5', customer: { id: 93, code: 'KH93', name: 'Ms Hải Anh - Biên Hòa (Sale 4)' } },
       { code: 'HD6', customer: { id: 94, code: 'KH94', name: 'Mr. Hải Setup - Gò Vấp (Sale 1)' } },
+      { code: 'HD7', customer: { id: 95, code: 'KH003326', name: 'Khách buôn Ms. Thảo - Thanh Hóa (Sale 1 - A1)' } },
+      { code: 'HD8', customer: { id: 96, code: 'KH003326.1', name: 'Khách buôn Ms. Thảo - Thanh Hóa (Sale 2 - A2)' } },
+      { code: 'HD9', customer: { id: 97, code: 'KH001395', name: 'Khách buôn Ms Trang - Q6 (Sale 1 - A1)' } },
+      { code: 'HD10', customer: { id: 98, code: 'KH001395.1', name: 'Khách buôn Ms Trang - Q6 (Sale 2 - A2)' } },
     ]);
     // zlw557 đã tự gắn trước đây (nhân viên đã gỡ) → không gắn lại
     prisma.auditLog.findMany = jest.fn(({ where }) =>
@@ -760,6 +770,9 @@ describe('SmaxChatService', () => {
       t('zlw5640000001', 'Ngân B', true), // tên trong báo đơn lệch
       t('zlw5650000001', 'NCC- HI SWEETIE VIỆT NAM', true), // không có từ chung với tên khách
       t('zlw5660000001', 'Mr Hải Lê Setup x LerMao (nhóm nội bộ)', true), // nhóm nội bộ
+      t('zlw5670000001', 'KH003326 KB Ms. Thảo - Thanh Hóa - Diệp Trà', true), // mã trong tên + báo đơn cặp A1/A2
+      t('zlw5680000001', 'Diệp Trà - KB Ms Trang Q6', true), // báo đơn cặp A1/A2 → gắn cả 2
+      t('zlw5690000001', 'KH005844 ANH VŨ - DIỆP TRÀ (NỘI BỘ)', true), // mã khách nhưng nhóm nội bộ
     ]);
 
     const { items } = await service.recentChats(1);
@@ -779,16 +792,26 @@ describe('SmaxChatService', () => {
       [null, null],
       [null, null],
       [null, null],
+      ['linked', 95],
+      ['linked', 97],
+      ['byCode', 77], // nội bộ: chỉ gợi ý theo mã, không tự gắn
     ]);
+    // nhóm gắn cả cặp A1/A2
+    expect(items[14].match?.customers?.map((c: { id: number }) => c.id)).toEqual([95, 96]);
+    expect(items[15].match?.customers?.map((c: { id: number }) => c.id)).toEqual([97, 98]);
     expect(prisma.customerZaloContact.create.mock.calls.map((c: any[]) => [c[0].data.customerId, c[0].data.zaloId])).toEqual([
       [77, '3102735962735863553'],
       [81, '5540000001'],
       [83, '5580000001'],
       [84, '5590000001'],
       [88, '5610000001'],
+      [95, '5670000001'], // mã trong tên → trước các lần gắn theo báo đơn
       [89, '5620000001'],
+      [96, '5670000001'],
+      [97, '5680000001'],
+      [98, '5680000001'],
     ]);
-    expect(audit.create.mock.calls.filter((c: any[]) => c[0].actionCode === 'SMAX_AUTO_LINK')).toHaveLength(6);
+    expect(audit.create.mock.calls.filter((c: any[]) => c[0].actionCode === 'SMAX_AUTO_LINK')).toHaveLength(10);
   });
 
   it('recentChats: cảnh báo khách chờ quá 30 phút giờ làm; nhóm kiểm người gửi tin cuối (nền)', async () => {

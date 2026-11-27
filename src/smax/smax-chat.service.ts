@@ -1878,11 +1878,13 @@ export class SmaxChatService {
 
   /**
    * Khách theo tin "Báo đơn BD… / Hoá đơn: HD… / Khách hàng: …" trong hội thoại (kho tin DB): khách của hoá
-   * đơn, tên khách trong tin phải trùng tên khách POS. Mọi tin báo đơn của hội thoại phải cùng 1 khách (vd
-   * nhóm nội bộ nhận báo đơn nhiều khách) — không thì null (không gắn). Không có tin báo đơn → không có mục.
+   * đơn, tên khách trong tin phải trùng tên khách POS. Mọi tin báo đơn của hội thoại phải cùng 1 khách, hoặc
+   * cặp mã A1/A2 của cùng khách (KH… và KH….1) → trả cả cặp; khác khách (vd nhóm nội bộ nhận báo đơn nhiều
+   * khách) → null (không gắn). Không có tin báo đơn → không có mục.
    */
   private async reportedCustomers(threads: SmaxRecentThread[]) {
-    const out = new Map<string, { customer: { id: number; code: string | null; name: string }; invoice: string } | null>();
+    type Reported = { customer: { id: number; code: string | null; name: string }; invoice: string };
+    const out = new Map<string, Reported[] | null>();
     if (!threads.length) return out;
     const rows = await this.prisma.smaxMessage.findMany({
       where: {
@@ -1904,15 +1906,19 @@ export class SmaxChatService {
       select: { code: true, customer: { select: { id: true, code: true, name: true } } },
     });
     const byCode = new Map(invoices.map((i) => [i.code, i.customer]));
+    // Mã khách bỏ hậu tố ".1" / ".01": KH003326 và KH003326.1 là cặp A1/A2 của cùng khách
+    const base = (c: { id: number; code: string | null }) => c.code?.replace(/\.\d+$/, '') ?? `#${c.id}`;
     for (const r of reports) {
-      if (out.get(r.key) === null) continue;
-      const customer = byCode.get(r.invoice);
       const prev = out.get(r.key);
+      if (prev === null) continue;
+      const customer = byCode.get(r.invoice);
       const ok =
         !!customer &&
         normName(customer.name).toLowerCase() === r.name &&
-        (!prev || prev.customer.id === customer.id);
-      out.set(r.key, ok ? (prev ?? { customer: customer, invoice: r.invoice }) : null);
+        (!prev || base(prev[0].customer) === base(customer));
+      if (!ok) out.set(r.key, null);
+      else if (!prev) out.set(r.key, [{ customer, invoice: r.invoice }]);
+      else if (!prev.some((p) => p.customer.id === customer.id)) prev.push({ customer, invoice: r.invoice });
     }
     return out;
   }
@@ -1920,15 +1926,18 @@ export class SmaxChatService {
   /**
    * Tự gắn hội thoại chưa gắn với khách POS khi chắc chắn: tên chứa đúng 1 mã khách có thật, hoặc tên
    * (nhóm / cá nhân, bỏ "Diệp Trà - " đầu / " - Diệp Trà" cuối) trùng khít tên đúng 1 khách đang hoạt
-   * động (tên khách được bỏ nhãn "(Sale N)" cuối). Chat cá nhân chỉ gắn khi khách chưa có ID cùng loại
+   * động (tên khách được bỏ nhãn "(Sale N)" cuối), hoặc tin báo đơn (cả cặp mã A1/A2). Nhóm "nội bộ" không
+   * tự gắn theo luật nào. Chat cá nhân chỉ gắn khi khách chưa có ID cùng loại
    * (không thay ID đã gắn) và không có hội thoại cá nhân khác cùng khớp khách đó. Mỗi hội thoại chỉ tự
    * gắn 1 lần (audit SMAX_AUTO_LINK) → nhân viên gỡ thì không gắn lại. Lỗi bỏ qua, không chặn danh sách.
    */
   private async autoLink(
     actorId: number,
-    threads: SmaxRecentThread[],
+    open: SmaxRecentThread[],
     byCode: { id: number; code: string | null; name: string }[],
   ) {
+    // Nhóm nội bộ (vd "… (NỘI BỘ)") có tên / mã / báo đơn của khách nhưng không phải hội thoại với khách
+    const threads = open.filter((t) => !/\bnoi bo\b/.test(foldVi(t.name)));
     const done: {
       id: number;
       kind: string;
@@ -1980,15 +1989,19 @@ export class SmaxChatService {
       const reported = await this.reportedCustomers(threads);
       picks = picks.filter((p) => {
         const r = reported.get(`${p.t.pagePid}:${p.t.tid}`);
-        return r === undefined || r?.customer.id === p.customer.id;
+        return r === undefined || !!r?.some((x) => x.customer.id === p.customer.id);
       });
       for (const t of threads) {
         const r = reported.get(`${t.pagePid}:${t.tid}`);
-        if (!r || picks.some((p) => p.t === t)) continue;
-        // Nhóm nội bộ / nhà cung cấp cũng có tin báo đơn → tên nhóm phải có từ riêng chung với tên khách
-        const words = nameWords(r.customer.name);
-        if (/\bnoi bo\b/.test(foldVi(t.name)) || ![...nameWords(t.name)].some((w) => words.has(w))) continue;
-        picks.push({ t, customer: r.customer, reason: `báo đơn hoá đơn ${r.invoice}` });
+        if (!r) continue;
+        const mine = picks.filter((p) => p.t === t);
+        // Chưa khớp tên / mã: nhóm nhà cung cấp cũng có tin báo đơn → tên nhóm phải có từ riêng chung với tên khách
+        const words = nameWords(r[0].customer.name);
+        if (!mine.length && ![...nameWords(t.name)].some((w) => words.has(w))) continue;
+        // Cặp mã A1/A2 cùng khách → gắn cả hai
+        for (const { customer, invoice } of r)
+          if (!mine.some((p) => p.customer.id === customer.id))
+            picks.push({ t, customer, reason: `báo đơn hoá đơn ${invoice}` });
       }
       if (!picks.length) return done;
       // Đã tự gắn trước đây (có thể nhân viên đã gỡ) → không gắn lại
