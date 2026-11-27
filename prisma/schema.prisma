@@ -6546,3 +6546,261 @@ model SmaxMessage {
   @@index([createdAt])
   @@map("smax_messages")
 }
+
+/// Bảng giá sản phẩm mới (chuyển từ Lark Base). Đề xuất → Phòng Thu Mua → Phòng Kế Toán →
+/// Phòng Kinh Doanh → CEO → Phòng Dữ Liệu → Hoàn thành (| Đã kết thúc). Cột "trước VAT",
+/// lợi nhuận, tỷ suất, Giá hàng VNĐ, leadtime KHÔNG lưu — tính trong new-product-price.calc.ts.
+model NewProductPriceTicket {
+  id                       Int       @id @default(autoincrement())
+  code                     String    @unique // SPM000001
+  sourceRecordId           String?   @unique @map("source_record_id") // recXXX Lark
+  lastImportedAt           DateTime? @map("last_imported_at")
+  importNotes              Json?     @map("import_notes") // giá trị Lark chưa khớp dữ liệu gốc POS
+
+  stage                    String    @default("PROPOSAL") // PROPOSAL|PURCHASING|ACCOUNTING|SALES|CEO|DATA|DONE|ENDED
+  status                   String    @default("UNDER_REVIEW") // UNDER_REVIEW|APPROVED|REJECTED
+  stageEnteredAt           DateTime  @default(now()) @map("stage_entered_at")
+
+  // Đề xuất
+  productName              String    @map("product_name")
+  parentName               String?   @map("parent_name") // Loại hàng (Category type=parent)
+  childName                String?   @map("child_name") // Danh mục hàng (type=child)
+  middleName               String?   @map("middle_name") // Nguồn gốc hàng (type=middle)
+  tradeMarkId              Int?      @map("trade_mark_id")
+  tradeMarkName            String?   @map("trade_mark_name")
+  unit                     String?
+  netWeightGram            Decimal?  @map("net_weight_gram") @db.Decimal(18, 2)
+  description              String?
+  uspUrl                   String?   @map("usp_url")
+  usageUrl                 String?   @map("usage_url")
+  rdUpdatedAt              DateTime? @map("rd_updated_at")
+  costApproverId           Int?      @map("cost_approver_id") // Người Duyệt Giá Cost
+  costApproverName         String?   @map("cost_approver_name")
+
+  // Phòng Thu Mua
+  supplierFactory          String?   @map("supplier_factory") // chữ tự do nhập từ Lark (cũ)
+  supplierId               Int?      @map("supplier_id") // NCC (suppliers.id)
+  supplierName             String?   @map("supplier_name")
+  factoryId                Int?      @map("factory_id") // Nhà máy (factories.id)
+  factoryName              String?   @map("factory_name")
+  moqCartons               Decimal?  @map("moq_cartons") @db.Decimal(18, 2)
+  deliveryTerms            String?   @map("delivery_terms")
+  importName               String?   @map("import_name")
+  arrivalDate              DateTime? @map("arrival_date")
+  launchDate               DateTime? @map("launch_date")
+  publicationInfo          String?   @map("publication_info")
+  estimatedPublicationCost Decimal?  @map("estimated_publication_cost") @db.Decimal(18, 2)
+  packingSpec              Decimal?  @map("packing_spec") @db.Decimal(18, 2)
+  goodsPrice               Decimal?  @map("goods_price") @db.Decimal(18, 2)
+  exchangeRate             Decimal?  @map("exchange_rate") @db.Decimal(18, 4)
+  vatTax                   Decimal?  @map("vat_tax") @db.Decimal(18, 2)
+  importTax                Decimal?  @map("import_tax") @db.Decimal(18, 2)
+  overheadCost             Decimal?  @map("overhead_cost") @db.Decimal(18, 2)
+  costHn                   Decimal?  @map("cost_hn") @db.Decimal(18, 2)
+  costSg                   Decimal?  @map("cost_sg") @db.Decimal(18, 2)
+
+  // Phòng Kế Toán
+  misaCode                 String?   @map("misa_code")
+  cogsHn                   Decimal?  @map("cogs_hn") @db.Decimal(18, 2)
+  cogsSg                   Decimal?  @map("cogs_sg") @db.Decimal(18, 2)
+  cogsDt                   Decimal?  @map("cogs_dt") @db.Decimal(18, 2) // Giá vốn CH Diệp Trà
+  sendToChiefAccountant    Boolean   @default(false) @map("send_to_chief_accountant")
+  chiefAccountantDecision  String?   @map("chief_accountant_decision") // APPROVED|REJECTED
+  chiefAccountantById      Int?      @map("chief_accountant_by_id")
+  chiefAccountantByName    String?   @map("chief_accountant_by_name")
+  chiefAccountantAt        DateTime? @map("chief_accountant_at")
+  chiefAccountantNote      String?   @map("chief_accountant_note")
+
+  // Phòng Kinh Doanh
+  priceHnRetail            Decimal?  @map("price_hn_retail") @db.Decimal(18, 2)
+  priceHnWholesale         Decimal?  @map("price_hn_wholesale") @db.Decimal(18, 2)
+  priceSgRetail            Decimal?  @map("price_sg_retail") @db.Decimal(18, 2)
+  priceSgWholesale         Decimal?  @map("price_sg_wholesale") @db.Decimal(18, 2)
+  priceDlcl                Decimal?  @map("price_dlcl") @db.Decimal(18, 2)
+  priceShopee              Decimal?  @map("price_shopee") @db.Decimal(18, 2)
+  priceOem                 Decimal?  @map("price_oem") @db.Decimal(18, 2)
+  oemPriceBookId           Int?      @map("oem_price_book_id")
+  oemPriceBookName         String?   @map("oem_price_book_name")
+  oemCustomers             Json?     @map("oem_customers") // [{customerId, code, name}]
+  salesDecidedAt           DateTime? @map("sales_decided_at")
+
+  // CEO
+  ceoDecision              String?   @map("ceo_decision") // APPROVED|REJECTED
+  ceoById                  Int?      @map("ceo_by_id")
+  ceoByName                String?   @map("ceo_by_name")
+  ceoAt                    DateTime? @map("ceo_at")
+  ceoNote                  String?   @map("ceo_note")
+
+  // Phòng Dữ Liệu — áp dụng tạo sản phẩm
+  productId                Int?      @map("product_id")
+  productCode              String?   @map("product_code")
+  applyResult              Json?     @map("apply_result")
+  appliedAt                DateTime? @map("applied_at")
+  appliedById              Int?      @map("applied_by_id")
+  appliedByName            String?   @map("applied_by_name")
+
+  note                     String?
+  images                   Json? // [{url, originalName, mimetype, size, isPrimary, larkFileToken}]
+  documents                Json? // [{url, originalName, mimetype, size, larkFileToken}]
+
+  doneAt                   DateTime? @map("done_at")
+  endedAt                  DateTime? @map("ended_at")
+  endReason                String?   @map("end_reason")
+  createdById              Int?      @map("created_by_id") // Người Đề Xuất
+  createdByName            String?   @map("created_by_name")
+  updatedById              Int?      @map("updated_by_id")
+  updatedByName            String?   @map("updated_by_name")
+  createdAt                DateTime  @default(now()) @map("created_at")
+  updatedAt                DateTime  @updatedAt @map("updated_at")
+
+  events                   NewProductPriceEvent[]
+
+  @@index([stage, status])
+  @@index([createdById])
+  @@index([createdAt])
+  @@index([productId])
+  @@map("new_product_price_tickets")
+}
+
+/// Lịch sử + bình luận + kết quả gửi tin của phiếu bảng giá sản phẩm mới.
+/// type: CREATED|UPDATED|STAGE_COMPLETED|SENT_BACK|KTT_SENT|KTT_DECIDED|CEO_DECIDED|APPLIED|ENDED|COMMENT|IMPORTED|NOTIFY
+model NewProductPriceEvent {
+  id        Int      @id @default(autoincrement())
+  ticketId  Int      @map("ticket_id")
+  type      String   @db.VarChar(32)
+  fromStage String?  @map("from_stage")
+  toStage   String?  @map("to_stage")
+  content   String?
+  data      Json?
+  actorId   Int?     @map("actor_id")
+  actorName String?  @map("actor_name")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  ticket    NewProductPriceTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId, createdAt])
+  @@map("new_product_price_events")
+}
+
+/// Cấu hình 1 dòng (id=1): người duyệt theo nhóm + đích áp dụng giá bán / giá vốn.
+model NewProductPriceConfig {
+  id               Int      @id @default(1)
+  approvers        Json     @default("{}") // {PURCHASING:[userId],ACCOUNTING:[],CHIEF_ACCOUNTANT:[],SALES:[],CEO:[],DATA:[]}
+  priceTargets     Json     @default("{}") @map("price_targets") // {HN_RETAIL:"BASE_PRICE"|priceBookId,...}
+  costBranches     Json     @default("{}") @map("cost_branches") // {HN:[branchId],SG:[],DT:[]}
+  larkChatId       String?  @map("lark_chat_id")
+  remindersEnabled Boolean  @default(true) @map("reminders_enabled")
+  updatedById      Int?     @map("updated_by_id")
+  updatedByName    String?  @map("updated_by_name")
+  updatedAt        DateTime @updatedAt @map("updated_at")
+
+  @@map("new_product_price_configs")
+}
+
+/// Phiếu thay đổi giá sản phẩm (luồng Lark "Thay Đổi Giá Sản Phẩm").
+/// Chỉ giá bán: PROPOSAL → CHIEF_ACCOUNTANT → DATA → DONE; có giá vốn: thêm bước CEO trước DATA.
+model PriceChangeTicket {
+  id             Int       @id @default(autoincrement())
+  code           String    @unique // TDG000001
+  sourceRecordId String?   @unique @map("source_record_id") // recXXX Lark
+  lastImportedAt DateTime? @map("last_imported_at")
+  importNotes    Json?     @map("import_notes") // giá trị Lark chưa khớp dữ liệu gốc POS
+
+  stage          String    @default("PROPOSAL") // PROPOSAL|CHIEF_ACCOUNTANT|CEO|DATA|DONE|ENDED
+  status         String    @default("UNDER_REVIEW") // UNDER_REVIEW|APPROVED|REJECTED
+  stageEnteredAt DateTime  @default(now()) @map("stage_entered_at")
+
+  hasCost        Boolean   @default(false) @map("has_cost") // có đổi giá vốn → cần CEO duyệt
+  hasSale        Boolean   @default(false) @map("has_sale")
+  costBranchIds  Json      @default("[]") @map("cost_branch_ids") // [branchId] — cột giá vốn
+  priceBookIds   Json      @default("[]") @map("price_book_ids") // [priceBookId], 0 = Bảng giá chung (product.basePrice)
+
+  kttDecision    String?   @map("ktt_decision") // APPROVED|REJECTED
+  kttById        Int?      @map("ktt_by_id")
+  kttByName      String?   @map("ktt_by_name")
+  kttAt          DateTime? @map("ktt_at")
+  kttNote        String?   @map("ktt_note")
+
+  ceoDecision    String?   @map("ceo_decision") // APPROVED|REJECTED
+  ceoById        Int?      @map("ceo_by_id")
+  ceoByName      String?   @map("ceo_by_name")
+  ceoAt          DateTime? @map("ceo_at")
+  ceoNote        String?   @map("ceo_note")
+
+  applyStartedAt DateTime? @map("apply_started_at") // khóa chống áp dụng 2 lần
+  applyResult    Json?     @map("apply_result")
+  appliedAt      DateTime? @map("applied_at")
+  appliedById    Int?      @map("applied_by_id")
+  appliedByName  String?   @map("applied_by_name")
+
+  note           String?
+  documents      Json? // [{url, originalName, mimetype, size, larkFileToken}]
+
+  doneAt         DateTime? @map("done_at")
+  endedAt        DateTime? @map("ended_at")
+  endReason      String?   @map("end_reason")
+  createdById    Int?      @map("created_by_id") // Người đề xuất
+  createdByName  String?   @map("created_by_name")
+  updatedById    Int?      @map("updated_by_id")
+  updatedByName  String?   @map("updated_by_name")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  items          PriceChangeItem[]
+  events         PriceChangeEvent[]
+
+  @@index([stage, status])
+  @@index([createdById])
+  @@index([createdAt])
+  @@map("price_change_tickets")
+}
+
+/// Một sản phẩm trong phiếu thay đổi giá. Giá cũ chụp từ POS lúc lưu phiếu; newX null = không đổi.
+model PriceChangeItem {
+  id          Int     @id @default(autoincrement())
+  ticketId    Int     @map("ticket_id")
+  sort        Int     @default(0)
+  productId   Int?    @map("product_id") // null: bản ghi Lark chưa khớp mã hàng POS
+  productCode String  @map("product_code")
+  productName String  @map("product_name")
+  costs       Json    @default("[]") // [{branchId, branchName, oldCost, newCost}]
+  prices      Json    @default("[]") // [{priceBookId, priceBookName, oldPrice, newPrice}]
+
+  ticket      PriceChangeTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId, sort])
+  @@index([productId])
+  @@map("price_change_items")
+}
+
+/// Lịch sử + bình luận + kết quả gửi tin của phiếu thay đổi giá.
+/// type: CREATED|UPDATED|SUBMITTED|KTT_DECIDED|CEO_DECIDED|SENT_BACK|APPLIED|ENDED|COMMENT|IMPORTED|NOTIFY
+model PriceChangeEvent {
+  id        Int      @id @default(autoincrement())
+  ticketId  Int      @map("ticket_id")
+  type      String   @db.VarChar(32)
+  fromStage String?  @map("from_stage")
+  toStage   String?  @map("to_stage")
+  content   String?
+  data      Json?
+  actorId   Int?     @map("actor_id")
+  actorName String?  @map("actor_name")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  ticket    PriceChangeTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId, createdAt])
+  @@map("price_change_events")
+}
+
+/// Cấu hình 1 dòng (id=1): người duyệt theo nhóm + gửi thử.
+model PriceChangeConfig {
+  id             Int      @id @default(1)
+  approvers      Json     @default("{}") // {CHIEF_ACCOUNTANT:[userId], CEO:[], DATA:[]}
+  testRecipients Json     @default("[]") @map("test_recipients") // khác rỗng → mọi thông báo chỉ gửi tới những user này
+  updatedById    Int?     @map("updated_by_id")
+  updatedByName  String?  @map("updated_by_name")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@map("price_change_configs")
+}

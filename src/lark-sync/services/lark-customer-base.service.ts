@@ -207,6 +207,7 @@ export class LarkCustomerBaseService {
   /**
    * Lấy tất cả records từ Lark (có phân trang) — dùng cho full sync.
    * Trả về Map<fieldValue, recordId> theo fieldNames[0].
+   * Throw nếu bất kỳ trang nào lỗi (không trả kết quả thiếu).
    */
   async fetchAllRecords(
     tableId: string,
@@ -227,6 +228,14 @@ export class LarkCustomerBaseService {
           },
         });
 
+        if (res?.code && res.code !== 0) {
+          const err: any = new Error(
+            res.msg || `Lark API error code: ${res.code}`,
+          );
+          err.code = res.code;
+          throw err;
+        }
+
         const items = res?.data?.items || [];
         for (const item of items) {
           const raw = item.fields?.[fieldNames[0]];
@@ -240,8 +249,10 @@ export class LarkCustomerBaseService {
         hasMore = res?.data?.has_more || false;
         pageToken = res?.data?.page_token;
       } catch (error: any) {
+        // Không trả danh sách thiếu: caller sẽ coi mã không thấy là "mới" và
+        // tạo trùng record đang có trên Lark.
         this.logger.error(`Fetch all records failed: ${error.message}`);
-        break;
+        throw error;
       }
     }
 
