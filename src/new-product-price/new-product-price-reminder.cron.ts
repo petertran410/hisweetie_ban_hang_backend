@@ -114,35 +114,23 @@ export class NewProductPriceReminderCron {
     }
 
     let recipients = 0;
-    if (cfg.testRecipients.length) {
-      // Gửi thử: 1 tin cho cả bước, chỉ tới danh sách gửi thử.
+    if (members.length) {
       const sent = await this.notify.sendReminder(
         stage,
-        [...members, ...byApprover.keys()],
+        members,
         tickets.map(item),
         dateKey,
-        cfg.testRecipients,
       );
       recipients += sent.length;
-    } else {
-      if (members.length) {
-        const sent = await this.notify.sendReminder(
-          stage,
-          members,
-          tickets.map(item),
-          dateKey,
-        );
-        recipients += sent.length;
-      }
-      for (const [userId, list] of byApprover) {
-        const sent = await this.notify.sendReminder(
-          stage,
-          [userId],
-          list.map(item),
-          dateKey,
-        );
-        recipients += sent.length;
-      }
+    }
+    for (const [userId, list] of byApprover) {
+      const sent = await this.notify.sendReminder(
+        stage,
+        [userId],
+        list.map(item),
+        dateKey,
+      );
+      recipients += sent.length;
     }
 
     this.logger.log(

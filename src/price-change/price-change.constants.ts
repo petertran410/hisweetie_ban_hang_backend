@@ -56,6 +56,13 @@ export const STAGE_GROUP: Partial<Record<PcStage, PcGroup>> = {
   DATA: PC_GROUP.DATA,
 };
 
+/** Bước được nhắc việc hằng ngày (Đề xuất do người tạo tự xử lý — không nhắc). */
+export const REMINDER_STAGES: PcStage[] = [
+  PC_STAGE.CHIEF_ACCOUNTANT,
+  PC_STAGE.CEO,
+  PC_STAGE.DATA,
+];
+
 export const PC_EVENT = {
   CREATED: 'CREATED',
   UPDATED: 'UPDATED',
@@ -66,7 +73,6 @@ export const PC_EVENT = {
   APPLIED: 'APPLIED',
   ENDED: 'ENDED',
   COMMENT: 'COMMENT',
-  IMPORTED: 'IMPORTED',
   NOTIFY: 'NOTIFY',
 } as const;
 
@@ -96,7 +102,6 @@ export const PERM = {
   VIEW: 'price_change:view',
   CREATE: 'price_change:create',
   CONFIG: 'price_change:config',
-  IMPORT: 'price_change:import',
 } as const;
 
 /** Một ô giá vốn của dòng sản phẩm. newCost null = không đổi. */

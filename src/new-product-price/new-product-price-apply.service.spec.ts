@@ -59,7 +59,6 @@ const config = {
     SHOPEE: null,
   },
   costBranches: { HN: [6], SG: [1], DT: [9] },
-  larkChatId: null,
   remindersEnabled: true,
   defaults: { priceTargets: [], costBranches: [] },
 };

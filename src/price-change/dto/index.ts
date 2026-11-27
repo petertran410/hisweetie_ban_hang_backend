@@ -137,20 +137,11 @@ export class PcConfigDto {
   /** {CHIEF_ACCOUNTANT:[userId], CEO:[], DATA:[]} */
   @IsOptional() @IsObject() approvers?: Record<string, number[]>;
 
-  /** Gửi thử: chỉ gửi mọi thông báo tới những user này ([] = gửi thật). */
-  @IsOptional() @IsArray() @IsInt({ each: true }) testRecipients?: number[];
-}
+  /** chat_id nhóm Lark dạng topic (oc_…); "" = tắt gửi nhóm. */
+  @IsOptional() @IsString() @MaxLength(100) larkChatId?: string;
 
-export class PcLarkImportDto {
-  /** true = chỉ xem trước, không ghi. */
-  @IsOptional() @IsBoolean() dryRun?: boolean;
-  /** Tải tài liệu đính kèm về máy chủ. */
-  @IsOptional() @IsBoolean() downloadMedia?: boolean;
-  /** Ghi đè cả phiếu đã sửa trên POS sau lần nhập trước. */
-  @IsOptional() @IsBoolean() force?: boolean;
-  @IsOptional() @IsString() baseToken?: string;
-  @IsOptional() @IsString() tableId?: string;
-  @IsOptional() @Type(() => Number) @IsInt() @Min(1) limit?: number;
+  /** Nhắc việc hằng ngày (17:00). */
+  @IsOptional() @IsBoolean() remindersEnabled?: boolean;
 }
 
 export class PcCurrentValuesDto {

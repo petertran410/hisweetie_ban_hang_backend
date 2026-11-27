@@ -12,7 +12,6 @@ import { NewProductPriceService } from './new-product-price.service';
 import { NewProductPriceConfigService } from './new-product-price-config.service';
 import { NewProductPriceNotifyService } from './new-product-price-notify.service';
 import { NewProductPriceApplyService } from './new-product-price-apply.service';
-import { NewProductPriceImportService } from './new-product-price-import.service';
 import { NewProductPriceReminderCron } from './new-product-price-reminder.cron';
 
 @Module({
@@ -32,7 +31,6 @@ import { NewProductPriceReminderCron } from './new-product-price-reminder.cron';
     NewProductPriceConfigService,
     NewProductPriceNotifyService,
     NewProductPriceApplyService,
-    NewProductPriceImportService,
     NewProductPriceReminderCron,
   ],
 })

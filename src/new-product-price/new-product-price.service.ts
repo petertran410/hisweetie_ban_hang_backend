@@ -1134,12 +1134,7 @@ export class NewProductPriceService {
 
   async getConfigView() {
     const cfg = await this.nppConfig.get();
-    const ids = [
-      ...new Set([
-        ...NPP_GROUPS.flatMap((g) => cfg.approvers[g]),
-        ...cfg.testRecipients,
-      ]),
-    ];
+    const ids = [...new Set(NPP_GROUPS.flatMap((g) => cfg.approvers[g]))];
     const users = ids.length
       ? await this.prisma.user.findMany({
           where: { id: { in: ids } },

@@ -2056,6 +2056,7 @@ model OrderItem {
   discount       Decimal    @default(0) @db.Decimal(18, 2)
   discountRatio  Decimal    @default(0) @db.Decimal(18, 4)
   totalPrice     Decimal    @default(0) @db.Decimal(18, 2)
+  lineVatRate    Decimal @default(0) @map("line_vat_rate") @db.Decimal(5, 2) // % GTGT chọn trên dòng POS (0|5) — chỉ để nhớ, giá đã gồm GTGT
   note           String?
   conditionType  String     @default("normal")
   serialNumbers  String?
@@ -2309,6 +2310,7 @@ model InvoiceDetail {
   discount           Decimal             @default(0)
   discountRatio      Decimal             @default(0)
   totalPrice         Decimal
+  lineVatRate        Decimal @default(0) @map("line_vat_rate") @db.Decimal(5, 2) // % GTGT chọn trên dòng POS (0|5) — chỉ để nhớ, giá đã gồm GTGT
   note               String?
   serialNumbers      String?
   createdAt          DateTime            @default(now())
@@ -3557,6 +3559,7 @@ model ConsignmentItem {
   discount      Decimal     @default(0) @db.Decimal(18, 2)
   discountRatio Decimal     @default(0) @db.Decimal(18, 4)
   totalPrice    Decimal     @default(0) @db.Decimal(18, 2)
+  lineVatRate   Decimal @default(0) @map("line_vat_rate") @db.Decimal(5, 2) // % GTGT chọn trên dòng POS (0|5) — chỉ để nhớ, giá đã gồm GTGT
   note          String?
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
@@ -6796,8 +6799,8 @@ model PriceChangeEvent {
 /// Cấu hình 1 dòng (id=1): người duyệt theo nhóm + gửi thử.
 model PriceChangeConfig {
   id             Int      @id @default(1)
-  approvers      Json     @default("{}") // {CHIEF_ACCOUNTANT:[userId], CEO:[], DATA:[]}
-  testRecipients Json     @default("[]") @map("test_recipients") // khác rỗng → mọi thông báo chỉ gửi tới những user này
+  approvers      Json     @default("{}") // {CHIEF_ACCOUNTANT:[userId], CEO:[], DATA:[], larkChatId?: "oc_…" (nhóm topic)}
+  testRecipients Json     @default("[]") @map("test_recipients") // không còn dùng (đã bỏ gửi thử)
   updatedById    Int?     @map("updated_by_id")
   updatedByName  String?  @map("updated_by_name")
   updatedAt      DateTime @updatedAt @map("updated_at")

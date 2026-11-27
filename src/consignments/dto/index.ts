@@ -75,6 +75,13 @@ export class ConsignmentItemDto {
   @IsOptional()
   discountRatio?: number;
 
+  // % GTGT chọn trên dòng POS (0 | 5). Chỉ để nhớ lựa chọn: unitPrice/discount
+  // FE gửi lên ĐÃ gồm GTGT, BE không tính lại.
+  @IsOptional()
+  @Type(() => Number)
+  @IsIn([0, 5])
+  lineVatRate?: number;
+
   @IsString()
   @IsOptional()
   note?: string;
@@ -345,6 +352,7 @@ export class CreateInvoiceFromConsignmentDto {
     discount: number;
     discountRatio: number;
     totalPrice: number;
+    lineVatRate?: number; // % GTGT dòng POS (0|5) — chỉ để nhớ, giá đã gồm GTGT
     note?: string;
     conditionType?: string;
   }[];

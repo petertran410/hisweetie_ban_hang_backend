@@ -8,6 +8,7 @@ import {
   IsObject,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
   Min,
   ValidateNested,
@@ -241,50 +242,17 @@ export class NppConfigDto {
   @IsObject()
   costBranches?: Record<string, number[]>;
 
+  /** Nhóm Lark dạng chủ đề: mỗi phiếu 1 chủ đề, mỗi bước tag người phụ trách. Trống = tắt. */
   @IsOptional()
   @IsString()
+  @Matches(/^(oc_[A-Za-z0-9]+)?$/, {
+    message: 'chat_id nhóm Lark có dạng oc_…',
+  })
   larkChatId?: string | null;
 
   @IsOptional()
   @IsBoolean()
   remindersEnabled?: boolean;
-
-  /** Gửi thử: chỉ gửi mọi thông báo tới những user này ([] = gửi thật). */
-  @IsOptional()
-  @IsArray()
-  @IsInt({ each: true })
-  testRecipients?: number[];
-}
-
-export class NppLarkImportDto {
-  /** true = chỉ xem trước, không ghi. */
-  @IsOptional()
-  @IsBoolean()
-  dryRun?: boolean;
-
-  /** Tải ảnh & tài liệu đính kèm về máy chủ. */
-  @IsOptional()
-  @IsBoolean()
-  downloadMedia?: boolean;
-
-  /** Ghi đè cả phiếu đã sửa trên POS sau lần nhập trước. */
-  @IsOptional()
-  @IsBoolean()
-  force?: boolean;
-
-  @IsOptional()
-  @IsString()
-  baseToken?: string;
-
-  @IsOptional()
-  @IsString()
-  tableId?: string;
-
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  limit?: number;
 }
 
 export class NppCustomerSearchDto {

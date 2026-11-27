@@ -263,6 +263,7 @@ export class OrdersService {
           unitPrice: manualGift ? 0 : Number(it.unitPrice),
           discount: manualGift ? 0 : Number(it.discount || 0),
           discountRatio: Number(it.discountRatio || 0),
+          lineVatRate: manualGift ? 0 : Number(it.lineVatRate ?? 0),
           note: it.note,
           serialNumbers: it.serialNumbers,
           conditionType: it.conditionType || 'normal',
@@ -606,6 +607,7 @@ export class OrdersService {
           lineType: item.lineType || 'normal',
           isGift: isGift,
           promotionId: item.promotionId ?? null,
+          lineVatRate: Number(item.lineVatRate ?? 0),
         };
       });
 
@@ -965,6 +967,7 @@ export class OrdersService {
             lineType: item.lineType || 'normal',
             isGift: isGift,
             promotionId: item.promotionId ?? null,
+            lineVatRate: Number(item.lineVatRate ?? 0),
           };
         });
 

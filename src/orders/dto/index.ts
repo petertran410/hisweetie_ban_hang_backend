@@ -89,6 +89,13 @@ export class OrderItemDto {
   @IsOptional()
   discountRatio?: number;
 
+  // % GTGT chọn trên dòng POS (0 | 5). Chỉ để nhớ lựa chọn: unitPrice/discount
+  // FE gửi lên ĐÃ gồm GTGT, BE không tính lại.
+  @IsOptional()
+  @Type(() => Number)
+  @IsIn([0, 5])
+  lineVatRate?: number;
+
   @IsString()
   @IsOptional()
   note?: string;
