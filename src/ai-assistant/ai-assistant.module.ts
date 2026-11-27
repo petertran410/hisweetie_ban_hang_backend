@@ -10,6 +10,7 @@ import { LeadsModule } from '../leads/leads.module';
 import { QuotesModule } from '../quotes/quotes.module';
 import { DashboardModule } from '../dashboard/dashboard.module';
 import { SmaxModule } from '../smax/smax.module';
+import { MessageIntelModule } from '../message-intel/message-intel.module';
 import { PriceBooksModule } from '../price-books/price-books.module';
 import { AiComposeController } from './compose/ai-compose.controller';
 import { AiComposeService } from './compose/ai-compose.service';
@@ -39,6 +40,7 @@ import { AiToolsService } from './tools/ai-tools.service';
     QuotesModule,
     DashboardModule,
     SmaxModule,
+    MessageIntelModule,
     PriceBooksModule,
   ],
   controllers: [AiAssistantController, AiSharedController, AiComposeController],

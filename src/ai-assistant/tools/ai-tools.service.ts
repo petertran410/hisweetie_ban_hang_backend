@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { InvoicesService } from '../../invoices/invoices.service';
 import { OrdersService } from '../../orders/orders.service';
@@ -10,6 +10,7 @@ import { QuotesService } from '../../quotes/quotes.service';
 import { DashboardService } from '../../dashboard/dashboard.service';
 import { SmaxChatService } from '../../smax/smax-chat.service';
 import { SmaxArchiveService } from '../../smax/smax-archive.service';
+import { MessageIntelQueryService } from '../../message-intel/message-intel-query.service';
 import type { AiTool } from './common';
 import type { AiToolDeps } from './deps';
 import { AI_TOOLS } from './index';
@@ -32,6 +33,7 @@ export class AiToolsService {
     dashboard: DashboardService,
     smaxChat: SmaxChatService,
     smaxArchive: SmaxArchiveService,
+    @Optional() messageIntel?: MessageIntelQueryService,
   ) {
     this.deps = {
       prisma,
@@ -45,6 +47,7 @@ export class AiToolsService {
       dashboard,
       smaxChat,
       smaxArchive,
+      messageIntel,
     };
   }
 }

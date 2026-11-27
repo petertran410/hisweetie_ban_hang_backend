@@ -268,9 +268,9 @@ function concurrencyProbe<T>(value: T) {
 }
 
 describe('AI tools', () => {
-  it('có đủ 9 công cụ, tên không trùng', () => {
+  it('có đủ 10 công cụ, tên không trùng', () => {
     const names = AI_TOOLS.map((tool) => tool.name);
-    expect(new Set(names).size).toBe(9);
+    expect(new Set(names).size).toBe(10);
   });
 
   it.each([

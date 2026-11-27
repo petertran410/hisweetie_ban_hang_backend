@@ -674,6 +674,34 @@ describe('SmaxChatService', () => {
     expect((api as any).listRecentThreads).toHaveBeenCalledTimes(1);
   });
 
+  it('recentChats: kênh đã bật phân loại tin → nhãn hội thoại tự động thay nhãn nút "Phân loại"; gắn tay vẫn ưu tiên', async () => {
+    const { service, api } = makeService();
+    (service as any).prisma.smaxChannelUser.findMany = jest.fn().mockResolvedValue([
+      { pagePid: PAGE, pageName: 'Diệp Trà Cs', platform: 'zaloweb', userId: 1 },
+    ]);
+    (service as any).prisma.aiThreadLabel.findMany = jest.fn().mockResolvedValue([
+      { pagePid: PAGE, tid: 'zlw5550000002', label: 'price', reason: 'AI cũ', pending: true, lastMessageAt: null, manual: false },
+      { pagePid: PAGE, tid: 'zlw5550000003', label: 'order', reason: 'Nhân viên gắn tay', pending: true, lastMessageAt: null, manual: true },
+    ]);
+    (api as any).listRecentThreads = jest.fn().mockResolvedValue(
+      ['zlw5550000001', 'zlw5550000002', 'zlw5550000003'].map((tid) => ({
+        tid, pagePid: PAGE, name: tid, isGroup: true, lastMessage: 'x', lastMessageAt: null, unread: false,
+      })),
+    );
+    const threadLabels = jest.fn().mockResolvedValue(
+      new Map([[`${PAGE}:zlw5550000001`, { label: 'complaint', reason: 'Khiếu nại lúc 09:10', pending: true, stale: false, at: new Date() }]]),
+    );
+    (service as any).intelQuery = { coveredPagePids: jest.fn().mockResolvedValue([PAGE]), threadLabels };
+    (service as any).prisma.customer.findMany = jest.fn().mockResolvedValue([]);
+    (service as any).prisma.customerZaloContact.findMany = jest.fn().mockResolvedValue([]);
+
+    const res = await service.recentChats(1);
+    expect(res.intelPagePids).toEqual([PAGE]);
+    expect(res.items.map((i) => i.aiLabel?.label ?? null)).toEqual(['complaint', null, 'order']);
+    expect(res.items[0].aiLabel).toMatchObject({ auto: true, pending: true, reason: 'Khiếu nại lúc 09:10', manual: false });
+    expect(res.items[2].aiLabel).toMatchObject({ manual: true });
+  });
+
   it('recentChats tự gắn khi chắc chắn: đúng 1 mã khách / tên trùng khít đúng 1 khách; không gắn lại, không thay ID cá nhân', async () => {
     const { service, api, audit } = makeService();
     const prisma = (service as any).prisma;

@@ -281,3 +281,80 @@ describe('DailyReportService.sendSaved', () => {
     expect(b.create).not.toHaveBeenCalled();
   });
 });
+
+describe('DailyReportService.build + nhãn AI từng tin (Message Intelligence)', () => {
+  const make = (intel?: object, rows: { pagePid: string; tid: string; msgPid: string }[] = [], tids = ['a', 'b', 'c']) => {
+    const service = new DailyReportService(
+      {
+        product: { findMany: jest.fn().mockResolvedValue([]) },
+        smaxMessage: { findMany: jest.fn().mockResolvedValue(rows) },
+      } as any,
+      {} as any,
+      { listPages: jest.fn().mockResolvedValue([{ pid: 'p1', name: 'Ms Mai Phương', platform: 'zaloweb' }]) } as any,
+      {} as any,
+      {} as any,
+      {} as any,
+      {
+        covered: jest.fn().mockResolvedValue(true),
+        threadsInRange: jest.fn().mockResolvedValue(tids.map((tid) => ({ pagePid: 'p1', tid, name: tid }))),
+      } as any,
+      intel as any,
+    );
+    const threadText = jest.spyOn(service as any, 'threadText').mockResolvedValue(null);
+    return { service, threadText };
+  };
+  afterEach(() => delete process.env.AI_DAILY_REPORT_MAX_THREADS);
+
+  it('hội thoại có tin khiếu nại / bất thường lên trước (trần số hội thoại không cắt mất); stats kèm độ phủ', async () => {
+    process.env.AI_DAILY_REPORT_MAX_THREADS = '1';
+    const { service, threadText } = make({
+      dailySignals: jest.fn().mockResolvedValue({
+        flaggedThreads: new Set(['p1:c']),
+        coverage: 0.6,
+        customerMessages: 10,
+        labeled: 6,
+        complaints: 2,
+        anomalies: 1,
+        escalations: 0,
+      }),
+    });
+    const report = await service.build('2026-11-27');
+    expect(threadText).toHaveBeenCalledTimes(1);
+    expect((threadText.mock.calls[0] as [{ tid: string }])[0].tid).toBe('c');
+    expect(report.stats).toMatchObject({ skipped: 2, intel: { complaints: 2, anomalies: 1, escalations: 0, coverage: 0.6 } });
+    expect(report.stats.merged).toBeUndefined();
+  });
+
+  it('chưa bật phân loại tin → giữ thứ tự cũ, không có số liệu nhãn', async () => {
+    process.env.AI_DAILY_REPORT_MAX_THREADS = '1';
+    const { service, threadText } = make(undefined);
+    const report = await service.build('2026-11-27');
+    expect((threadText.mock.calls[0] as [{ tid: string }])[0].tid).toBe('a');
+    expect(report.stats.intel).toBeUndefined();
+  });
+
+  it('gộp hội thoại trùng (cùng nhóm ở nhiều kênh = chung tin): phân tích 1 lần, giữ bản nhiều tin nhất', async () => {
+    // a và c là cùng 1 nhóm (chung m1); c có nhiều tin hơn trong ngày → giữ c; b riêng
+    const rows = [
+      { pagePid: 'p1', tid: 'a', msgPid: 'm1' },
+      { pagePid: 'p1', tid: 'c', msgPid: 'm1' },
+      { pagePid: 'p1', tid: 'c', msgPid: 'm2' },
+      { pagePid: 'p1', tid: 'b', msgPid: 'm9' },
+    ];
+    const { service, threadText } = make(undefined, rows);
+    const report = await service.build('2026-11-27');
+    expect(threadText.mock.calls.map((c) => (c as [{ tid: string }])[0].tid)).toEqual(['b', 'c']);
+    expect(report.stats).toMatchObject({ merged: 1 });
+    expect(report.stats.skipped).toBeUndefined();
+  });
+
+  it('card: dòng nhãn AI, độ phủ thấp ghi "chưa đầy đủ"', () => {
+    const texts = (card: any): string[] => card.body.elements.filter((e: any) => e.tag === 'markdown').map((e: any) => e.content);
+    const low = texts(buildDailyCard({ ...REPORT, stats: { ...REPORT.stats, intel: { complaints: 2, anomalies: 1, escalations: 0, coverage: 0.6 } } })).join('\n');
+    expect(low).toContain('🤖 AI phân loại từng tin: 2 khiếu nại · 1 bất thường · 0 cần quản lý (đã gắn nhãn 60% tin khách, chưa đầy đủ)');
+    const full = texts(buildDailyCard({ ...REPORT, stats: { ...REPORT.stats, intel: { complaints: 0, anomalies: 0, escalations: 0, coverage: 0.99 } } })).join('\n');
+    expect(full).toContain('(đã gắn nhãn 99% tin khách)');
+    expect(texts(buildDailyCard(REPORT)).join('\n')).not.toContain('🤖');
+    expect(texts(buildDailyCard({ ...REPORT, stats: { ...REPORT.stats, merged: 1908 } })).join('\n')).toContain('đã gộp 1.908 bản trùng giữa các kênh');
+  });
+});
