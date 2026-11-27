@@ -8,6 +8,7 @@ import {
   readFundReceipt,
   readPaymentVoucherDetails,
   readSalaryAdvance,
+  summarizeLarkInstance,
 } from './approval-lifecycle.constants';
 
 describe('readFundReceipt', () => {
@@ -80,18 +81,113 @@ describe('readFundReceipt', () => {
     });
   });
 
-  it('returns null for zero amount, a non-POS place or a non-cash plain receipt', () => {
+  it('credits only the POS fund when money comes from Công Ty / Cá Nhân / Cửa Hàng', () => {
+    // Công Ty → Kho SG bằng chuyển khoản công ty (form không cho chọn tiền mặt).
+    expect(
+      readFundReceipt([
+        pick('widget17321740179360001', 'miior6p8-s0rjayqbcv-1'),
+        pick('widget17863314165550001', 'mwyx7cp4-6zwzgxhro7u-1'),
+        pick('widget17863314190270001', 'msmnlsb8-8wr2wdb09lx-0'),
+        pick('widget17321728506550001', '$i18n-m3sj1xiv-4ru39bef6i-1'),
+        amount,
+        date,
+      ]),
+    ).toMatchObject({
+      kind: 'RECEIPT',
+      branchId: 1,
+      amount: 500,
+      counterparty: 'Công Ty',
+      description: 'Thu từ Công Ty',
+    });
+    // Cá Nhân hoàn tạm ứng vào Kho HN: nguồn tiền mặt theo nơi đi (Tiền Mặt Cá Nhân).
+    expect(
+      readFundReceipt([
+        pick('widget17321740179360001', 'm5yyxva1-0qljlzdgfq2k-1'),
+        pick('widget17863314165550001', 'msmnlqf7-9jrnpgcf0j-3'),
+        pick('widget17863314190270001', 'msmnlsb8-4p1ddn0lzf4-0'),
+        pick('widget17730449889490001', 'mwyzmkrd-kpu6p3drvq-1'),
+        cash,
+        amount,
+      ]),
+    ).toMatchObject({ kind: 'RECEIPT', branchId: 6, counterparty: 'Cá Nhân' });
+  });
+
+  it('debits only the POS fund when money goes to Công Ty / Cá Nhân / Cửa Hàng', () => {
+    // Kho HN → Cá Nhân, tiền mặt, nguồn Tiền Mặt Kho HN: trừ Kho HN (không cộng).
+    expect(
+      readFundReceipt([
+        pick('widget17321740179360001', 'm3qzoq6o-9zz1b70wu0s-0'),
+        pick('widget17863314165550001', 'msmnlqej-t6tk3qikgcm-0'),
+        pick('widget17863314190270001', 'msmnlqf7-dkuca05446o-11'),
+        pick('widget17730449889490001', 'mmix7h92-hukohb4on6-0'),
+        cash,
+        amount,
+        { id: 'widget17321628654580001', type: 'textarea', value: 'Nộp lại' },
+      ]),
+    ).toMatchObject({
+      kind: 'PAYOUT',
+      branchId: 6,
+      counterparty: 'Cá Nhân',
+      description: 'Nộp lại',
+    });
+    // VPSG → Công Ty bằng chuyển khoản.
+    expect(
+      readFundReceipt([
+        pick('widget17863314165550001', 'msmnlqf7-6253w1gahex-1'),
+        pick('widget17863314190270001', 'mwyy86um-qw7ivzlas0c-1'),
+        pick('widget17321728506550001', 'm3sj5uh2-zttr08nfqcm-1'),
+        amount,
+      ]),
+    ).toMatchObject({
+      kind: 'PAYOUT',
+      branchId: 7,
+      description: 'Chuyển về Công Ty',
+    });
+    // Kho SG → Cửa Hàng Diệp Trà.
+    expect(
+      readFundReceipt([
+        pick('widget17863314165550001', 'msmnlqej-osblnddobgd-0'),
+        pick('widget17863314190270001', 'msmnlqf7-9xggy4amxp-9'),
+        amount,
+      ]),
+    ).toMatchObject({ kind: 'PAYOUT', branchId: 1 });
+  });
+
+  it('keeps the old rule when neither side pairs a POS fund with an outside place', () => {
+    // Công Ty → Cá Nhân: không có quỹ POS nào.
+    expect(
+      readFundReceipt([
+        pick('widget17863314165550001', 'mwyx7cp4-6zwzgxhro7u-1'),
+        pick('widget17863314190270001', 'msmnlqf7-dkuca05446o-11'),
+        pick('widget17321728506550001', '$i18n-m3sj1xiv-4ru39bef6i-1'),
+        amount,
+      ]),
+    ).toBeNull();
+    // Kho HN → Kho HN, thu khác tiền mặt nguồn Kho HN: thu vào Kho HN như cũ.
+    expect(
+      readFundReceipt([
+        pick('widget17321740179360001', 'm3qzoq6o-9zz1b70wu0s-0'),
+        pick('widget17863314165550001', 'msmnlqej-t6tk3qikgcm-0'),
+        pick('widget17863314190270001', 'msmnlsb8-4p1ddn0lzf4-0'),
+        pick('widget17730449889490001', 'mmix7h92-hukohb4on6-0'),
+        cash,
+        amount,
+      ]),
+    ).toMatchObject({ kind: 'RECEIPT', branchId: 6 });
+  });
+
+  it('returns null for zero amount, an unknown place or a non-cash plain receipt', () => {
     const transfer = [
       pick('widget17321740179360001', 'miior6p8-s0rjayqbcv-1'),
       pick('widget17863314165550001', 'msmnlqej-t6tk3qikgcm-0'),
       pick('widget17863314190270001', 'msmnlsb8-5t1nguy4lg2-0'),
     ];
-    // Nơi nhận là Cá Nhân: không phải quỹ của POS.
+    // Nơi nhận là lựa chọn lạ (không phải quỹ POS, không thuộc danh sách ngoài POS).
     expect(
       readFundReceipt([
         transfer[0],
         transfer[1],
-        pick('widget17863314190270001', 'msmnlqf7-dkuca05446o-11'),
+        pick('widget17863314190270001', 'noi-nhan-moi'),
         cash,
         amount,
       ]),
@@ -116,6 +212,54 @@ describe('readFundReceipt', () => {
         amount,
       ]),
     ).toBeNull();
+  });
+});
+
+describe('summarizeLarkInstance PHIẾU THU with an outside place', () => {
+  const pick = (id: string, key: string) => ({
+    id,
+    type: 'radioV2',
+    value: 'chữ hiển thị',
+    option: { key },
+  });
+  const amount = { id: 'widget17321629138780001', type: 'amount', value: 900 };
+
+  it('marks a receipt sent to Công Ty as an expense of the POS fund', () => {
+    expect(
+      summarizeLarkInstance(
+        'PHIEU_THU',
+        [
+          pick('widget17863314165550001', 'msmnlqej-osblnddobgd-0'),
+          pick('widget17863314190270001', 'mwyy86um-qw7ivzlas0c-1'),
+          amount,
+        ],
+        null,
+      ),
+    ).toMatchObject({
+      direction: 'EXPENSE',
+      branchId: 1,
+      inScope: true,
+      cashSource: 'Tiền mặt Kho SG → Công Ty',
+      fundBranchIds: [1],
+    });
+  });
+
+  it('marks money from Công Ty as a receipt of the POS fund', () => {
+    expect(
+      summarizeLarkInstance(
+        'PHIEU_THU',
+        [
+          pick('widget17863314165550001', 'mwyx7cp4-6zwzgxhro7u-1'),
+          pick('widget17863314190270001', 'msmnlsb8-5t1nguy4lg2-0'),
+          amount,
+        ],
+        null,
+      ),
+    ).toMatchObject({
+      direction: 'RECEIPT',
+      branchId: 4,
+      cashSource: 'Công Ty → Tiền mặt Văn phòng HN',
+    });
   });
 });
 
