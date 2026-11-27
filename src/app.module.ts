@@ -86,6 +86,7 @@ import { SmaxModule } from './smax/smax.module';
 import { LeadsModule } from './leads/leads.module';
 import { QuotesModule } from './quotes/quotes.module';
 import { AiAssistantModule } from './ai-assistant/ai-assistant.module';
+import { MessageIntelModule } from './message-intel/message-intel.module';
 import { PublicPriceModule } from './public-price/public-price.module';
 import { SepayModule } from './sepay/sepay.module';
 import { PromotionsModule } from './promotions/promotions.module';
@@ -199,6 +200,7 @@ import { ManufacturersModule } from './manufacturers/manufacturers.module';
     LeadsModule,
     QuotesModule,
     AiAssistantModule,
+    MessageIntelModule,
     PublicPriceModule,
     ReturnOrdersModule,
     ConsignmentReturnsModule,

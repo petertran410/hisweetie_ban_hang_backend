@@ -9,6 +9,7 @@ import type { QuotesService } from '../../quotes/quotes.service';
 import type { DashboardService } from '../../dashboard/dashboard.service';
 import type { SmaxChatService } from '../../smax/smax-chat.service';
 import type { SmaxArchiveService } from '../../smax/smax-archive.service';
+import type { MessageIntelQueryService } from '../../message-intel/message-intel-query.service';
 
 /** Service sẵn có mà công cụ gọi lại (AiToolsService tiêm vào). */
 export interface AiToolDeps {
@@ -24,4 +25,6 @@ export interface AiToolDeps {
   smaxChat: SmaxChatService;
   /** Kho tin Smax trên DB — kênh đã lưu đủ khoảng ngày thì đọc DB thay vì gọi Smax. */
   smaxArchive?: SmaxArchiveService;
+  /** Nhãn AI từng tin nhắn (Message Intelligence) — tool smax_message_labels. */
+  messageIntel?: MessageIntelQueryService;
 }

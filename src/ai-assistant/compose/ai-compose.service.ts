@@ -1,9 +1,11 @@
 import {
   BadRequestException,
+  ForbiddenException,
   HttpException,
   HttpStatus,
   Injectable,
   Logger,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
@@ -13,6 +15,7 @@ import {
   SmaxChatService,
   type ChatMessage as SmaxMessage,
 } from '../../smax/smax-chat.service';
+import { SmaxArchiveService } from '../../smax/smax-archive.service';
 import { AiChatService } from '../ai-chat.service';
 import {
   LlmError,
@@ -189,6 +192,7 @@ export class AiComposeService {
     private readonly priceBooks: PriceBooksService,
     private readonly smax: SmaxChatService,
     private readonly chat: AiChatService,
+    @Optional() private readonly archive?: SmaxArchiveService,
   ) {}
 
   get ready() {
@@ -298,7 +302,14 @@ export class AiComposeService {
           : 1;
     // getThreadMessages tự chặn kênh không liên kết với người bấm
     const [messages, channels, customer] = await Promise.all([
-      this.loadMessages(actor.id, input.pagePid, input.tid, pages),
+      this.loadMessages(
+        actor.id,
+        input.pagePid,
+        input.tid,
+        pages,
+        // Tóm tắt, xác nhận đơn đọc kho tin DB
+        input.mode === 'order' || input.mode === 'summary',
+      ),
       this.smax.myChannels(actor.id),
       input.customerId ? this.customerFacts(actor, input.customerId) : null,
     ]);
@@ -317,7 +328,13 @@ export class AiComposeService {
     pagePid: string,
     tid: string,
     pages: number,
+    fromArchive = false,
   ) {
+    // DB đủ số tin cần thì dùng DB; hội thoại ngắn / cũ hơn mốc bắt đầu lưu thì gọi Smax
+    if (fromArchive && (await this.archiveReady(userId, pagePid))) {
+      const stored = await this.archive!.lastMessages(pagePid, tid, pages * 20);
+      if (stored.messages.length >= pages * 20) return stored.messages;
+    }
     const seen = new Map<string, SmaxMessage>();
     let before: string | undefined;
     for (let page = 0; page < pages; page++) {
@@ -335,6 +352,23 @@ export class AiComposeService {
     return [...seen.values()]
       .filter((m) => m.type !== 'system')
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  /**
+   * Kho tin DB dùng được cho kênh: đồng bộ nền còn mới (≤ 10 phút). Chặn kênh không liên kết với
+   * người bấm như đường Smax (getThreadMessages).
+   */
+  private async archiveReady(userId: number, pagePid: string) {
+    const now = Date.now();
+    if (!(await this.archive?.covered(pagePid, now, now))) return false;
+    const link = await this.prisma.smaxChannelUser.findUnique({
+      where: { pagePid_userId: { pagePid, userId } },
+    });
+    if (!link)
+      throw new ForbiddenException(
+        'Kênh này không liên kết với tài khoản của bạn',
+      );
+    return true;
   }
 
   private async customerFacts(
@@ -955,7 +989,7 @@ export class AiComposeService {
   }
 
   /**
-   * Phân loại các hội thoại đang hiển thị (chỉ khi bấm): đọc 6 tin cuối mỗi hội thoại, một lần gọi
+   * Phân loại các hội thoại đang hiển thị (chỉ khi bấm): đọc 6 tin cuối mỗi hội thoại (DB, thiếu thì Smax), một lần gọi
    * model → nhãn (đặt hàng / hỏi giá / khiếu nại / hỏi giao hàng / khác), lý do, khách có đang chờ
    * xử lý không. Lưu ai_thread_labels (bỏ qua hội thoại nhân viên đã sửa nhãn tay mà chưa có tin mới).
    */
@@ -974,10 +1008,21 @@ export class AiComposeService {
       name: string | null;
       messages: SmaxMessage[];
     }[] = [];
+    // Đọc 6 tin cuối từ DB; hội thoại DB chưa có tin (cũ hơn mốc bắt đầu lưu) mới gọi Smax
+    let fromSmax = tids;
+    if (await this.archiveReady(actor.id, input.pagePid)) {
+      const stored = await Promise.all(
+        tids.map((tid) => this.archive!.lastMessages(input.pagePid, tid, 6)),
+      );
+      tids.forEach((tid, i) => {
+        if (stored[i].messages.length) threads.push({ tid, ...stored[i] });
+      });
+      fromSmax = tids.filter((_, i) => !stored[i].messages.length);
+    }
     // 5 hội thoại / lượt để không dồn Smax
-    for (let i = 0; i < tids.length; i += 5) {
+    for (let i = 0; i < fromSmax.length; i += 5) {
       const batch = await Promise.all(
-        tids.slice(i, i + 5).map(async (tid) => {
+        fromSmax.slice(i, i + 5).map(async (tid) => {
           const res = await this.smax
             .getThreadMessages(actor.id, input.pagePid, tid)
             .catch(() => null);

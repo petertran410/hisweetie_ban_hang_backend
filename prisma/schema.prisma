@@ -6804,3 +6804,136 @@ model PriceChangeConfig {
 
   @@map("price_change_configs")
 }
+
+/// Message Intelligence: bộ câu hỏi phân loại tin có phiên bản (đã kích hoạt thì không sửa câu hỏi / ngưỡng).
+/// Bảng tạo bằng prisma/scripts/create-message-intel.sql. Chỉ 1 dòng status = 'active' (index riêng trong SQL).
+model SmaxIntelVersion {
+  id          Int       @id @default(autoincrement())
+  name        String
+  /// Model Jev ghim cụ thể (vd jev-1.14.0), không dùng alias
+  model       String
+  questions   Json
+  thresholds  Json
+  /// draft | active | retired
+  status      String    @default("draft") @db.VarChar(20)
+  activatedAt DateTime? @map("activated_at")
+  createdBy   Int?      @map("created_by")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  @@map("smax_intel_versions")
+}
+
+/// Kết quả phân loại 1 tin logic (msg_pid — cùng 1 tin nhóm lưu ở nhiều kênh) theo 1 phiên bản; đồng thời là
+/// hàng đợi worker. Nhãn null = chưa có kết quả. Không khoá ngoại (như bảng smax_*).
+model SmaxMessageIntel {
+  id                 BigInt    @id @default(autoincrement())
+  msgPid             String    @map("msg_pid")
+  versionId          Int       @map("version_id")
+  /// Dòng smax_messages đại diện (lấy ngữ cảnh cùng page_pid / tid)
+  messageId          BigInt    @map("message_id")
+  pagePid            String    @map("page_pid")
+  tid                String
+  messageAt          DateTime  @map("message_at")
+  /// pending | processing | retry | completed | failed | skipped
+  status             String    @default("pending") @db.VarChar(20)
+  /// rule | jev | manual
+  processingSource   String?   @map("processing_source") @db.VarChar(20)
+  skipReason         String?   @map("skip_reason") @db.VarChar(40)
+  attemptCount       Int       @default(0) @map("attempt_count")
+  nextRetryAt        DateTime  @default(now()) @map("next_retry_at")
+  lockedUntil        DateTime? @map("locked_until")
+  claimToken         String?   @map("claim_token") @db.Uuid
+  lastError          String?   @map("last_error")
+  intent             String?   @db.VarChar(40)
+  topics             String[]  @default([])
+  sentiment          String?   @db.VarChar(20)
+  /// 0–3
+  urgency            Int?      @db.SmallInt
+  /// 0–3
+  purchaseIntent     Int?      @map("purchase_intent") @db.SmallInt
+  requiresReply      Boolean?  @map("requires_reply")
+  requiresEscalation Boolean?  @map("requires_escalation")
+  isAnomaly          Boolean?  @map("is_anomaly")
+  /// Xác suất gốc theo câu hỏi (không chứa nội dung tin)
+  answers            Json?
+  /// Archive có thể chưa đủ tin trước đó (ngữ cảnh thiếu)
+  contextPartial     Boolean   @default(false) @map("context_partial")
+  model              String?
+  inputTokens        Int?      @map("input_tokens")
+  latencyMs          Int?      @map("latency_ms")
+  classifiedAt       DateTime? @map("classified_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@unique([msgPid, versionId])
+  @@index([versionId, status, nextRetryAt])
+  @@index([versionId, messageAt])
+  @@index([versionId, intent])
+  @@map("smax_message_intel")
+}
+
+/// Nhãn người chấm cho tin (bộ benchmark / đối chiếu nhãn AI)
+model SmaxIntelReview {
+  id         Int      @id @default(autoincrement())
+  msgPid     String   @map("msg_pid")
+  reviewerId Int      @map("reviewer_id")
+  labels     Json
+  /// calibration | test
+  split      String   @default("test") @db.VarChar(20)
+  note       String?
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@unique([msgPid, reviewerId])
+  @@map("smax_intel_reviews")
+}
+
+/// Điều khiển worker phân loại (1 dòng, id = 1)
+model SmaxIntelRuntime {
+  id               Int       @id @default(1)
+  paused           Boolean   @default(true)
+  /// smax_messages.id đã quét tới (tin mới)
+  discoveryCursor  BigInt    @default(0) @map("discovery_cursor")
+  dailyTokenBudget Int       @default(2000000) @map("daily_token_budget")
+  tokensToday      Int       @default(0) @map("tokens_today")
+  /// Ngày (giờ VN, YYYY-MM-DD) của tokens_today
+  budgetDay        String?   @map("budget_day")
+  /// null | running | done
+  backfillStatus   String?   @map("backfill_status") @db.VarChar(20)
+  /// smax_messages.id backfill đã quét tới; dừng ở backfill_until_id (id lớn nhất lúc bắt đầu)
+  backfillCursor   BigInt    @default(0) @map("backfill_cursor")
+  backfillUntilId  BigInt    @default(0) @map("backfill_until_id")
+  backfillFrom     DateTime? @map("backfill_from")
+  backfillTo       DateTime? @map("backfill_to")
+  /// Rỗng = mọi kênh
+  backfillPagePids String[]  @default([]) @map("backfill_page_pids")
+  /// Ngày (giờ VN) của topic cảnh báo Lark đang dùng
+  alertDay           String?   @map("alert_day")
+  /// Tin mở đầu topic cảnh báo của ngày; cảnh báo trong ngày trả lời trong topic này
+  alertRootMessageId String?   @map("alert_root_message_id")
+  updatedBy        Int?      @map("updated_by")
+  updatedAt        DateTime  @default(now()) @updatedAt @map("updated_at")
+
+  @@map("smax_intel_runtime")
+}
+
+/// Cảnh báo quản lý của Message Intelligence (Lark): 1 dòng / tin đã xét, gộp theo hội thoại
+model SmaxIntelAlert {
+  id            Int      @id @default(autoincrement())
+  msgPid        String   @map("msg_pid")
+  versionId     Int      @map("version_id")
+  pagePid       String   @map("page_pid")
+  tid           String
+  /// escalation | complaint | anomaly
+  reason        String   @db.VarChar(20)
+  messageAt     DateTime @map("message_at")
+  /// sent | grouped | recalled | failed
+  status        String   @db.VarChar(20)
+  larkMessageId String?  @map("lark_message_id")
+  error         String?
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@unique([msgPid, versionId])
+  @@index([pagePid, tid, createdAt])
+  @@index([createdAt])
+  @@map("smax_intel_alerts")
+}
