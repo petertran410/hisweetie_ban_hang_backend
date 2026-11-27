@@ -8,6 +8,7 @@ import { leadsSummaryTool } from './leads-summary.tool';
 import { quotesSummaryTool } from './quotes-summary.tool';
 import { revenueSummaryTool } from './revenue-summary.tool';
 import { smaxChatsTool } from './smax-chats.tool';
+import { smaxMessageLabelsTool } from './smax-message-labels.tool';
 
 /** Mọi công cụ của trợ lý, theo thứ tự gửi cho model. */
 export const AI_TOOLS: AiTool[] = [
@@ -20,4 +21,5 @@ export const AI_TOOLS: AiTool[] = [
   leadsSummaryTool,
   quotesSummaryTool,
   smaxChatsTool,
+  smaxMessageLabelsTool,
 ];

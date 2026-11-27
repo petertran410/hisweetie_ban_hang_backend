@@ -171,6 +171,23 @@ export const RECEIPT_LOCATION_BRANCHES = {
   },
 } as const;
 
+/**
+ * Nơi đi / nơi nhận trên PHIẾU THU không phải quỹ POS. Đơn có một bên là quỹ
+ * POS, bên kia là một trong các nơi này: chỉ cộng / trừ bên quỹ POS.
+ */
+export const RECEIPT_OUTSIDE_LOCATIONS = {
+  from: {
+    'mwyx7cp4-6zwzgxhro7u-1': 'Công Ty',
+    'msmnlqf7-9jrnpgcf0j-3': 'Cá Nhân',
+    'msmnlqf7-idczcpibkvp-5': 'Cửa Hàng Diệp Trà',
+  },
+  to: {
+    'mwyy86um-qw7ivzlas0c-1': 'Công Ty',
+    'msmnlqf7-dkuca05446o-11': 'Cá Nhân',
+    'msmnlqf7-9xggy4amxp-9': 'Cửa Hàng Diệp Trà',
+  },
+} as const;
+
 export const EXPENSE_VP_OPTIONS = {
   methods: new Set(['ml65570v-ih3r0g47mu-0', 'ml65570v-qr4uobqvu9-0']),
   cashMethod: 'ml65570v-ih3r0g47mu-0',
@@ -402,17 +419,23 @@ export type FundReceiptFromLark =
       description: string;
     }
   | {
-      kind: 'RECEIPT';
+      /** RECEIPT: cộng quỹ `branchId`; PAYOUT: trừ quỹ `branchId`. */
+      kind: 'RECEIPT' | 'PAYOUT';
       branchId: number;
       amount: number;
       occurredAt: Date;
       description: string;
+      /** Bên ngoài POS (Công Ty / Cá Nhân / Cửa Hàng) nếu đơn chọn theo nơi đi / nơi nhận. */
+      counterparty?: string;
     };
 
 /**
  * Đọc đơn PHIẾU THU tạo trực tiếp trên Lark.
  * - Có nơi đi và nơi nhận đều là quỹ của POS (khác nhau): chuyển quỹ, bất kể
  *   hình thức thu (tiền mặt hay chuyển khoản) và phân loại.
+ * - Một bên là quỹ POS, bên kia là Công Ty / Cá Nhân / Cửa Hàng: chỉ ghi bên
+ *   quỹ POS (nơi nhận là quỹ POS: cộng; nơi đi là quỹ POS: trừ), cũng bất kể
+ *   hình thức thu và phân loại.
  * - Không có cặp nơi đi / nơi nhận hợp lệ: chỉ nhận đơn thu tiền mặt loại
  *   "khác" / hoàn tạm ứng có chọn nguồn quỹ.
  * Đơn khác trả null để bỏ qua.
@@ -436,12 +459,14 @@ export function readFundReceipt(
     item(RECEIPT_FIELD_IDS.description)?.value ?? '',
   ).trim();
 
+  const from = choice(RECEIPT_FIELD_IDS.from);
+  const to = choice(RECEIPT_FIELD_IDS.to);
   const sourceBranchId = (
     RECEIPT_LOCATION_BRANCHES.from as Record<string, number>
-  )[choice(RECEIPT_FIELD_IDS.from)];
+  )[from];
   const destinationBranchId = (
     RECEIPT_LOCATION_BRANCHES.to as Record<string, number>
-  )[choice(RECEIPT_FIELD_IDS.to)];
+  )[to];
   if (
     sourceBranchId &&
     destinationBranchId &&
@@ -454,6 +479,32 @@ export function readFundReceipt(
       amount,
       occurredAt,
       description: description || 'Chuyển tiền nội bộ',
+    };
+  }
+  const outsideFrom = (
+    RECEIPT_OUTSIDE_LOCATIONS.from as Record<string, string>
+  )[from];
+  const outsideTo = (RECEIPT_OUTSIDE_LOCATIONS.to as Record<string, string>)[
+    to
+  ];
+  if (outsideFrom && destinationBranchId) {
+    return {
+      kind: 'RECEIPT',
+      branchId: destinationBranchId,
+      amount,
+      occurredAt,
+      description: description || `Thu từ ${outsideFrom}`,
+      counterparty: outsideFrom,
+    };
+  }
+  if (sourceBranchId && outsideTo) {
+    return {
+      kind: 'PAYOUT',
+      branchId: sourceBranchId,
+      amount,
+      occurredAt,
+      description: description || `Chuyển về ${outsideTo}`,
+      counterparty: outsideTo,
     };
   }
 
@@ -671,13 +722,24 @@ export function summarizeLarkInstance(
         fundBranchIds: [receipt.sourceBranchId, receipt.destinationBranchId],
       };
     const inScope = LARK_ENTRY_BRANCHES.includes(receipt.branchId);
+    const payout = receipt.kind === 'PAYOUT';
+    const fund = BRANCH_FUND_LABELS[receipt.branchId] || receipt.branchId;
     return {
       ...base,
-      cashSource: base.cashSource || BRANCH_FUND_LABELS[receipt.branchId],
+      cashSource: receipt.counterparty
+        ? payout
+          ? `${fund} → ${receipt.counterparty}`
+          : `${receipt.counterparty} → ${fund}`
+        : base.cashSource || BRANCH_FUND_LABELS[receipt.branchId],
       occurredAt: receipt.occurredAt,
+      direction: payout ? 'EXPENSE' : 'RECEIPT',
       branchId: receipt.branchId,
       inScope,
-      skipReason: inScope ? null : 'Thu vào quỹ văn phòng',
+      skipReason: inScope
+        ? null
+        : payout
+          ? 'Chi từ quỹ văn phòng'
+          : 'Thu vào quỹ văn phòng',
       fundBranchIds: [receipt.branchId],
     };
   }

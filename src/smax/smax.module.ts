@@ -5,6 +5,7 @@ import { AuditLogsModule } from '../audit-logs/audit-logs.module';
 import { UploadModule } from '../upload/upload.module';
 import { LarkSyncModule } from '../lark-sync/lark-sync.module';
 import { LeadLinkModule } from '../leads/lead-link/lead-link.module';
+import { MessageIntelModule } from '../message-intel/message-intel.module';
 import { SmaxController } from './smax.controller';
 import { SmaxService } from './smax.service';
 import { SmaxApiService } from './smax-api.service';
@@ -18,7 +19,7 @@ import { SmaxReportsController } from './smax-reports/smax-reports.controller';
 import { SmaxReportsService } from './smax-reports/smax-reports.service';
 
 @Module({
-  imports: [PrismaModule, HttpModule, AuditLogsModule, UploadModule, LarkSyncModule, LeadLinkModule],
+  imports: [PrismaModule, HttpModule, AuditLogsModule, UploadModule, LarkSyncModule, LeadLinkModule, MessageIntelModule],
   controllers: [
     SmaxController,
     SmaxChatController,

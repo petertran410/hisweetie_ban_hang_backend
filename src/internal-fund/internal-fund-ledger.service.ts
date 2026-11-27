@@ -3,8 +3,10 @@ import { Prisma } from '@prisma/client';
 import type { InternalFundTransaction } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import {
+  ApprovalFormItem,
   RECEIPT_FIELD_IDS,
   larkLedgerCutoff,
+  readFundReceipt,
 } from '../approval-lifecycle/approval-lifecycle.constants';
 import {
   INTERNAL_FINANCE_STATUS,
@@ -1044,16 +1046,27 @@ export class InternalFundLedgerService {
     if (!amount.isPositive() || !request.branchId || !request.createdById)
       throw new BadRequestException('Approval thiếu tiền hoặc chi nhánh');
     const date = fundDayStart(String(value(RECEIPT_FIELD_IDS.date)));
-    const description = value(RECEIPT_FIELD_IDS.description);
+    // Đơn Lark chọn nơi đi là quỹ POS, nơi nhận ngoài POS (Công Ty / Cá Nhân /
+    // Cửa Hàng): tiền ra khỏi quỹ. Còn lại là thu vào quỹ như cũ.
+    const parsed = readFundReceipt(form as ApprovalFormItem[]);
+    const payout = parsed?.kind === 'PAYOUT';
+    const typed = value(RECEIPT_FIELD_IDS.description);
+    // Đơn có Công Ty / Cá Nhân / Cửa Hàng mà để trống nội dung: "Thu từ Công Ty"...
+    const fallback =
+      parsed && parsed.kind !== 'TRANSFER' && parsed.counterparty
+        ? parsed.description
+        : '';
+    const description =
+      typeof typed === 'string' && typed.trim() ? typed : fallback;
     const row = await tx.internalFundTransaction.create({
       data: {
-        code: this.code('THU'),
+        code: this.code(payout ? 'CHI' : 'THU'),
         sourceKey: key,
         branchId: request.branchId,
-        transactionType: 'RECEIPT',
+        transactionType: payout ? 'EXPENSE' : 'RECEIPT',
         amount,
         occurredAt: date,
-        description: typeof description === 'string' ? description : '',
+        description,
         sourceType: 'INTERNAL_FUND_RECEIPT',
         sourceId: String(request.id),
         approvalRequestId: request.id,
@@ -1068,7 +1081,7 @@ export class InternalFundLedgerService {
       request.branchId,
       date,
       log,
-      `thu quỹ ${row.code}`,
+      `${payout ? 'chi' : 'thu'} quỹ ${row.code}`,
       by,
     );
   }

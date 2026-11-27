@@ -45,6 +45,7 @@ import {
   ZalowebContent,
 } from './smax-api.service';
 import { SmaxArchiveService } from './smax-archive.service';
+import { MessageIntelQueryService } from '../message-intel/message-intel-query.service';
 
 /** Người dùng đang gọi (rút gọn từ req.user). */
 export interface ChatActor {
@@ -296,6 +297,7 @@ export class SmaxChatService {
     private readonly larkDirectory: LarkUserDirectoryService,
     private readonly leadLink?: LeadLinkService,
     private readonly archive?: SmaxArchiveService,
+    private readonly intelQuery?: MessageIntelQueryService,
   ) {
     const base = config.get<string>('SMAX_MEDIA_PUBLIC_URL')?.trim().replace(/\/+$/, '');
     this.mediaPublicUrl = base && /^https:\/\//.test(base) ? base : null;
@@ -1703,8 +1705,23 @@ export class SmaxChatService {
         select: { pagePid: true, tid: true, label: true, reason: true, pending: true, lastMessageAt: true, manual: true },
       })
       .catch(() => []);
+    // Kênh đã bật phân loại từng tin (Message Intelligence): nhãn hội thoại suy tự động, thay nút "Phân loại"
+    const intelPagePids =
+      preloaded || !this.intelQuery ? [] : await this.intelQuery.coveredPagePids(pagePids).catch(() => []);
+    const intelLabels = intelPagePids.length
+      ? await this.intelQuery!.threadLabels(threads.filter((t) => intelPagePids.includes(t.pagePid))).catch(
+          () => new Map<string, never>(),
+        )
+      : new Map<string, never>();
     const labelOf = (t: SmaxRecentThread) => {
       const l = labels.find((x) => x.tid === t.tid && x.pagePid === t.pagePid);
+      // Gắn tay vẫn ưu tiên; kênh đã bật phân loại tin → nhãn tự động (bỏ nhãn AI cũ của nút "Phân loại")
+      if (intelPagePids.includes(t.pagePid) && !l?.manual) {
+        const auto = intelLabels.get(`${t.pagePid}:${t.tid}`);
+        return auto
+          ? { label: auto.label, reason: auto.reason, pending: auto.pending, manual: false, stale: auto.stale, auto: true }
+          : null;
+      }
       if (!l) return null;
       return {
         label: l.label,
@@ -1850,6 +1867,7 @@ export class SmaxChatService {
                 : null,
         };
       }),
+      intelPagePids,
     };
   }
 

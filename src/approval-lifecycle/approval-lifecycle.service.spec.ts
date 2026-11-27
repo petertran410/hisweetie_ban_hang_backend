@@ -2221,6 +2221,35 @@ describe('ApprovalLifecycleService', () => {
       expect(f.fundLedger.applyApproval).toHaveBeenCalledTimes(1);
     });
 
+    it('books only the POS side when the other place is Công Ty', async () => {
+      // Kho HN → Công Ty (chuyển khoản công ty): một đơn quỹ của Kho HN, không chuyển quỹ.
+      const out = receiptService(
+        transferForm('mwyy86um-qw7ivzlas0c-1', '$i18n-m3sj1xiv-4ru39bef6i-1'),
+      );
+      await out.service.handleInstanceEvent(approvedEvent);
+      // Công Ty → Kho SG: một đơn quỹ của Kho SG.
+      const into = receiptService([
+        pick('widget17863314165550001', 'Công Ty', 'mwyx7cp4-6zwzgxhro7u-1'),
+        pick('widget17863314190270001', 'Kho Sài Gòn', 'msmnlsb8-8wr2wdb09lx-0'),
+        ...common('$i18n-m3sj1xiv-4ru39bef6i-1'),
+      ]);
+      await into.service.handleInstanceEvent(approvedEvent);
+      for (const [f, branchId] of [
+        [out, 6],
+        [into, 1],
+      ] as const) {
+        expect(f.transfers).toHaveLength(0);
+        expect(f.requests[0]).toMatchObject({
+          sourceType: 'INTERNAL_FUND_RECEIPT',
+          branchId,
+          clientUuid: 'LARK:PT-0001',
+          status: 'APPROVED',
+        });
+        // Chiều cộng / trừ do sổ quỹ đọc lại từ form.
+        expect(f.fundLedger.applyApproval).toHaveBeenCalledTimes(1);
+      }
+    });
+
     it('ignores receipts whose places are not two different POS funds', async () => {
       const unknownPlace = receiptService(transferForm('noi-khac'));
       await unknownPlace.service.handleInstanceEvent(approvedEvent);

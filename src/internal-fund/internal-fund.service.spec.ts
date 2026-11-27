@@ -613,6 +613,66 @@ describe('Internal fund ledger', () => {
     expect(f.transactions[0].occurredAt).toEqual(fundDayStart('2026-10-09'));
   });
 
+  it('debits the POS fund for a Lark receipt sent to Công Ty, credits it when Công Ty sends', async () => {
+    const pick = (id: string, key: string) => ({
+      id,
+      type: 'radioV2',
+      value: 'chữ hiển thị',
+      option: { key },
+    });
+    const form = (from: string, to: string) => [
+      pick(RECEIPT_FIELD_IDS.from, from),
+      pick(RECEIPT_FIELD_IDS.to, to),
+      pick(RECEIPT_FIELD_IDS.method, '$i18n-m3sj1xiv-4ru39bef6i-1'),
+      { id: RECEIPT_FIELD_IDS.amount, type: 'amount', value: 2000000 },
+      {
+        id: RECEIPT_FIELD_IDS.date,
+        type: 'date',
+        value: '2026-10-18T17:00:00Z',
+      },
+    ];
+    const f = fixture();
+    // Kho SG → Công Ty: trừ quỹ Kho SG, ngày thu 19/10, nội dung mặc định.
+    await f.ledger.applyApproval(f.prisma, {
+      id: 71,
+      status: 'APPROVED',
+      sourceType: 'INTERNAL_FUND_RECEIPT',
+      branchId: 1,
+      createdById: 9,
+      formSnapshot: {
+        version: 'lark',
+        form: form('msmnlqej-osblnddobgd-0', 'mwyy86um-qw7ivzlas0c-1'),
+      },
+    });
+    // Công Ty → Kho SG: cộng quỹ Kho SG.
+    await f.ledger.applyApproval(f.prisma, {
+      id: 72,
+      status: 'APPROVED',
+      sourceType: 'INTERNAL_FUND_RECEIPT',
+      branchId: 1,
+      createdById: 9,
+      formSnapshot: {
+        version: 'lark',
+        form: form('mwyx7cp4-6zwzgxhro7u-1', 'msmnlsb8-8wr2wdb09lx-0'),
+      },
+    });
+    expect(f.transactions).toHaveLength(2);
+    expect(f.transactions[0]).toMatchObject({
+      transactionType: 'EXPENSE',
+      branchId: 1,
+      sourceKey: 'RECEIPT:71',
+      description: 'Chuyển về Công Ty',
+    });
+    expect(String(f.transactions[0].code)).toMatch(/^QF-CHI-/);
+    expect(f.transactions[0].occurredAt).toEqual(fundDayStart('2026-10-19'));
+    expect(f.transactions[1]).toMatchObject({
+      transactionType: 'RECEIPT',
+      branchId: 1,
+      sourceKey: 'RECEIPT:72',
+      description: 'Thu từ Công Ty',
+    });
+  });
+
   it('creates both transfer legs with the same group and never CashFlow', async () => {
     const f = fixture();
     const request = {

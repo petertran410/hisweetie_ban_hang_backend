@@ -98,6 +98,7 @@
     "seed:warehouse-finance": "ts-node prisma/seeds/add-warehouse-finance-permissions.ts",
     "import:office-ledger": "ts-node prisma/scripts/import-office-ledger.ts",
     "mirror:office-entries": "ts-node prisma/scripts/mirror-office-entries.ts",
+    "test:lark-receipt": "ts-node prisma/scripts/test-lark-receipt-flow.ts",
     "balance:vpsg-fund": "ts-node prisma/scripts/balance-vpsg-fund.ts",
     "add:vpsg-cash-permissions": "ts-node prisma/scripts/add-vpsg-cash-permissions.ts",
     "add:new-product-price-permissions": "ts-node prisma/scripts/add-new-product-price-permissions.ts",

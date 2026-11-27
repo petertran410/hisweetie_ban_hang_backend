@@ -17,6 +17,7 @@ import { LlmError, type ChatMessage } from '../llm/openai-chat-client';
 import { chatLine } from '../tools/smax-chats.tool';
 import { clip, vnDayKey } from '../tools/common';
 import { foldVi, matchProducts, parseJsonReply } from './product-matcher';
+import { MessageIntelQueryService } from '../../message-intel/message-intel-query.service';
 
 export const AUDIT_DAILY_REPORT = 'AI_DAILY_REPORT';
 /** Bản xem trước lưu lại trên POS (không gửi Lark, không chặn cron 18:00). */
@@ -24,8 +25,6 @@ export const AUDIT_DAILY_REPORT_SAVED = 'AI_DAILY_REPORT_SAVED';
 /** Nhóm Lark nhận báo cáo (user chốt); đổi bằng env LARK_AI_DAILY_CHAT_ID. */
 const DEFAULT_CHAT_ID = 'oc_92ea2a2bbcca2116111809a3461f5795';
 const THREADS_PER_PAGE = 150;
-/** Trần số hội thoại AI phân tích mỗi báo cáo (chi phí AI); đổi bằng AI_DAILY_REPORT_MAX_THREADS. */
-const MAX_THREADS = 800;
 const MAX_LINES = 40;
 const CHUNK = 12;
 const CONCURRENCY = 5;
@@ -40,6 +39,15 @@ export type DailyReport = {
     threads: number;
     messages: number;
     skipped?: number;
+    /** Số bản hội thoại trùng đã gộp (cùng 1 nhóm Zalo thấy ở nhiều kênh công ty) */
+    merged?: number;
+    /** Nhãn AI từng tin (Message Intelligence) trong ngày; coverage = đã gắn nhãn / tin khách cần hiểu */
+    intel?: {
+      complaints: number;
+      anomalies: number;
+      escalations: number;
+      coverage: number | null;
+    };
   };
   complaints: {
     customer: string;
@@ -156,6 +164,16 @@ export function findDiscrepancies(
  * Card Lark JSON 2.0 cho báo cáo cuối ngày (theo mẫu user gửi): tổng quan · ưu tiên 1 khiếu nại chưa
  * xử lý · ưu tiên 2 yêu cầu cần rà soát · ưu tiên 3 cảnh báo giá · việc cần làm.
  */
+/** Dòng nhãn AI từng tin; độ phủ thấp thì ghi rõ "chưa đầy đủ" (không kết luận "không có khiếu nại"). */
+function intelLine(intel: NonNullable<DailyReport['stats']['intel']>) {
+  const num = (n: number) => n.toLocaleString('vi-VN');
+  const coverage =
+    intel.coverage === null
+      ? 'chưa có tin khách'
+      : `đã gắn nhãn ${Math.round(intel.coverage * 100)}% tin khách${intel.coverage < 0.95 ? ', chưa đầy đủ' : ''}`;
+  return `<font color="grey">🤖 AI phân loại từng tin: ${num(intel.complaints)} khiếu nại · ${num(intel.anomalies)} bất thường · ${num(intel.escalations)} cần quản lý (${coverage})</font>`;
+}
+
 export function buildDailyCard(report: DailyReport, posUrl?: string | null): Record<string, unknown> {
   const md = (content: string) => ({ tag: 'markdown', content });
   const hr = { tag: 'hr' };
@@ -197,8 +215,9 @@ export function buildDailyCard(report: DailyReport, posUrl?: string | null): Rec
         md(
           [
             '**TỔNG QUAN**',
-            `**${num(report.stats.threads)}** hội thoại  ·  **${num(report.stats.messages)}** tin nhắn${report.stats.skipped ? `  ·  <font color="grey">chưa phân tích ${num(report.stats.skipped)} hội thoại (vượt giới hạn)</font>` : ''}`,
+            `**${num(report.stats.threads)}** hội thoại  ·  **${num(report.stats.messages)}** tin nhắn${report.stats.skipped ? `  ·  <font color="grey">chưa phân tích ${num(report.stats.skipped)} hội thoại (vượt giới hạn)</font>` : ''}${report.stats.merged ? `  ·  <font color="grey">đã gộp ${num(report.stats.merged)} bản trùng giữa các kênh</font>` : ''}`,
             `🔴 **${num(complaints.length)}** khiếu nại  ·  🟠 **${num(pending.length)}** yêu cầu cần rà soát  ·  💰 **${num(discrepancies.length)}** cảnh báo giá`,
+            ...(report.stats.intel ? [intelLine(report.stats.intel)] : []),
           ].join('\n'),
         ),
         hr,
@@ -282,6 +301,7 @@ export class DailyReportService {
     private readonly chat: AiChatService,
     @Inject(LARK_CLIENT) private readonly lark: lark.Client,
     @Optional() private readonly archive?: SmaxArchiveService,
+    @Optional() private readonly intel?: MessageIntelQueryService,
   ) {}
 
   async build(day = vnDayKey(new Date())): Promise<DailyReport> {
@@ -326,11 +346,34 @@ export class DailyReportService {
           });
       }
     }
+    // Cùng 1 nhóm Zalo được nhiều tài khoản công ty lưu thành nhiều hội thoại (mỗi kênh 1 bản) → gộp theo tin
+    // chung, mỗi cuộc trò chuyện phân tích 1 lần (không trùng khiếu nại, không tốn trần cho bản lặp)
+    const { list: unique, removed: merged } = await this.mergeSharedThreads(
+      candidates,
+      start,
+      end,
+    );
+    // Hội thoại có tin AI gắn khiếu nại / bất thường / cần quản lý lên trước (khi có đặt giới hạn khẩn cấp)
+    const signals = await this.intel
+      ?.dailySignals({ from: new Date(start), to: new Date(end) })
+      .catch((e: unknown) => {
+        this.logger.warn(
+          `Báo cáo cuối ngày: không đọc được nhãn tin: ${String(e)}`,
+        );
+        return null;
+      });
+    if (signals?.flaggedThreads.size) {
+      const flagged = (c: (typeof candidates)[number]) =>
+        signals.flaggedThreads.has(`${c.pagePid}:${c.tid}`) ? 0 : 1;
+      unique.sort((a, b) => flagged(a) - flagged(b));
+    }
     const texts: ThreadText[] = [];
     let messages = 0;
+    // Không giới hạn: phân tích mọi cuộc trò chuyện trong ngày (sau gộp nhóm trùng, 26/11: 2.965 bản theo kênh
+    // → 924). AI_DAILY_REPORT_MAX_THREADS chỉ là giới hạn khẩn cấp khi cần chặn chi phí.
     const maxThreads =
-      Number(process.env.AI_DAILY_REPORT_MAX_THREADS) || MAX_THREADS;
-    const list = candidates.slice(0, maxThreads);
+      Number(process.env.AI_DAILY_REPORT_MAX_THREADS) || Infinity;
+    const list = unique.slice(0, maxThreads);
     for (let i = 0; i < list.length; i += CONCURRENCY) {
       const batch = await Promise.all(
         list
@@ -410,8 +453,19 @@ export class DailyReportService {
         channels: pages.length,
         threads: texts.length,
         messages,
-        ...(candidates.length > list.length
-          ? { skipped: candidates.length - list.length }
+        ...(unique.length > list.length
+          ? { skipped: unique.length - list.length }
+          : {}),
+        ...(merged ? { merged } : {}),
+        ...(signals
+          ? {
+              intel: {
+                complaints: signals.complaints,
+                anomalies: signals.anomalies,
+                escalations: signals.escalations,
+                coverage: signals.coverage,
+              },
+            }
           : {}),
       },
       complaints,
@@ -638,6 +692,57 @@ export class DailyReportService {
   }
 
   /** Tin trong ngày của một hội thoại (tối đa 3 trang Smax), dạng dòng có tên người gửi. */
+  /**
+   * Gộp các hội thoại (đọc từ kho tin) có chung ít nhất 1 tin (msg_pid) trong ngày: cùng 1 nhóm Zalo ở nhiều
+   * kênh. Giữ bản có nhiều tin nhất trong ngày (đủ ngữ cảnh nhất), giữ thứ tự ban đầu. Hội thoại đọc qua Smax
+   * (kênh chưa lưu đủ) không gộp được → giữ nguyên.
+   */
+  private async mergeSharedThreads<
+    T extends { pagePid: string; tid: string; db?: boolean },
+  >(candidates: T[], start: number, end: number) {
+    const fromDb = candidates.filter((c) => c.db);
+    if (fromDb.length < 2) return { list: candidates, removed: 0 };
+    const keyOf = (c: { pagePid: string; tid: string }) =>
+      `${c.pagePid}:${c.tid}`;
+    const rows = await this.prisma.smaxMessage.findMany({
+      where: {
+        pagePid: { in: [...new Set(fromDb.map((c) => c.pagePid))] },
+        type: 'message',
+        createdAt: { gte: new Date(start), lt: new Date(end) },
+      },
+      select: { pagePid: true, tid: true, msgPid: true },
+    });
+    const parent = new Map(fromDb.map((c) => [keyOf(c), keyOf(c)]));
+    const find = (k: string): string => {
+      const p = parent.get(k)!;
+      if (p === k) return k;
+      const root = find(p);
+      parent.set(k, root);
+      return root;
+    };
+    const count = new Map<string, number>();
+    const firstOfMsg = new Map<string, string>();
+    for (const r of rows) {
+      const k = keyOf(r);
+      if (!parent.has(k)) continue;
+      count.set(k, (count.get(k) ?? 0) + 1);
+      const first = firstOfMsg.get(r.msgPid);
+      if (!first) firstOfMsg.set(r.msgPid, k);
+      else parent.set(find(k), find(first));
+    }
+    const best = new Map<string, string>();
+    for (const c of fromDb) {
+      const k = keyOf(c);
+      const root = find(k);
+      const cur = best.get(root);
+      if (!cur || (count.get(k) ?? 0) > (count.get(cur) ?? 0))
+        best.set(root, k);
+    }
+    const keep = new Set(best.values());
+    const list = candidates.filter((c) => !c.db || keep.has(keyOf(c)));
+    return { list, removed: candidates.length - list.length };
+  }
+
   private async threadText(
     t: {
       pagePid: string;

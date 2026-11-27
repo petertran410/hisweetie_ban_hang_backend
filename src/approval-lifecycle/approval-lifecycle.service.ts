@@ -926,7 +926,9 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
     });
     try {
       return await this.prisma.$transaction(async (tx) => {
-        if (receipt.kind === 'RECEIPT') {
+        // Thu vào / chi ra một quỹ (kể cả với Công Ty / Cá Nhân / Cửa Hàng):
+        // chiều cộng / trừ đọc lại từ form lúc ghi quỹ.
+        if (receipt.kind !== 'TRANSFER') {
           const created = await tx.approvalRequest.create({
             data: {
               ...base,
@@ -1153,10 +1155,10 @@ export class ApprovalLifecycleService implements OnApplicationBootstrap {
     if (request.sourceType === 'INTERNAL_FUND_RECEIPT') {
       const receipt = readFundReceipt(snapshot?.form || []);
       return (
-        receipt?.kind === 'RECEIPT' &&
+        (receipt?.kind === 'RECEIPT' || receipt?.kind === 'PAYOUT') &&
         this.larkMirror.hasLedgerTwin(tx, {
           branchId: receipt.branchId,
-          receipt: true,
+          receipt: receipt.kind === 'RECEIPT',
           amount: receipt.amount,
           at: receipt.occurredAt,
         })
