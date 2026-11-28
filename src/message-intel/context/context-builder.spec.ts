@@ -69,6 +69,25 @@ describe('buildState', () => {
     expect(state.previous).toHaveLength(PREVIOUS_LIMIT);
   });
 
+  it('cụm tin: gửi cả cụm (mỗi tin 1 dòng), ngữ cảnh là các tin trước tin đầu cụm', () => {
+    const burst = [
+      row(20, 20, { text: 'Còn 3t bỏ công hoà' }),
+      row(21, 21, { text: 'Xót lắm' }),
+      row(22, 22, { text: 'Mai e đòi cho' }),
+    ];
+    const state = buildState({
+      target: burst[2],
+      burst,
+      isGroup: false,
+      previous: [19, 20, 21].map((i) => ({ row: row(i, i), staff: false })),
+      quoted: null,
+    });
+    expect(state.target.text).toBe(
+      'Còn 3t bỏ công hoà\nXót lắm\nMai e đòi cho',
+    );
+    expect(state.previous.map((p) => p.text)).toEqual(['tin 19']);
+  });
+
   it('chat riêng: khách là customer; nhóm: other_member (không mặc định là khách); nhân viên là staff', () => {
     const prev = [{ row: row(1, 1), staff: true }];
     expect(

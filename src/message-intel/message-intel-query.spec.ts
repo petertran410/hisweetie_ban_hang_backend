@@ -111,6 +111,7 @@ describe('MessageIntelQueryService', () => {
         status: 'completed',
         topics: [],
         answers: null,
+        burstMsgPids: [],
       },
     ]);
     const r = await svc.messages({ from, to, page: 1, limit: 20 }, false);
@@ -159,6 +160,41 @@ describe('MessageIntelQueryService', () => {
     ]);
     expect(intel.consumeTokens).toHaveBeenCalledWith(2000);
     expect(r.result).not.toBeNull();
+  });
+});
+
+describe('MessageIntelQueryService.reportMessageFlags', () => {
+  it('báo cáo chat: khiếu nại / hỏi giá / tiêu cực → hit; cần trả lời → reply; tin đã gộp theo tin cuối cụm', async () => {
+    const { prisma, svc } = make();
+    const job = (msgPid: string, over: object = {}) => ({
+      msgPid,
+      status: 'completed',
+      mergedInto: null,
+      intent: 'order',
+      topics: [],
+      sentiment: 'neutral',
+      requiresReply: false,
+      requiresEscalation: false,
+      isAnomaly: false,
+      ...over,
+    });
+    prisma.smaxMessageIntel.findMany.mockResolvedValue([
+      job('k1', { intent: 'complaint' }),
+      job('g1', { intent: 'price_inquiry' }),
+      job('t1', { topics: ['missing_items'] }),
+      job('n1', { sentiment: 'negative' }),
+      job('r1', { requiresReply: true }),
+      job('ok'),
+      job('s1', { status: 'skipped', intent: null }),
+      job('m1', { status: 'skipped', mergedInto: 'k1', intent: null }),
+    ]);
+    const flags = (await svc.reportMessageFlags({ from, to }))!;
+    expect(['k1', 'g1', 't1', 'n1', 'm1'].every((p) => flags.get(p)!.hit)).toBe(
+      true,
+    );
+    expect(flags.get('r1')).toEqual({ hit: false, reply: true });
+    expect(flags.get('ok')).toEqual({ hit: false, reply: false });
+    expect(flags.get('s1')).toEqual({ hit: false, reply: false });
   });
 });
 

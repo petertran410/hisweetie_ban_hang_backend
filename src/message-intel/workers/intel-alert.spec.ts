@@ -21,6 +21,7 @@ const job = (over: object = {}) => ({
   requiresEscalation: false,
   topics: ['missing_items'],
   sentiment: 'negative',
+  burstMsgPids: [] as string[],
   ...over,
 });
 

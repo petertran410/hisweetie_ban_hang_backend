@@ -5,7 +5,12 @@ import { PrismaService } from '../../prisma/prisma.service';
 import { MessageIntelService } from '../message-intel.service';
 import { utcTs } from '../sql-time';
 import { intelConfig } from '../message-intel.config';
-import { type ArchiveRow, decide, groupByMsgPid } from '../rules/rule-engine';
+import {
+  type ArchiveRow,
+  CONTENT_SKIPS,
+  decide,
+  groupByMsgPid,
+} from '../rules/rule-engine';
 
 /** Số dòng smax_messages mỗi lượt quét. */
 export const SCAN_BATCH = 500;
@@ -194,23 +199,18 @@ export class IntelDiscoveryService {
         tid: msg.rep.tid,
         messageAt: msg.rep.createdAt,
       };
-      if (decision.status === 'pending')
-        data.push({ ...base, status: 'pending' });
-      else if (decision.status === 'skipped')
+      if (
+        decision.status === 'skipped' &&
+        !CONTENT_SKIPS.has(decision.skipReason)
+      )
         data.push({
           ...base,
           status: 'skipped',
           processingSource: 'rule',
           skipReason: decision.skipReason,
         });
-      else
-        data.push({
-          ...base,
-          status: 'completed',
-          processingSource: 'rule',
-          ...decision.labels,
-          classifiedAt: new Date(),
-        });
+      // Tin khách (chữ / ảnh / sticker / xác nhận): worker gom cụm tin liên tiếp rồi mới áp luật / gửi AI
+      else data.push({ ...base, status: 'pending' });
     }
     if (!data.length) return 0;
     const { count } = await this.prisma.smaxMessageIntel.createMany({

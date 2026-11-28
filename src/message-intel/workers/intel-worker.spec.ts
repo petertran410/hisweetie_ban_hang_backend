@@ -44,6 +44,8 @@ function make(
     runtime?: object;
     budget?: number;
     version?: object | null;
+    burst?: ArchiveRow[];
+    burstComplete?: boolean;
   } = {},
 ) {
   const prisma = {
@@ -77,6 +79,11 @@ function make(
       state: { target: {} },
       contextPartial: false,
       isGroup: false,
+    }),
+    // Mặc định tin đơn (cụm 1 tin, đã xong)
+    burst: jest.fn().mockResolvedValue({
+      members: opts.burst ?? [row()],
+      complete: opts.burstComplete ?? true,
     }),
   };
   const jev = {
@@ -237,5 +244,96 @@ describe('IntelWorkerService', () => {
     const { prisma, svc } = make({ rows: [] });
     await svc.runOnce(cfg);
     expect(update(prisma).data).toMatchObject({ status: 'failed' });
+  });
+
+  it('cụm tin: tin không phải tin cuối cụm → đã gộp (merged_into tin cuối), không gọi Jev', async () => {
+    const { prisma, jev, svc } = make({
+      burst: [row(), row({ id: 12n, msgPid: 'm2', text: 'Xót lắm' })],
+    });
+    await svc.runOnce(cfg);
+    expect(jev.classify).not.toHaveBeenCalled();
+    expect(update(prisma).data).toMatchObject({
+      status: 'skipped',
+      skipReason: 'merged',
+      mergedInto: 'm2',
+    });
+  });
+
+  it('cụm chưa xong (khách có thể nhắn tiếp) → hẹn lại sau tin cuối, không tính lượt', async () => {
+    const lastAt = new Date('2026-11-27T03:01:00Z');
+    const { prisma, jev, svc } = make({
+      burst: [row(), row({ id: 12n, msgPid: 'm2', createdAt: lastAt })],
+      burstComplete: false,
+    });
+    await svc.runOnce(cfg);
+    expect(jev.classify).not.toHaveBeenCalled();
+    expect(update(prisma).data).toMatchObject({
+      status: 'pending',
+      attemptCount: 0,
+      nextRetryAt: new Date(lastAt.getTime() + 180_000),
+    });
+  });
+
+  it('tin cuối cụm: gửi Jev cả cụm, lưu danh sách tin, các tin khác của cụm chuyển "đã gộp"', async () => {
+    const members = [
+      row({ id: 9n, msgPid: 'm0', text: '2t khoai nghiền ném an phú quý' }),
+      row({ id: 10n, msgPid: 'm05', text: ':)))' }),
+      row(),
+    ];
+    const { prisma, context, jev, svc } = make({ burst: members });
+    await svc.runOnce(cfg);
+    expect(context.build).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      members,
+    );
+    expect(jev.classify).toHaveBeenCalledTimes(1);
+    const merge = update(prisma, 0);
+    expect(merge.where).toMatchObject({
+      versionId: 7,
+      msgPid: { in: ['m0', 'm05'] },
+    });
+    expect(merge.data).toMatchObject({
+      status: 'skipped',
+      skipReason: 'merged',
+      mergedInto: 'm1',
+      intent: null,
+    });
+    expect(update(prisma, 1).data).toMatchObject({
+      status: 'completed',
+      processingSource: 'jev',
+      burstMsgPids: ['m0', 'm05', 'm1'],
+    });
+  });
+
+  it('cụm chỉ gồm "dạ / ok" → nhãn xác nhận bằng luật cho cả cụm, không gọi Jev', async () => {
+    const members = [
+      row({ id: 9n, msgPid: 'm0', text: 'Dạ' }),
+      row({ text: 'ok ạ' }),
+    ];
+    const { prisma, jev, svc } = make({
+      rows: [row({ text: 'ok ạ' })],
+      burst: members,
+    });
+    await svc.runOnce(cfg);
+    expect(jev.classify).not.toHaveBeenCalled();
+    expect(update(prisma, 1).data).toMatchObject({
+      status: 'completed',
+      processingSource: 'rule',
+      intent: 'acknowledgment',
+      burstMsgPids: ['m0', 'm1'],
+    });
+  });
+
+  it('thông báo cuộc gọi / kết bạn → bỏ qua, không gom cụm', async () => {
+    const { prisma, context, svc } = make({
+      rows: [row({ text: 'Cuộc gọi thoại đến \n📞<- 25 giây' })],
+    });
+    await svc.runOnce(cfg);
+    expect(context.burst).not.toHaveBeenCalled();
+    expect(update(prisma).data).toMatchObject({
+      status: 'skipped',
+      skipReason: 'system_notice',
+    });
   });
 });

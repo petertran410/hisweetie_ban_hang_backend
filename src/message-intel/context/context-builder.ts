@@ -2,13 +2,23 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { mask } from '../../ai-assistant/tools/smax-chats.tool';
 import { BUSINESS_CONTEXT } from '../taxonomy/taxonomy-v1';
-import { type ArchiveRow, isStaffMessage } from '../rules/rule-engine';
+import {
+  type ArchiveRow,
+  isStaffMessage,
+  isSystemNotice,
+  ORDER_REPORT,
+} from '../rules/rule-engine';
+import { BURST_MAX_SPAN_MS, BURST_SETTLE_MS, findBurst } from '../rules/burst';
 
 /** Số tin liền trước đưa vào ngữ cảnh. */
 export const PREVIOUS_LIMIT = 5;
 const MAX_TEXT = 500;
 /** Tin đích sát mốc bắt đầu lưu của kênh (trong khoảng này) → có thể thiếu tin trước đó. */
 const PARTIAL_WINDOW_MS = 24 * 3_600_000;
+/** Nội dung cụm gửi AI (các tin nối bằng xuống dòng) */
+const MAX_BURST_TEXT = 2_000;
+/** Tìm đầu cụm trong khoảng này trước tin đích (chuỗi tin liên tiếp dài hơn rất hiếm) */
+const BURST_LOOKBACK_MS = 60 * 60_000;
 
 export type Role = 'customer' | 'staff' | 'other_member';
 export type ContextLine = { role: Role; text: string };
@@ -70,6 +80,8 @@ export function roleOf(staff: boolean, isGroup: boolean): Role {
 
 export type StateInput = {
   target: ArchiveRow;
+  /** Cụm tin (≥ 2 tin, tin đích là tin cuối): gửi cả cụm, ngữ cảnh lấy trước tin đầu cụm */
+  burst?: ArchiveRow[];
   isGroup: boolean;
   /** Tin liền trước, mới nhất trước hoặc sau đều được (sẽ sắp lại theo thời gian) */
   previous: { row: ArchiveRow; staff: boolean }[];
@@ -78,12 +90,14 @@ export type StateInput = {
 
 /** Dựng state Jev từ dữ liệu đã tải (hàm thuần). Tin trước sắp theo created_at, id tăng dần. */
 export function buildState(input: StateInput): JevState {
+  const burst = input.burst && input.burst.length > 1 ? input.burst : null;
+  const anchor = burst?.[0] ?? input.target;
   const previous = [...input.previous]
     .filter(
       (p) =>
-        p.row.createdAt < input.target.createdAt ||
-        (p.row.createdAt.getTime() === input.target.createdAt.getTime() &&
-          p.row.id < input.target.id),
+        p.row.createdAt < anchor.createdAt ||
+        (p.row.createdAt.getTime() === anchor.createdAt.getTime() &&
+          p.row.id < anchor.id),
     )
     .sort(
       (a, b) =>
@@ -101,7 +115,13 @@ export function buildState(input: StateInput): JevState {
     conversation_type: input.isGroup ? 'group' : 'private',
     target: {
       role: roleOf(false, input.isGroup),
-      text: contentOf(input.target),
+      text: burst
+        ? burst
+            .map(contentOf)
+            .filter(Boolean)
+            .join('\n')
+            .slice(0, MAX_BURST_TEXT)
+        : contentOf(input.target),
     },
     quoted: input.quoted?.text.trim()
       ? {
@@ -111,6 +131,40 @@ export function buildState(input: StateInput): JevState {
       : null,
     previous,
   };
+}
+
+/**
+ * Nội dung các cụm tin (tin cuối cụm có burstMsgPids): msg_pid tin cuối cụm → các tin trong cụm (đã che,
+ * ảnh thành [ảnh]) theo thời gian, nối bằng xuống dòng. Đọc dòng của các tin ở kênh `pagePid`.
+ */
+export async function loadBurstTexts(
+  prisma: PrismaService,
+  items: { pagePid: string; msgPid: string; burstMsgPids: string[] }[],
+) {
+  const bursts = items.filter((i) => i.burstMsgPids.length > 1);
+  const out = new Map<string, string>();
+  if (!bursts.length) return out;
+  const rows = await prisma.smaxMessage.findMany({
+    where: {
+      OR: bursts.map((b) => ({
+        pagePid: b.pagePid,
+        msgPid: { in: b.burstMsgPids },
+      })),
+    },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+  });
+  for (const b of bursts) {
+    const members = new Set(b.burstMsgPids);
+    out.set(
+      b.msgPid,
+      rows
+        .filter((r) => r.pagePid === b.pagePid && members.has(r.msgPid))
+        .map(contentOf)
+        .filter(Boolean)
+        .join('\n'),
+    );
+  }
+  return out;
 }
 
 type QuoteJson = {
@@ -127,8 +181,12 @@ export class ContextBuilder {
   async build(
     target: ArchiveRow & { quote?: unknown },
     ourPagePids: ReadonlySet<string>,
+    burstRows?: (ArchiveRow & { quote?: unknown })[],
   ) {
-    const at = target.createdAt;
+    const burst = burstRows && burstRows.length > 1 ? burstRows : undefined;
+    // Cụm: ngữ cảnh là các tin trước tin đầu cụm
+    const anchor = burst?.[0] ?? target;
+    const at = anchor.createdAt;
     const [thread, previousRows, channel] = await Promise.all([
       this.prisma.smaxThread.findUnique({
         where: { pagePid_tid: { pagePid: target.pagePid, tid: target.tid } },
@@ -143,7 +201,7 @@ export class ContextBuilder {
           recalled: false,
           OR: [
             { createdAt: { lt: at } },
-            { createdAt: at, id: { lt: target.id } },
+            { createdAt: at, id: { lt: anchor.id } },
           ],
         },
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -155,7 +213,8 @@ export class ContextBuilder {
       }),
     ]);
     // Tin trước do kênh khác của công ty gửi: dòng cùng msg_pid ở kênh đó có from_me
-    const quote = (target.quote ?? null) as QuoteJson | null;
+    const quote = ((burst ?? [target]).find((r) => r.quote)?.quote ??
+      null) as QuoteJson | null;
     const pids = [
       ...previousRows.map((r) => r.msgPid),
       ...(quote?.pid ? [quote.pid] : []),
@@ -183,6 +242,7 @@ export class ContextBuilder {
     const isGroup = thread?.isGroup ?? false;
     const state = buildState({
       target,
+      burst,
       isGroup,
       previous: previousRows.map((row) => ({ row, staff: staff(row) })),
       quoted: quote?.text
@@ -209,5 +269,57 @@ export class ContextBuilder {
       (!channel ||
         at.getTime() - channel.backfillFrom.getTime() < PARTIAL_WINDOW_MS);
     return { state, isGroup, contextPartial };
+  }
+
+  /**
+   * Cụm tin chứa tin đích trong hội thoại của dòng đại diện: tin khách liên tiếp cùng người gửi (xem
+   * rules/burst). Tin nhân viên gửi từ kênh khác (from_me ở dòng của kênh đó) cắt cụm như tin nhân viên.
+   */
+  async burst(
+    target: ArchiveRow,
+    ourPagePids: ReadonlySet<string>,
+    now = new Date(),
+  ) {
+    const t = target.createdAt.getTime();
+    const rows = await this.prisma.smaxMessage.findMany({
+      where: {
+        pagePid: target.pagePid,
+        tid: target.tid,
+        type: 'message',
+        recalled: false,
+        createdAt: {
+          gte: new Date(t - BURST_LOOKBACK_MS),
+          lte: new Date(t + BURST_MAX_SPAN_MS + BURST_SETTLE_MS),
+        },
+      },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    });
+    const sentByUs = rows.length
+      ? new Set(
+          (
+            await this.prisma.smaxMessage.findMany({
+              where: {
+                pagePid: { in: [...ourPagePids] },
+                msgPid: { in: rows.map((r) => r.msgPid) },
+                fromMe: true,
+              },
+              select: { msgPid: true },
+            })
+          ).map((r) => r.msgPid),
+        )
+      : new Set<string>();
+    const found = findBurst(
+      rows.map((r) => ({
+        ...r,
+        member:
+          !sentByUs.has(r.msgPid) &&
+          !isStaffMessage([r], ourPagePids) &&
+          !isSystemNotice(r.text) &&
+          !ORDER_REPORT.test(r.text),
+      })),
+      target.msgPid,
+      now,
+    );
+    return found ?? { members: [target], complete: true };
   }
 }

@@ -121,4 +121,22 @@ describe('decide', () => {
       one({ text: 'Dạ', attachments: [{ type: 'image', url: 'u' }] }),
     ).toEqual({ status: 'pending' });
   });
+
+  it('thông báo Zalo (kết bạn, cuộc gọi đến / đi / video / nhỡ) → bỏ qua; câu nhắc tới cuộc gọi vẫn đi Jev', () => {
+    for (const text of [
+      'Bạn vừa kết bạn với Quỳnh Anh',
+      'Cuộc gọi thoại đến \n📞<- 25 giây',
+      'Cuộc gọi thoại đi\n📞-> 1 phút 3 giây',
+      'Cuộc gọi video đi \n📞-> 9 giây',
+      'Cuộc gọi nhỡ',
+      'Cuộc gọi',
+    ])
+      expect(one({ text })).toEqual({
+        status: 'skipped',
+        skipReason: 'system_notice',
+      });
+    expect(
+      one({ text: 'Cuộc gọi lúc nãy chị không nghe được, gọi lại giúp chị' }),
+    ).toEqual({ status: 'pending' });
+  });
 });

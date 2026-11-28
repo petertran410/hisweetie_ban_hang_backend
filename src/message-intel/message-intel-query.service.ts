@@ -9,6 +9,7 @@ import type { IntelVersion } from './providers/classifier.interface';
 import {
   buildState,
   contentOf,
+  loadBurstTexts,
   PREVIOUS_LIMIT,
   type Role,
 } from './context/context-builder';
@@ -43,6 +44,19 @@ export type ReviewLabels = {
 };
 
 const SKIPPED_ELIGIBLE = new Set(['media_only', 'sticker_only']);
+/** Báo cáo chat: ý định / chủ đề cần đưa vào (khiếu nại, đổi trả, giá) */
+const REPORT_INTENTS = new Set([
+  'complaint',
+  'return_refund',
+  'order_cancel',
+  'price_inquiry',
+]);
+const REPORT_TOPICS = new Set([
+  'pricing',
+  'product_quality',
+  'missing_items',
+  'wrong_items',
+]);
 const THREAD_LABEL_DAYS = 3;
 type ThreadRow = { intent: string | null; is_anomaly: boolean | null };
 /** Nhãn hội thoại (cùng bộ nhãn nút "Phân loại" cũ: ai_thread_labels) theo thứ tự ưu tiên. */
@@ -295,6 +309,10 @@ export class MessageIntelQueryService {
     ]);
     const rowById = new Map(rows.map((r) => [r.id, r]));
     const threadOf = new Map(threads.map((t) => [`${t.pagePid}:${t.tid}`, t]));
+    // Tin cuối cụm: hiện cả cụm tin khách gửi liên tiếp
+    const burstText = withContent
+      ? await loadBurstTexts(this.prisma, jobs)
+      : new Map<string, string>();
     return {
       total,
       page: filter.page,
@@ -316,7 +334,11 @@ export class MessageIntelQueryService {
           threadName: thread?.name ?? null,
           isGroup: thread?.isGroup ?? null,
           senderName: withContent ? (row?.senderName ?? null) : null,
-          text: withContent && row ? contentOf(row) : null,
+          text: withContent
+            ? (burstText.get(j.msgPid) ?? (row ? contentOf(row) : null))
+            : null,
+          burstSize: j.burstMsgPids.length > 1 ? j.burstMsgPids.length : null,
+          mergedInto: j.mergedInto,
           status: j.status,
           skipReason: j.skipReason,
           source: j.processingSource,
@@ -343,9 +365,15 @@ export class MessageIntelQueryService {
   async nextReview(reviewerId: number, versionIdArg?: number) {
     const versionId = await this.versionId(versionIdArg);
     const [next] = await this.prisma.$queryRaw<
-      { msg_pid: string; message_id: bigint; page_pid: string; tid: string }[]
+      {
+        msg_pid: string;
+        message_id: bigint;
+        page_pid: string;
+        tid: string;
+        burst_msg_pids: string[];
+      }[]
     >`
-      SELECT i.msg_pid, i.message_id, i.page_pid, i.tid FROM smax_message_intel i
+      SELECT i.msg_pid, i.message_id, i.page_pid, i.tid, i.burst_msg_pids FROM smax_message_intel i
       WHERE i.version_id = ${versionId} AND i.status = 'completed' AND i.processing_source = 'jev'
         AND NOT EXISTS (
           SELECT 1 FROM smax_intel_reviews r WHERE r.msg_pid = i.msg_pid AND r.reviewer_id = ${reviewerId}
@@ -359,6 +387,18 @@ export class MessageIntelQueryService {
     ]);
     if (!next) return { item: null, done, total };
     const ours = await this.intel.ourPagePids();
+    // Cụm tin: chấm cả cụm, ngữ cảnh là các tin trước tin đầu cụm (giống lúc gửi Jev)
+    const members =
+      next.burst_msg_pids.length > 1
+        ? await this.prisma.smaxMessage.findMany({
+            where: {
+              pagePid: next.page_pid,
+              msgPid: { in: next.burst_msg_pids },
+            },
+            orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+          })
+        : [];
+    const anchorId = members[0]?.id ?? next.message_id;
     const [target, thread, previous] = await Promise.all([
       this.prisma.smaxMessage.findUnique({ where: { id: next.message_id } }),
       this.prisma.smaxThread.findUnique({
@@ -367,7 +407,7 @@ export class MessageIntelQueryService {
       }),
       this.prisma.smaxMessage
         .findFirst({
-          where: { id: next.message_id },
+          where: { id: anchorId },
           select: { createdAt: true },
         })
         .then((t) =>
@@ -381,7 +421,7 @@ export class MessageIntelQueryService {
                   recalled: false,
                   OR: [
                     { createdAt: { lt: t.createdAt } },
-                    { createdAt: t.createdAt, id: { lt: next.message_id } },
+                    { createdAt: t.createdAt, id: { lt: anchorId } },
                   ],
                 },
                 orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -419,7 +459,10 @@ export class MessageIntelQueryService {
         isGroup: thread?.isGroup ?? false,
         messageAt: target.createdAt,
         senderName: target.senderName,
-        text: contentOf(target),
+        text: members.length
+          ? members.map(contentOf).filter(Boolean).join('\n')
+          : contentOf(target),
+        burstSize: members.length > 1 ? members.length : null,
         quote: (target.quote as { text?: string } | null)?.text ?? null,
         previous: previous.reverse().map((p) => ({
           role: role(p),
@@ -566,6 +609,7 @@ export class MessageIntelQueryService {
       requires_reply: boolean | null;
       processing_source: string | null;
       answers: { intent?: { confidence?: number } } | null;
+      burst_msg_pids: string[];
     };
     const [stats, rows] = await Promise.all([
       this.prisma.$queryRaw<
@@ -584,7 +628,7 @@ export class MessageIntelQueryService {
       this.prisma.$queryRaw<Row[]>`
         WITH j AS (${scoped})
         SELECT msg_pid, my_page, my_tid, my_id, message_at, intent, topics, sentiment, urgency, is_anomaly,
-               requires_escalation, requires_reply, processing_source, answers
+               requires_escalation, requires_reply, processing_source, answers, burst_msg_pids
         FROM j WHERE ${Prisma.join(conds, ' AND ')}
         ORDER BY message_at DESC LIMIT ${limit + 1}`,
     ]);
@@ -623,6 +667,14 @@ export class MessageIntelQueryService {
     ]);
     const textOf = new Map(texts.map((t) => [t.id, t]));
     const threadOf = new Map(threads.map((t) => [`${t.pagePid}:${t.tid}`, t]));
+    const burstText = await loadBurstTexts(
+      this.prisma,
+      page.map((r) => ({
+        pagePid: r.my_page,
+        msgPid: r.msg_pid,
+        burstMsgPids: r.burst_msg_pids,
+      })),
+    );
     return {
       versionId: version.id,
       coverage: {
@@ -649,7 +701,9 @@ export class MessageIntelQueryService {
           thread: thread?.name ?? null,
           isGroup: thread?.isGroup ?? null,
           at: r.message_at,
-          text: row ? contentOf(row).slice(0, 200) : null,
+          text:
+            burstText.get(r.msg_pid)?.slice(0, 400) ??
+            (row ? contentOf(row).slice(0, 200) : null),
           intent: r.intent,
           intentConfidence: r.answers?.intent?.confidence ?? null,
           byRule: r.processing_source === 'rule',
@@ -691,6 +745,55 @@ export class MessageIntelQueryService {
       anomalies: overview.flags.anomaly,
       escalations: overview.flags.escalation,
     };
+  }
+
+  /**
+   * Nhãn từng tin trong ngày cho báo cáo chat: msg_pid → { hit: tin cần đưa vào báo cáo (khiếu nại, đổi trả,
+   * hủy đơn, hỏi giá, bất thường, cần quản lý, tiêu cực, chủ đề giá / chất lượng / thiếu / sai hàng); reply:
+   * AI thấy cần trả lời }. Tin đã xử lý mà không có nhãn trên (bình thường, nhân viên, chỉ ảnh…) → hit/reply
+   * false; tin đã gộp lấy nhãn tin cuối cụm. Tin chưa phân loại không có trong map (báo cáo giữ lại).
+   */
+  async reportMessageFlags(range: { from: Date; to: Date }) {
+    const version = await this.intel.activeVersion();
+    if (!version) return null;
+    const rows = await this.prisma.smaxMessageIntel.findMany({
+      where: {
+        versionId: version.id,
+        status: { in: ['completed', 'skipped'] },
+        // Tin cuối cụm có thể sau tin đầu cụm vài phút
+        messageAt: {
+          gte: range.from,
+          lt: new Date(range.to.getTime() + 15 * 60_000),
+        },
+      },
+      select: {
+        msgPid: true,
+        status: true,
+        mergedInto: true,
+        intent: true,
+        topics: true,
+        sentiment: true,
+        requiresReply: true,
+        requiresEscalation: true,
+        isAnomaly: true,
+      },
+    });
+    const flag = (r: (typeof rows)[number]) => ({
+      hit:
+        r.status === 'completed' &&
+        (REPORT_INTENTS.has(r.intent ?? '') ||
+          r.isAnomaly === true ||
+          r.requiresEscalation === true ||
+          r.sentiment === 'negative' ||
+          r.topics.some((t) => REPORT_TOPICS.has(t))),
+      reply: r.status === 'completed' && r.requiresReply === true,
+    });
+    const out = new Map<string, { hit: boolean; reply: boolean }>();
+    for (const r of rows) out.set(r.msgPid, flag(r));
+    for (const r of rows)
+      if (r.mergedInto && out.has(r.mergedInto))
+        out.set(r.msgPid, out.get(r.mergedInto)!);
+    return out;
   }
 
   /** Hội thoại nào trong danh sách đang bị loại trừ khỏi phân loại tin ("page_pid:tid"). */

@@ -4,6 +4,7 @@ import {
   dailyReportUrl,
   DailyReportService,
   findDiscrepancies,
+  relevantMessages,
   type DailyReport,
 } from './daily-report.service';
 
@@ -130,7 +131,7 @@ describe('buildDailyCard', () => {
   it('card JSON 2.0 theo mẫu: tiêu đề + ngày, tổng quan, 3 mục ưu tiên, việc cần làm', () => {
     const card: any = buildDailyCard(REPORT);
     expect(card.schema).toBe('2.0');
-    expect(card.header.title.content).toBe('📊 BÁO CÁO CHAT CUỐI NGÀY');
+    expect(card.header.title.content).toBe('📊 BÁO CÁO CHAT');
     expect(card.header.subtitle.content).toBe('22/11/2026 · Báo cáo tự động');
     const all = texts(card).join('\n');
     expect(all).toContain('**86** hội thoại  ·  **900** tin nhắn');
@@ -155,7 +156,7 @@ describe('buildDailyCard', () => {
     const lines = section.split('\n');
     expect(lines[1]).toContain('· **20:00**');
     expect(lines).toHaveLength(1 + 10 + 1);
-    expect(lines.at(-1)).toBe('_Còn 3 mục khác — xem danh sách đầy đủ trên POS (Báo cáo › Smax chat › Báo cáo chat cuối ngày)._');
+    expect(lines.at(-1)).toBe('_Còn 3 mục khác — xem danh sách đầy đủ trên POS (Báo cáo › Smax chat › Báo cáo chat)._');
   });
 });
 
@@ -308,6 +309,7 @@ describe('DailyReportService.build + nhãn AI từng tin (Message Intelligence)'
   it('hội thoại có tin khiếu nại / bất thường lên trước (trần số hội thoại không cắt mất); stats kèm độ phủ', async () => {
     process.env.AI_DAILY_REPORT_MAX_THREADS = '1';
     const { service, threadText } = make({
+      reportMessageFlags: jest.fn().mockResolvedValue(null),
       dailySignals: jest.fn().mockResolvedValue({
         flaggedThreads: new Set(['p1:c']),
         coverage: 0.6,
@@ -358,3 +360,43 @@ describe('DailyReportService.build + nhãn AI từng tin (Message Intelligence)'
     expect(texts(buildDailyCard({ ...REPORT, stats: { ...REPORT.stats, merged: 1908 } })).join('\n')).toContain('đã gộp 1.908 bản trùng giữa các kênh');
   });
 });
+
+describe('relevantMessages: báo cáo chat chỉ lấy đoạn cần chú ý theo nhãn AI', () => {
+  const kh = (id: string) => ({ id, fromMe: false });
+  const nv = (id: string) => ({ id, fromMe: true });
+  const ok = { hit: false, reply: false };
+
+  it('chưa bật phân loại tin (không có nhãn) → giữ nguyên', () => {
+    const list = [kh('a'), nv('b')];
+    expect(relevantMessages(list, null)).toEqual(list);
+  });
+
+  it('toàn tin AI phân loại bình thường (kể cả cần trả lời mà bên bán đã trả lời) → bỏ hội thoại', () => {
+    const flags = new Map([
+      ['a', ok],
+      ['b', { hit: false, reply: true }],
+    ]);
+    expect(relevantMessages([kh('a'), kh('b'), nv('c')], flags)).toEqual([]);
+  });
+
+  it('tin cần chú ý: lấy kèm 3 tin trước / 5 tin sau; các đoạn rời cách nhau null ("…")', () => {
+    const list = Array.from({ length: 20 }, (_, i) =>
+      i === 6 || i === 12 ? nv(`m${i}`) : kh(`m${i}`),
+    );
+    const flags = new Map(list.map((m) => [m.id, ok]));
+    flags.set('m4', { hit: true, reply: false }); // khiếu nại
+    flags.set('m17', { hit: false, reply: true }); // cần trả lời, cuối ngày chưa ai trả lời
+    const out = relevantMessages(list, flags).map((m) => m?.id ?? '…');
+    expect(out).toEqual([
+      'm1', 'm2', 'm3', 'm4', 'm5', 'm6', 'm7', 'm8', 'm9',
+      '…',
+      'm14', 'm15', 'm16', 'm17', 'm18', 'm19',
+    ]);
+  });
+
+  it('tin chưa có nhãn (chưa phân loại xong / kênh chưa bật) → giữ lại', () => {
+    const flags = new Map([['a', ok]]);
+    expect(relevantMessages([kh('a'), kh('b')], flags).map((m) => m?.id)).toEqual(['a', 'b']);
+  });
+});
+
