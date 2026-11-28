@@ -7,7 +7,7 @@ import { LARK_CLIENT } from '../../lark-sync/lark-client.provider';
 import { MessageIntelService } from '../message-intel.service';
 import { utcTs } from '../sql-time';
 import { alertSettings, intelConfig, vnDay } from '../message-intel.config';
-import { contentOf } from '../context/context-builder';
+import { contentOf, loadBurstTexts } from '../context/context-builder';
 import { INTENTS, TOPICS } from '../taxonomy/taxonomy-v1';
 
 /** Chỉ cảnh báo tin mới (không cảnh báo tin cũ do backfill phân loại lại). */
@@ -303,10 +303,14 @@ export class IntelAlertService {
           select: { name: true },
         }),
       ]);
+      // Tin cuối cụm: hiện cả cụm tin khách gửi liên tiếp
+      const burstText = (await loadBurstTexts(this.prisma, [job])).get(
+        job.msgPid,
+      );
       const card = buildAlertCard({
         reason,
         job,
-        text: rep ? contentOf(rep).slice(0, 300) : '',
+        text: (burstText ?? (rep ? contentOf(rep) : '')).slice(0, 300),
         thread: thread?.name || 'Hội thoại',
         channel: channel?.name ?? job.pagePid,
         smaxUrl: `https://smax.ai/bizs/${process.env.SMAX_BIZ_ALIAS?.trim() || 'dieptra'}/chats/${job.pagePid}?tid=${job.tid}`,

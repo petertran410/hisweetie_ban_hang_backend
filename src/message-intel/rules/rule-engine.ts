@@ -32,7 +32,11 @@ export type SkipReason =
   | 'sticker_only'
   | 'empty'
   /** Hội thoại nằm trong danh sách loại trừ (smax_intel_exclusions) */
-  | 'excluded';
+  | 'excluded'
+  /** Thông báo hệ thống Zalo lưu như tin khách: "Bạn vừa kết bạn với …", "Cuộc gọi thoại đến …" */
+  | 'system_notice'
+  /** Đã gộp vào cụm tin liên tiếp của cùng khách (tin cuối cụm mới gửi AI) */
+  | 'merged';
 
 export type RuleDecision =
   | { status: 'skipped'; skipReason: SkipReason }
@@ -52,7 +56,13 @@ export type RuleDecision =
   | { status: 'pending' };
 
 // Tin báo đơn tự động của POS gửi vào nhóm khách ("🎉 Báo đơn BD… / Hoá đơn: HD…")
-const ORDER_REPORT = /Báo đơn BD\d+/;
+export const ORDER_REPORT = /Báo đơn BD\d+/;
+// Thông báo Zalo lưu như tin thường: kết bạn, cuộc gọi thoại / video (đến, đi, nhỡ) kèm "📞<- 12 giây"
+const SYSTEM_NOTICE =
+  /^(?:Bạn vừa kết bạn với [^\n]+|Cuộc gọi(?: (?:thoại|video))?(?: (?:đến|đi|nhỡ))?\s*(?:📞[^\n]*)?)\s*$/u;
+
+/** Thông báo hệ thống (kết bạn / cuộc gọi), không phải nội dung khách viết. */
+export const isSystemNotice = (text: string) => SYSTEM_NOTICE.test(text.trim());
 
 /** Gộp các dòng cùng msg_pid; bỏ tin hệ thống (không tạo job). Giữ thứ tự xuất hiện đầu tiên. */
 export function groupByMsgPid(rows: ArchiveRow[]): LogicalMessage[] {
@@ -87,6 +97,13 @@ export function isStaffMessage(
   );
 }
 
+/** Bỏ qua theo nội dung tin khách (chỉ ảnh / sticker / trống): vẫn gom vào cụm, xét lại trên cả cụm. */
+export const CONTENT_SKIPS: ReadonlySet<SkipReason> = new Set([
+  'media_only',
+  'sticker_only',
+  'empty',
+]);
+
 const hasAttachments = (rows: ArchiveRow[]) =>
   rows.some((r) => Array.isArray(r.attachments) && r.attachments.length > 0);
 
@@ -99,6 +116,8 @@ export function decide(
   if (isStaffMessage(rows, ourPagePids))
     return { status: 'skipped', skipReason: 'staff' };
   const text = rep.text.trim();
+  if (isSystemNotice(text))
+    return { status: 'skipped', skipReason: 'system_notice' };
   if (ORDER_REPORT.test(text))
     return { status: 'skipped', skipReason: 'order_report' };
   if (rows.some((r) => r.recalled))

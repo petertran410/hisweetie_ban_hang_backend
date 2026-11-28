@@ -127,7 +127,7 @@ describe('IntelDiscoveryService.discover', () => {
 });
 
 describe('IntelDiscoveryService.createJobs', () => {
-  it('nạp đủ dòng cùng msg_pid ở các kênh: kênh khác from_me → nhân viên; xác nhận → nhãn luật; còn lại pending', async () => {
+  it('nạp đủ dòng cùng msg_pid ở các kênh: kênh khác from_me → nhân viên; tin khách (kể cả xác nhận) → pending', async () => {
     const rows = [
       row(1, { msgPid: 'k' }),
       row(2, { text: 'dạ' }),
@@ -150,10 +150,8 @@ describe('IntelDiscoveryService.createJobs', () => {
       jobs(prisma)!.data.map((j) => [j.msgPid, j]),
     );
     expect(byPid.k).toMatchObject({ status: 'skipped', skipReason: 'staff' });
-    expect(byPid.m2).toMatchObject({
-      status: 'completed',
-      intent: 'acknowledgment',
-    });
+    // "dạ": chờ worker gom cụm rồi mới áp luật xác nhận
+    expect(byPid.m2).toMatchObject({ status: 'pending' });
     expect(byPid.m3).toMatchObject({ status: 'pending' });
     expect(byPid.m4).toBeUndefined();
   });

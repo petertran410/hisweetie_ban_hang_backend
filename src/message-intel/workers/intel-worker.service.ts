@@ -12,7 +12,13 @@ import {
   ClassifierError,
   type IntelVersion,
 } from '../providers/classifier.interface';
-import { decide, groupByMsgPid } from '../rules/rule-engine';
+import {
+  type ArchiveRow,
+  CONTENT_SKIPS,
+  decide,
+  groupByMsgPid,
+} from '../rules/rule-engine';
+import { BURST_SETTLE_MS } from '../rules/burst';
 
 /** Giữ job tối đa chừng này; worker chết giữa chừng thì lượt sau lấy lại. */
 export const LEASE_MS = 5 * 60_000;
@@ -153,7 +159,11 @@ export class IntelWorkerService {
       return 'failed';
     }
     const decision = decide({ ...msg, rep }, ours);
-    if (decision.status === 'skipped') {
+    // Nhân viên / báo đơn / thu hồi / thông báo / loại trừ: bỏ qua, không gom cụm
+    if (
+      decision.status === 'skipped' &&
+      !CONTENT_SKIPS.has(decision.skipReason)
+    ) {
       await this.finish(job, token, {
         status: 'skipped',
         processingSource: 'rule',
@@ -161,22 +171,79 @@ export class IntelWorkerService {
       });
       return 'skipped';
     }
-    if (decision.status === 'completed') {
+    // Tin khách: gom các tin ngắn liên tiếp cùng người gửi; chỉ tin cuối cụm được phân loại
+    const burst = await this.context.burst(rep, ours);
+    const last = burst.members[burst.members.length - 1];
+    if (!burst.complete) {
+      // Khách có thể còn nhắn tiếp: hẹn lại, không tính lượt
+      await this.finish(job, token, {
+        status: 'pending',
+        nextRetryAt: new Date(last.createdAt.getTime() + BURST_SETTLE_MS),
+        attemptCount: Math.max(0, job.attempt_count - 1),
+      });
+      return 'deferred';
+    }
+    if (last.msgPid !== job.msg_pid) {
+      await this.finish(job, token, {
+        status: 'skipped',
+        processingSource: 'rule',
+        skipReason: 'merged',
+        mergedInto: last.msgPid,
+      });
+      return 'merged';
+    }
+    const members: ArchiveRow[] = burst.members;
+    const burstMsgPids = members.length > 1 ? members.map((m) => m.msgPid) : [];
+    if (burstMsgPids.length)
+      await this.mergeOthers(version.id, burstMsgPids, job.msg_pid);
+    // Luật trên cả cụm: toàn "ok / dạ" → xác nhận; không có chữ → chỉ ảnh / sticker
+    const final = burstMsgPids.length
+      ? decide(
+          {
+            msgPid: msg.msgPid,
+            rep: {
+              ...rep,
+              text: members
+                .map((m) => m.text.trim())
+                .filter(Boolean)
+                .join('\n'),
+            },
+            rows: [...msg.rows, ...members],
+          },
+          ours,
+        )
+      : decision;
+    if (final.status === 'skipped') {
+      await this.finish(job, token, {
+        status: 'skipped',
+        processingSource: 'rule',
+        skipReason: final.skipReason,
+        burstMsgPids,
+      });
+      return 'skipped';
+    }
+    if (final.status === 'completed') {
       await this.finish(job, token, {
         status: 'completed',
         processingSource: 'rule',
-        ...decision.labels,
+        ...final.labels,
+        burstMsgPids,
         classifiedAt: new Date(),
       });
       return 'completed';
     }
     try {
-      const { state, contextPartial } = await this.context.build(rep, ours);
+      const { state, contextPartial } = await this.context.build(
+        rep,
+        ours,
+        burstMsgPids.length ? members : undefined,
+      );
       const result = await this.jev.classify(state, version);
       await this.finish(job, token, {
         status: 'completed',
         processingSource: 'jev',
         ...result.labels,
+        burstMsgPids,
         answers: result.answers,
         contextPartial,
         model: result.model,
@@ -210,6 +277,41 @@ export class IntelWorkerService {
       });
       return 'retry';
     }
+  }
+
+  /**
+   * Các tin khác của cụm (đang chờ, hoặc đã xử lý bằng luật trước khi cụm xong) → đã gộp vào tin cuối cụm,
+   * xoá nhãn luật để thống kê đếm cả cụm 1 lần. Tin đã gửi AI riêng thì giữ nguyên.
+   */
+  private mergeOthers(versionId: number, msgPids: string[], head: string) {
+    return this.prisma.smaxMessageIntel.updateMany({
+      where: {
+        versionId,
+        msgPid: { in: msgPids.filter((p) => p !== head) },
+        OR: [
+          { status: { in: ['pending', 'retry'] } },
+          { status: 'completed', processingSource: 'rule' },
+          { status: 'skipped', skipReason: { in: [...CONTENT_SKIPS] } },
+        ],
+      },
+      data: {
+        status: 'skipped',
+        processingSource: 'rule',
+        skipReason: 'merged',
+        mergedInto: head,
+        claimToken: null,
+        lockedUntil: null,
+        intent: null,
+        topics: [],
+        sentiment: null,
+        urgency: null,
+        purchaseIntent: null,
+        requiresReply: null,
+        requiresEscalation: null,
+        isAnomaly: null,
+        classifiedAt: null,
+      },
+    });
   }
 
   /** Dry-run: không lấy job, không gọi API; dựng thử ngữ cảnh vài tin và log ước tính (10 phút / lần). */

@@ -30,6 +30,47 @@ const CHUNK = 12;
 const CONCURRENCY = 5;
 /** Số dòng tối đa mỗi mục trong card Lark. */
 const ITEM_LIMIT = 10;
+/** Quanh mỗi tin khách cần chú ý: lấy thêm ngần này tin trước / sau (để AI biết bối cảnh, đã xử lý chưa) */
+const CONTEXT_BEFORE = 3;
+const CONTEXT_AFTER = 5;
+
+/** Nhãn AI từng tin (msg_pid → hit / reply), xem MessageIntelQueryService.reportMessageFlags */
+export type ReportFlags = Map<string, { hit: boolean; reply: boolean }>;
+
+/**
+ * Chọn đoạn tin cần đưa vào báo cáo theo nhãn AI: tin khách cần chú ý (hit), tin cần trả lời mà sau đó bên
+ * bán chưa nhắn, hoặc tin chưa có nhãn (chưa phân loại / kênh chưa bật) — kèm vài tin trước / sau. Các đoạn
+ * cách nhau trả về null giữa 2 đoạn (để chèn "…"). Không có tin nào cần → []: hội thoại bình thường, bỏ qua.
+ * Không có nhãn (chưa bật phân loại) → giữ nguyên.
+ */
+export function relevantMessages<M extends { id: string; fromMe: boolean }>(
+  messages: M[],
+  flags: ReportFlags | null,
+): (M | null)[] {
+  if (!flags) return messages;
+  const keep = new Set<number>();
+  messages.forEach((m, i) => {
+    if (m.fromMe) return;
+    const f = flags.get(m.id);
+    const need =
+      !f || f.hit || (f.reply && !messages.slice(i + 1).some((x) => x.fromMe));
+    if (!need) return;
+    for (
+      let k = Math.max(0, i - CONTEXT_BEFORE);
+      k <= Math.min(messages.length - 1, i + CONTEXT_AFTER);
+      k++
+    )
+      keep.add(k);
+  });
+  const out: (M | null)[] = [];
+  [...keep]
+    .sort((a, b) => a - b)
+    .forEach((k, idx, arr) => {
+      if (idx > 0 && k !== arr[idx - 1] + 1) out.push(null);
+      out.push(messages[k]);
+    });
+  return out;
+}
 
 export type DailyReport = {
   day: string;
@@ -41,6 +82,8 @@ export type DailyReport = {
     skipped?: number;
     /** Số bản hội thoại trùng đã gộp (cùng 1 nhóm Zalo thấy ở nhiều kênh công ty) */
     merged?: number;
+    /** Số hội thoại AI phân loại toàn tin bình thường → không đưa vào báo cáo */
+    normal?: number;
     /** Nhãn AI từng tin (Message Intelligence) trong ngày; coverage = đã gắn nhãn / tin khách cần hiểu */
     intel?: {
       complaints: number;
@@ -184,7 +227,7 @@ export function buildDailyCard(report: DailyReport, posUrl?: string | null): Rec
   const rest = (n: number, total: number) =>
     total > n
       ? [
-          `_Còn ${num(total - n)} mục khác — ${posUrl ? `[xem danh sách đầy đủ trên POS](${posUrl})` : 'xem danh sách đầy đủ trên POS (Báo cáo › Smax chat › Báo cáo chat cuối ngày)'}._`,
+          `_Còn ${num(total - n)} mục khác — ${posUrl ? `[xem danh sách đầy đủ trên POS](${posUrl})` : 'xem danh sách đầy đủ trên POS (Báo cáo › Smax chat › Báo cáo chat)'}._`,
         ]
       : [];
   const { complaints, pending, discrepancies } = report;
@@ -204,7 +247,7 @@ export function buildDailyCard(report: DailyReport, posUrl?: string | null): Rec
     schema: '2.0',
     config: { update_multi: true },
     header: {
-      title: { tag: 'plain_text', content: '📊 BÁO CÁO CHAT CUỐI NGÀY' },
+      title: { tag: 'plain_text', content: '📊 BÁO CÁO CHAT' },
       subtitle: { tag: 'plain_text', content: `${dmy(report.day)} · Báo cáo tự động` },
       template: 'orange',
     },
@@ -215,7 +258,7 @@ export function buildDailyCard(report: DailyReport, posUrl?: string | null): Rec
         md(
           [
             '**TỔNG QUAN**',
-            `**${num(report.stats.threads)}** hội thoại  ·  **${num(report.stats.messages)}** tin nhắn${report.stats.skipped ? `  ·  <font color="grey">chưa phân tích ${num(report.stats.skipped)} hội thoại (vượt giới hạn)</font>` : ''}${report.stats.merged ? `  ·  <font color="grey">đã gộp ${num(report.stats.merged)} bản trùng giữa các kênh</font>` : ''}`,
+            `**${num(report.stats.threads)}** hội thoại  ·  **${num(report.stats.messages)}** tin nhắn${report.stats.skipped ? `  ·  <font color="grey">chưa phân tích ${num(report.stats.skipped)} hội thoại (vượt giới hạn)</font>` : ''}${report.stats.merged ? `  ·  <font color="grey">đã gộp ${num(report.stats.merged)} bản trùng giữa các kênh</font>` : ''}${report.stats.normal ? `  ·  <font color="grey">bỏ qua ${num(report.stats.normal)} hội thoại AI phân loại bình thường</font>` : ''}`,
             `🔴 **${num(complaints.length)}** khiếu nại  ·  🟠 **${num(pending.length)}** yêu cầu cần rà soát  ·  💰 **${num(discrepancies.length)}** cảnh báo giá`,
             ...(report.stats.intel ? [intelLine(report.stats.intel)] : []),
           ].join('\n'),
@@ -367,8 +410,19 @@ export class DailyReportService {
         signals.flaggedThreads.has(`${c.pagePid}:${c.tid}`) ? 0 : 1;
       unique.sort((a, b) => flagged(a) - flagged(b));
     }
+    // Nhãn AI từng tin: chỉ đưa vào báo cáo đoạn chat cần chú ý, bỏ hội thoại toàn tin bình thường
+    const flags =
+      (await this.intel
+        ?.reportMessageFlags({ from: new Date(start), to: new Date(end) })
+        .catch((e: unknown) => {
+          this.logger.warn(
+            `Báo cáo chat: không đọc được nhãn từng tin: ${String(e)}`,
+          );
+          return null;
+        })) ?? null;
     const texts: ThreadText[] = [];
     let messages = 0;
+    let normal = 0;
     // Không giới hạn: phân tích mọi cuộc trò chuyện trong ngày (sau gộp nhóm trùng, 26/11: 2.965 bản theo kênh
     // → 924). AI_DAILY_REPORT_MAX_THREADS chỉ là giới hạn khẩn cấp khi cần chặn chi phí.
     const maxThreads =
@@ -378,10 +432,11 @@ export class DailyReportService {
       const batch = await Promise.all(
         list
           .slice(i, i + CONCURRENCY)
-          .map((t) => this.threadText(t, start, end)),
+          .map((t) => this.threadText(t, start, end, flags)),
       );
       for (const t of batch)
-        if (t) {
+        if (t === 'normal') normal++;
+        else if (t) {
           texts.push(t);
           messages += t.lines.length;
         }
@@ -457,6 +512,7 @@ export class DailyReportService {
           ? { skipped: unique.length - list.length }
           : {}),
         ...(merged ? { merged } : {}),
+        ...(normal ? { normal } : {}),
         ...(signals
           ? {
               intel: {
@@ -753,7 +809,8 @@ export class DailyReportService {
     },
     start: number,
     end: number,
-  ): Promise<ThreadText | null> {
+    flags: ReportFlags | null = null,
+  ): Promise<ThreadText | 'normal' | null> {
     try {
       const all = t.db
         ? (
@@ -777,12 +834,14 @@ export class DailyReportService {
           return m.type !== 'system' && at >= start && at < end;
         });
       if (!normalized.length) return null;
+      const relevant = relevantMessages(normalized, flags);
+      if (!relevant.length) return 'normal';
       return {
         customer: clip(t.name, 60) ?? t.tid,
         channel: t.channel,
-        lines: normalized
+        lines: relevant
           .slice(-MAX_LINES)
-          .map((m) => clip(chatLine(m, false), 200) ?? ''),
+          .map((m) => (m ? (clip(chatLine(m, false), 200) ?? '') : '…')),
       };
     } catch (error) {
       this.logger.warn(`Không đọc được hội thoại ${t.tid}: ${String(error)}`);

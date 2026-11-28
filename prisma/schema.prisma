@@ -6861,6 +6861,10 @@ model SmaxMessageIntel {
   answers            Json?
   /// Archive có thể chưa đủ tin trước đó (ngữ cảnh thiếu)
   contextPartial     Boolean   @default(false) @map("context_partial")
+  /// Tin cuối của cụm tin ngắn liên tiếp: msg_pid các tin trong cụm (rỗng = tin đơn)
+  burstMsgPids       String[]  @default([]) @map("burst_msg_pids")
+  /// Tin đã gộp vào cụm (skip_reason = merged): msg_pid tin cuối cụm
+  mergedInto         String?   @map("merged_into")
   model              String?
   inputTokens        Int?      @map("input_tokens")
   latencyMs          Int?      @map("latency_ms")
