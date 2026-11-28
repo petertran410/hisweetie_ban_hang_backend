@@ -40,6 +40,7 @@ import { createOrderPaymentInTx } from './order-payments.service';
 import { createOrderPaymentNoteInTx } from '../payment-notes/payment-notes.service';
 import { RealtimeService } from 'src/realtime/realtime.service';
 import { searchCustomerIds } from '../common/customer-search.util';
+import { roundMoney } from '../common/money.util';
 import { PromotionsService } from '../promotions/promotions.service';
 import {
   findOrderPriceWarningIds,
@@ -1955,9 +1956,11 @@ export class OrdersService {
       where: { orderId, status: { not: 2 } },
     });
 
-    const totalAmount = items.reduce(
-      (sum: number, item: any) => sum + Number(item.totalPrice),
-      0,
+    const totalAmount = roundMoney(
+      items.reduce(
+        (sum: number, item: any) => sum + Number(item.totalPrice),
+        0,
+      ),
     );
 
     const order = await tx.order.findUnique({ where: { id: orderId } });
@@ -1968,16 +1971,17 @@ export class OrdersService {
     // để mẫu in/báo cáo đọc field này luôn đúng.
     // ratio = 0 ⇒ mode tiền, giữ nguyên số user nhập.
     const ratio = Number(order.discountRatio) || 0;
-    const discountAmount =
-      ratio > 0 ? (totalAmount * ratio) / 100 : Number(order.discount) || 0;
-    const grandTotal =
-      totalAmount - discountAmount + Number(order.shippingFee || 0);
-
-    const paidAmount = payments.reduce(
-      (sum: number, p: any) => sum + Number(p.amount),
-      0,
+    const discountAmount = roundMoney(
+      ratio > 0 ? (totalAmount * ratio) / 100 : Number(order.discount) || 0,
     );
-    const debtAmount = grandTotal - paidAmount;
+    const grandTotal = roundMoney(
+      totalAmount - discountAmount + Number(order.shippingFee || 0),
+    );
+
+    const paidAmount = roundMoney(
+      payments.reduce((sum: number, p: any) => sum + Number(p.amount), 0),
+    );
+    const debtAmount = roundMoney(grandTotal - paidAmount);
 
     let paymentStatus = 'Draft';
     if (paidAmount >= grandTotal) paymentStatus = 'paid';
