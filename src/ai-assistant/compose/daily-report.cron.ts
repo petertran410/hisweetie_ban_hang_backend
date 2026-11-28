@@ -3,7 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { DailyReportService } from './daily-report.service';
 
 /**
- * 18:00 hằng ngày gửi báo cáo chat cuối ngày vào nhóm Lark. Chỉ chạy khi
+ * 17:01 hằng ngày gửi báo cáo chat cuối ngày vào nhóm Lark. Chỉ chạy khi
  * AI_DAILY_REPORT_ENABLED=true (bật sau khi duyệt bản xem trước).
  */
 @Injectable()
@@ -13,7 +13,7 @@ export class DailyReportCron {
 
   constructor(private readonly report: DailyReportService) {}
 
-  @Cron('0 18 * * *', { timeZone: 'Asia/Ho_Chi_Minh' })
+  @Cron('1 17 * * *', { timeZone: 'Asia/Ho_Chi_Minh' })
   async handle() {
     if (process.env.AI_DAILY_REPORT_ENABLED !== 'true' || this.running) return;
     this.running = true;

@@ -20,7 +20,7 @@ import { foldVi, matchProducts, parseJsonReply } from './product-matcher';
 import { MessageIntelQueryService } from '../../message-intel/message-intel-query.service';
 
 export const AUDIT_DAILY_REPORT = 'AI_DAILY_REPORT';
-/** Bản xem trước lưu lại trên POS (không gửi Lark, không chặn cron 18:00). */
+/** Bản xem trước lưu lại trên POS (không gửi Lark, không chặn cron 17:01). */
 export const AUDIT_DAILY_REPORT_SAVED = 'AI_DAILY_REPORT_SAVED';
 /** Nhóm Lark nhận báo cáo (user chốt); đổi bằng env LARK_AI_DAILY_CHAT_ID. */
 const DEFAULT_CHAT_ID = 'oc_92ea2a2bbcca2116111809a3461f5795';
@@ -284,7 +284,7 @@ export function buildDailyCard(report: DailyReport, posUrl?: string | null): Rec
 }
 
 /**
- * Báo cáo chat cuối ngày (18:00) gửi nhóm Lark: quét mọi kênh Smax, hội thoại có tin trong ngày,
+ * Báo cáo chat cuối ngày (17:01) gửi nhóm Lark: quét mọi kênh Smax, hội thoại có tin trong ngày,
  * AI trích phàn nàn, yêu cầu khách nhắc chưa xử lý, báo giá của bên bán; báo giá lệch tính bằng code.
  */
 @Injectable()
@@ -577,7 +577,7 @@ export class DailyReportService {
 
   /**
    * Gửi một bản đã lưu (đúng nội dung lúc lưu) vào nhóm Lark, ghi audit dưới người bấm. Mỗi bản lưu
-   * chỉ gửi một lần. Gửi ngày hôm nay trước 18:00 thì cron 18:00 bỏ qua ngày đó.
+   * chỉ gửi một lần. Gửi ngày hôm nay trước 17:01 thì cron 17:01 bỏ qua ngày đó.
    */
   async sendSaved(id: number, actor: { id: number; name: string }) {
     const row = await this.prisma.auditLog.findFirst({
@@ -593,7 +593,7 @@ export class DailyReportService {
 
   /**
    * Lưu bản xem trước đang có (không gửi Lark) để xem lại trên POS sau này. Không tính là "đã gửi":
-   * cron 18:00 vẫn gửi bình thường.
+   * cron 17:01 vẫn gửi bình thường.
    */
   async savePreview(actor: { id: number; name: string }) {
     const job = this.preview;
@@ -639,8 +639,8 @@ export class DailyReportService {
 
   /**
    * Gửi bản xem trước đang có (đúng nội dung đã xem, không chạy AI lại) vào nhóm Lark, ghi audit dưới
-   * người bấm. Ngày đã gửi vẫn gửi lại được (nhân viên xác nhận ở POS); gửi ngày hôm nay trước 18:00
-   * thì cron 18:00 bỏ qua ngày đó (đã có audit).
+   * người bấm. Ngày đã gửi vẫn gửi lại được (nhân viên xác nhận ở POS); gửi ngày hôm nay trước 17:01
+   * thì cron 17:01 bỏ qua ngày đó (đã có audit).
    */
   async sendPreview(actor: { id: number; name: string }) {
     const job = this.preview;
