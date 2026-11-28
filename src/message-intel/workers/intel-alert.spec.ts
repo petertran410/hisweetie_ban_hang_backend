@@ -4,6 +4,7 @@ import {
   buildAlertCard,
   IntelAlertService,
 } from './intel-alert.service';
+import { utcTs } from '../sql-time';
 
 const NOW = new Date('2026-11-27T10:00:00Z');
 const job = (over: object = {}) => ({
@@ -30,8 +31,15 @@ function make(
     recent?: object | null;
     /** Kết quả reply (cảnh báo trong topic); mảng = lần lượt từng lần gọi */
     replyRes?: object | object[];
-    /** Topic đang lưu: ngày + id tin mở đầu */
-    runtime?: { alertDay: string | null; alertRootMessageId: string | null };
+    /** Topic đang lưu: ngày + id tin mở đầu; bật / tắt + nhóm nhận (màn hình) */
+    runtime?: {
+      alertDay: string | null;
+      alertRootMessageId: string | null;
+      alertsEnabled?: boolean;
+      alertChatId?: string | null;
+    };
+    /** Số dòng chèn được khi giành tin (0 = máy khác đã giành) */
+    claimed?: number;
   } = {},
 ) {
   const jobs = opts.jobs ?? [job()];
@@ -55,7 +63,8 @@ function make(
     },
     smaxIntelAlert: {
       findFirst: jest.fn().mockResolvedValue(opts.recent ?? null),
-      createMany: jest.fn().mockResolvedValue({ count: 1 }),
+      createMany: jest.fn().mockResolvedValue({ count: opts.claimed ?? 1 }),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     smaxThread: {
       findUnique: jest.fn().mockResolvedValue({ name: 'Nhóm Chị Lan' }),
@@ -63,16 +72,22 @@ function make(
     smaxSyncChannel: {
       findUnique: jest.fn().mockResolvedValue({ name: 'Ms Mai Phương' }),
     },
-    smaxIntelRuntime: { update: jest.fn().mockResolvedValue({}) },
+    smaxIntelRuntime: {
+      update: jest.fn().mockResolvedValue({}),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
   };
   const intel = {
     activeVersion: jest.fn().mockResolvedValue({ id: 2 }),
     ourPagePids: jest.fn().mockResolvedValue(new Set(['zlwA'])),
-    runtime: jest
-      .fn()
-      .mockResolvedValue(
-        opts.runtime ?? { alertDay: null, alertRootMessageId: null },
-      ),
+    runtime: jest.fn().mockResolvedValue(
+      opts.runtime ?? {
+        alertDay: null,
+        alertRootMessageId: null,
+        alertsEnabled: true,
+        alertChatId: null,
+      },
+    ),
   };
   // create = tin mở đầu topic của ngày
   const create = jest
@@ -92,15 +107,21 @@ function make(
     svc: new IntelAlertService(prisma as any, intel as any, lark as any),
   };
 }
-const recorded = (prisma: ReturnType<typeof make>['prisma']) =>
-  (
+/** Trạng thái cuối của dòng cảnh báo: dòng chèn (giành / gộp / thu hồi) + cập nhật sau khi gửi. */
+const recorded = (prisma: ReturnType<typeof make>['prisma']) => ({
+  ...(
     (prisma.smaxIntelAlert.createMany.mock.calls as unknown[][])[0][0] as {
-      data: { status: string }[];
+      data: Record<string, unknown>[];
     }
-  ).data[0];
+  ).data[0],
+  ...(
+    (prisma.smaxIntelAlert.updateMany.mock.calls as unknown[][])[0]?.[0] as
+      | { data: Record<string, unknown> }
+      | undefined
+  )?.data,
+});
 
 afterEach(() => {
-  delete process.env.MESSAGE_INTEL_ALERTS_ENABLED;
   delete process.env.MESSAGE_INTEL_ENABLED;
 });
 
@@ -123,12 +144,70 @@ describe('alertReason', () => {
 });
 
 describe('IntelAlertService', () => {
-  it('mặc định tắt (MESSAGE_INTEL_ALERTS_ENABLED) → không xét, không gửi', async () => {
+  it('tắt trên màn hình (alerts_enabled = false, mặc định) → không xét, không gửi; bật → xét', async () => {
     process.env.MESSAGE_INTEL_ENABLED = 'true';
-    const { prisma, create, svc } = make();
-    await svc.tick();
-    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    const off = make({
+      runtime: {
+        alertDay: null,
+        alertRootMessageId: null,
+        alertsEnabled: false,
+        alertChatId: null,
+      },
+    });
+    await off.svc.tick();
+    expect(off.prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(off.create).not.toHaveBeenCalled();
+    const on = make();
+    await on.svc.tick();
+    expect(on.prisma.$queryRaw).toHaveBeenCalled();
+  });
+
+  it('chat id đặt trên màn hình → gửi vào nhóm đó', async () => {
+    const { create, svc } = make({
+      runtime: {
+        alertDay: null,
+        alertRootMessageId: null,
+        alertsEnabled: true,
+        alertChatId: 'oc_customgroup123456',
+      },
+    });
+    await svc.runOnce(NOW);
+    expect(
+      (create.mock.calls[0] as [{ data: { receive_id: string } }])[0].data
+        .receive_id,
+    ).toBe('oc_customgroup123456');
+  });
+
+  it('máy khác đã giành tin (chèn dòng không được) → không gửi', async () => {
+    const { reply, create, svc } = make({ claimed: 0 });
+    expect(await svc.runOnce(NOW)).toEqual({ sent: 0 });
+    expect(reply).not.toHaveBeenCalled();
     expect(create).not.toHaveBeenCalled();
+  });
+
+  it('máy khác vừa đặt topic hôm nay trước → dùng topic của máy đó', async () => {
+    const { prisma, reply, svc } = make();
+    prisma.smaxIntelRuntime.updateMany.mockResolvedValue({ count: 0 });
+    const intelRuntime = (svc as unknown as { intel: { runtime: jest.Mock } })
+      .intel.runtime;
+    intelRuntime
+      .mockResolvedValueOnce({
+        alertDay: null,
+        alertRootMessageId: null,
+        alertsEnabled: true,
+        alertChatId: null,
+      })
+      .mockResolvedValueOnce({
+        alertDay: '2026-11-27',
+        alertRootMessageId: 'om_other',
+        alertsEnabled: true,
+        alertChatId: null,
+      });
+    await svc.runOnce(NOW);
+    expect(
+      (reply.mock.calls[0] as [{ path: { message_id: string } }])[0].path
+        .message_id,
+    ).toBe('om_other');
   });
 
   it('cảnh báo đầu tiên trong ngày: tạo tin mở đầu topic trong nhóm, cảnh báo trả lời trong topic (đã che SĐT)', async () => {
@@ -141,10 +220,15 @@ describe('IntelAlertService', () => {
     )[0].data;
     expect(root.receive_id).toBe('oc_92ea2a2bbcca2116111809a3461f5795');
     expect(root.content).toContain('CẢNH BÁO CHAT KHÁCH · 27/11/2026');
-    expect(prisma.smaxIntelRuntime.update).toHaveBeenCalledWith({
+    expect(
+      (prisma.smaxIntelRuntime.updateMany.mock.calls as unknown[][])[0][0],
+    ).toMatchObject({
       where: { id: 1 },
       data: { alertDay: '2026-11-27', alertRootMessageId: 'om_root' },
     });
+    expect(
+      (create.mock.calls[0] as [{ data: { uuid: string } }])[0].data.uuid,
+    ).toMatch(/^intel-root-2026-11-27-/);
     const sent = (
       reply.mock.calls[0] as [
         {
@@ -233,9 +317,11 @@ describe('IntelAlertService', () => {
       (prisma.$queryRaw.mock.calls as unknown[][])[0][0] as string[]
     ).join('?');
     expect(sql).toContain('NOT EXISTS (SELECT 1 FROM smax_intel_alerts');
+    // Mốc so với cột TIMESTAMP giờ UTC: đổi về UTC, không phụ thuộc múi giờ phiên DB (production +07)
     expect((prisma.$queryRaw.mock.calls[0] as unknown[])[2]).toEqual(
-      new Date(NOW.getTime() - 2 * 3_600_000),
+      utcTs(new Date(NOW.getTime() - 2 * 3_600_000)),
     );
+    expect(utcTs(NOW).text).toBe(`($1::timestamptz AT TIME ZONE 'UTC')`);
   });
 });
 

@@ -691,7 +691,11 @@ describe('SmaxChatService', () => {
     const threadLabels = jest.fn().mockResolvedValue(
       new Map([[`${PAGE}:zlw5550000001`, { label: 'complaint', reason: 'Khiếu nại lúc 09:10', pending: true, stale: false, at: new Date() }]]),
     );
-    (service as any).intelQuery = { coveredPagePids: jest.fn().mockResolvedValue([PAGE]), threadLabels };
+    (service as any).intelQuery = {
+      coveredPagePids: jest.fn().mockResolvedValue([PAGE]),
+      threadLabels,
+      excludedKeys: jest.fn().mockResolvedValue(new Set()),
+    };
     (service as any).prisma.customer.findMany = jest.fn().mockResolvedValue([]);
     (service as any).prisma.customerZaloContact.findMany = jest.fn().mockResolvedValue([]);
 

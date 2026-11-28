@@ -30,7 +30,9 @@ export type SkipReason =
   | 'recalled'
   | 'media_only'
   | 'sticker_only'
-  | 'empty';
+  | 'empty'
+  /** Hội thoại nằm trong danh sách loại trừ (smax_intel_exclusions) */
+  | 'excluded';
 
 export type RuleDecision =
   | { status: 'skipped'; skipReason: SkipReason }

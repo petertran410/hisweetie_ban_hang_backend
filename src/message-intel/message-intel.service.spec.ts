@@ -86,4 +86,35 @@ describe('MessageIntelService', () => {
       ),
     ).rejects.toThrow('Chưa có phiên bản');
   });
+
+  it('cảnh báo Lark: kiểm chat id (oc_…), đổi nhóm thì bắt đầu topic mới, ghi audit; không đổi gì thì không ghi', async () => {
+    const { prisma, audit, svc } = make();
+    prisma.smaxIntelRuntime.upsert.mockResolvedValue({
+      alertsEnabled: false,
+      alertChatId: null,
+    });
+    await expect(
+      svc.setAlerts({ chatId: 'abc' }, actor),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    await svc.setAlerts(
+      { enabled: true, chatId: ' oc_newgroup1234567 ' },
+      actor,
+    );
+    expect(prisma.smaxIntelRuntime.update).toHaveBeenCalledWith({
+      where: { id: 1 },
+      data: {
+        updatedBy: 1,
+        alertsEnabled: true,
+        alertChatId: 'oc_newgroup1234567',
+        alertDay: null,
+        alertRootMessageId: null,
+      },
+    });
+    expect(audit.create).toHaveBeenCalledWith(
+      expect.objectContaining({ actionCode: 'MESSAGE_INTEL_ALERTS' }),
+    );
+    prisma.smaxIntelRuntime.update.mockClear();
+    await svc.setAlerts({ enabled: false, chatId: '' }, actor);
+    expect(prisma.smaxIntelRuntime.update).not.toHaveBeenCalled();
+  });
 });

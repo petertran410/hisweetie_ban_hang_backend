@@ -5,6 +5,7 @@ import { AuditLogsModule } from '../audit-logs/audit-logs.module';
 import { MessageIntelController } from './message-intel.controller';
 import { MessageIntelService } from './message-intel.service';
 import { MessageIntelQueryService } from './message-intel-query.service';
+import { MessageIntelExclusionService } from './message-intel-exclusion.service';
 import { ContextBuilder } from './context/context-builder';
 import { JevProvider } from './providers/jev.provider';
 import { IntelDiscoveryService } from './workers/intel-discovery.service';
@@ -22,6 +23,7 @@ import { LarkClientProvider } from '../lark-sync/lark-client.provider';
   providers: [
     MessageIntelService,
     MessageIntelQueryService,
+    MessageIntelExclusionService,
     ContextBuilder,
     JevProvider,
     IntelDiscoveryService,

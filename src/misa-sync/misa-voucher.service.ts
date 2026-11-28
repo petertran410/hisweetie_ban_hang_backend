@@ -6,7 +6,11 @@ import { firstValueFrom } from 'rxjs';
 import { randomUUID } from 'crypto';
 import { MisaAuthService } from './misa-auth.service';
 import { MisaDictionaryService } from './misa-dictionary.service';
-import { computeLineVat } from './misa-vat.util';
+import {
+  computeLineVatForKind,
+  resolveLineVatRate,
+  type ResolvedLineVat,
+} from './misa-vat.util';
 import {
   MisaSaveVoucherRequestDto,
   MisaSaVoucherDto,
@@ -403,6 +407,9 @@ export class MisaVoucherService {
     }
 
     const details: MisaInvoiceBuildDetail[] = [];
+    // Loại thuế của từng dòng trong `details` (cùng index) — dùng để bù làm tròn
+    // VAT theo từng nhóm thuế suất.
+    const detailVats: ResolvedLineVat[] = [];
     let missingInventoryItemCount = 0;
     let totalSaleAmount = 0;
     const totalDiscountAmount = 0;
@@ -430,20 +437,24 @@ export class MisaVoucherService {
       }
 
       const quantity = Number(detail.quantity);
-      const {
-        unitPriceAfterTax,
-        unitPrice,
-        amountBeforeTax,
-        vatAmount,
-        amountAfterTax,
-      } = computeLineVat(
+      // SP007601 theo lựa chọn GTGT dòng trên POS: 5 → 5%, 0 → KKKNT (-2,
+      // không kê khai nộp thuế, KHÔNG phải thuế suất 0%). Còn lại 8% như cũ.
+      const lineVat = resolveLineVatRate(
         {
-          quantity: detail.quantity,
-          price: detail.price,
-          discount: detail.discount,
+          productCode: product.code ?? detail.productCode,
+          lineVatRate: detail.lineVatRate,
         },
         this.VAT_RATE,
       );
+      const { unitPriceAfterTax, unitPrice, amountBeforeTax, vatAmount } =
+        computeLineVatForKind(
+          {
+            quantity: detail.quantity,
+            price: detail.price,
+            discount: detail.discount,
+          },
+          lineVat,
+        );
 
       totalSaleAmount += amountBeforeTax;
       totalVatAmount += vatAmount;
@@ -481,7 +492,7 @@ export class MisaVoucherService {
         discount_amount_oc: 0,
         discount_amount: 0,
 
-        vat_rate: this.VAT_RATE,
+        vat_rate: lineVat.misaVatRate,
         vat_amount_oc: vatAmount,
         vat_amount: vatAmount,
 
@@ -504,6 +515,7 @@ export class MisaVoucherService {
         is_promotion: false,
         is_description: false,
       });
+      detailVats.push(lineVat);
     }
 
     if (details.length === 0) {
@@ -517,23 +529,41 @@ export class MisaVoucherService {
       );
     }
 
-    const expectedTotalVat = Math.trunc(
-      ((totalSaleAmount - totalDiscountAmount) * this.VAT_RATE) / 100,
-    );
-    const vatDiff = expectedTotalVat - totalVatAmount;
+    // Bù chênh lệch làm tròn VAT theo TỪNG NHÓM thuế suất (8%, 5%, …): mỗi nhóm
+    // kỳ vọng trunc(tổng trước thuế của nhóm × rate%). Dòng KKKNT không có thuế
+    // nên không bù. Hóa đơn toàn 8% cho kết quả y hệt cách cũ (bù vào dòng đầu).
+    const vatGroups = new Map<number, number[]>();
+    detailVats.forEach((lineVat, index) => {
+      if (lineVat.kind !== 'VAT') return;
+      const group = vatGroups.get(lineVat.misaVatRate) ?? [];
+      group.push(index);
+      vatGroups.set(lineVat.misaVatRate, group);
+    });
 
-    if (vatDiff !== 0) {
-      // Bù trừ chênh lệch làm tròn vào TIỀN TRƯỚC THUẾ của dòng đầu (giảm
-      // amount) và cộng vào VAT, giữ nguyên thành tiền sau thuế của dòng — nhờ
-      // vậy total_amount (sau thuế) luôn bằng tổng tiền hàng đã gồm thuế.
-      details[0].vat_amount_oc = (details[0].vat_amount_oc ?? 0) + vatDiff;
-      details[0].vat_amount = (details[0].vat_amount ?? 0) + vatDiff;
-      details[0].amount_oc = (details[0].amount_oc ?? 0) - vatDiff;
-      details[0].amount = (details[0].amount ?? 0) - vatDiff;
+    for (const [rate, indexes] of vatGroups) {
+      const groupSale = indexes.reduce(
+        (sum, index) => sum + (details[index].amount ?? 0),
+        0,
+      );
+      const groupVat = indexes.reduce(
+        (sum, index) => sum + (details[index].vat_amount ?? 0),
+        0,
+      );
+      const vatDiff = Math.trunc((groupSale * rate) / 100) - groupVat;
+      if (vatDiff === 0) continue;
+
+      // Bù vào TIỀN TRƯỚC THUẾ của dòng đầu nhóm (giảm amount) và cộng vào VAT,
+      // giữ nguyên thành tiền sau thuế của dòng — nhờ vậy total_amount (sau
+      // thuế) luôn bằng tổng tiền hàng đã gồm thuế.
+      const first = details[indexes[0]];
+      first.vat_amount_oc = (first.vat_amount_oc ?? 0) + vatDiff;
+      first.vat_amount = (first.vat_amount ?? 0) + vatDiff;
+      first.amount_oc = (first.amount_oc ?? 0) - vatDiff;
+      first.amount = (first.amount ?? 0) - vatDiff;
       totalVatAmount += vatDiff;
       totalSaleAmount -= vatDiff;
       this.logger.log(
-        `🔧 Adjusted VAT difference: ${vatDiff} VND on first detail line`,
+        `🔧 Adjusted VAT ${rate}% difference: ${vatDiff} VND on detail line ${indexes[0] + 1}`,
       );
     }
 

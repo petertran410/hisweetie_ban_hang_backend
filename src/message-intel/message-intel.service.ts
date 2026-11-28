@@ -13,7 +13,7 @@ import {
   JEV_MODEL,
   type JevQuestion,
 } from './taxonomy/taxonomy-v1';
-import { alertsConfig, vnDay } from './message-intel.config';
+import { alertSettings, LARK_CHAT_ID, vnDay } from './message-intel.config';
 
 export type Actor = { id: number; name: string };
 const AUDIT_CATEGORY = 'message_intel';
@@ -147,7 +147,7 @@ export class MessageIntelService {
       },
       versions,
       alerts: {
-        ...alertsConfig(),
+        ...alertSettings(runtime),
         recent: await this.prisma.smaxIntelAlert.findMany({
           orderBy: { createdAt: 'desc' },
           take: 10,
@@ -265,6 +265,62 @@ export class MessageIntelService {
       'MESSAGE_INTEL_BUDGET',
       `Đặt ngân sách phân loại tin ${tokens} token/ngày`,
       { tokens },
+    );
+  }
+
+  /**
+   * Cảnh báo Lark: bật / tắt, đổi nhóm nhận (chat id oc_…; rỗng = nhóm mặc định). Đổi nhóm → topic của ngày
+   * bắt đầu lại trong nhóm mới.
+   */
+  async setAlerts(
+    input: { enabled?: boolean; chatId?: string | null },
+    actor: Actor,
+  ) {
+    const runtime = await this.runtime();
+    const data: {
+      alertsEnabled?: boolean;
+      alertChatId?: string | null;
+      alertDay?: null;
+      alertRootMessageId?: null;
+      updatedBy: number;
+    } = { updatedBy: actor.id };
+    const changes: string[] = [];
+    if (
+      input.enabled !== undefined &&
+      input.enabled !== runtime.alertsEnabled
+    ) {
+      data.alertsEnabled = input.enabled;
+      changes.push(
+        input.enabled ? 'bật gửi cảnh báo Lark' : 'tắt gửi cảnh báo Lark',
+      );
+    }
+    if (input.chatId !== undefined) {
+      const chatId = input.chatId?.trim() || null;
+      if (chatId && !LARK_CHAT_ID.test(chatId))
+        throw new BadRequestException(
+          'Chat id nhóm Lark không hợp lệ (dạng oc_…)',
+        );
+      if (chatId !== runtime.alertChatId) {
+        Object.assign(data, {
+          alertChatId: chatId,
+          alertDay: null,
+          alertRootMessageId: null,
+        });
+        changes.push(
+          `đổi nhóm nhận cảnh báo sang ${chatId ?? 'nhóm mặc định'}`,
+        );
+      }
+    }
+    if (!changes.length) return;
+    await this.prisma.smaxIntelRuntime.update({ where: { id: 1 }, data });
+    await this.audit(
+      actor,
+      'MESSAGE_INTEL_ALERTS',
+      `Cảnh báo phân loại tin: ${changes.join(', ')}`,
+      {
+        from: { enabled: runtime.alertsEnabled, chatId: runtime.alertChatId },
+        to: input,
+      },
     );
   }
 

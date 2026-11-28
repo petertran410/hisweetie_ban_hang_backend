@@ -629,4 +629,162 @@ describe('MisaVoucherService OpenAPI flow', () => {
       },
     );
   });
+
+  describe('per-line VAT rate (GTGT dòng SP007601)', () => {
+    const line = (
+      code: string,
+      price: number,
+      lineVatRate: number | null,
+      quantity = 1,
+    ) => ({
+      quantity,
+      price,
+      discount: 0,
+      lineVatRate,
+      productCode: code,
+      product: {
+        id: code.length,
+        code,
+        name: `Sản phẩm ${code}`,
+        misa_code: `M-${code}`,
+        misa_name: `Misa ${code}`,
+        misa_unit: 'Cái',
+      },
+    });
+
+    // Dựng payload thật qua createSaleVoucherFromInvoice, chặn ở httpService.post.
+    const pushVoucher = async (details: any[]) => {
+      const invoice = {
+        id: 20,
+        code: 'INV-VAT',
+        status: 1,
+        misaSyncStatus: 'SKIP',
+        misaOrgRefId: null,
+        branchId: 6,
+        purchaseDate: new Date('2026-11-28T00:00:00.000Z'),
+        customerName: 'Khách lẻ',
+        customer: null,
+        details,
+      };
+      const savePost = jest
+        .fn()
+        .mockReturnValue(of({ data: { Success: true, Data: 'queued' } }));
+      const prisma = {
+        invoice: {
+          findUnique: jest.fn().mockResolvedValue(invoice),
+          update: jest.fn().mockResolvedValue({}),
+        },
+        misaStock: {
+          findFirst: jest.fn().mockResolvedValue({
+            stockId: 'stock-kho1',
+            stockCode: 'KHO1',
+            stockName: 'Kho 1',
+          }),
+        },
+        misaAccountObject: { findFirst: jest.fn() },
+      };
+      const service = new MisaVoucherService(
+        makeConfig() as any,
+        { post: savePost } as any,
+        prisma as any,
+        { getAccessToken: jest.fn().mockResolvedValue('access-token') } as any,
+        {
+          findInventoryItemByCode: jest.fn(async (code: string) => ({
+            inventoryItemId: `${code}-id`,
+            inventoryItemCode: code,
+            inventoryItemName: `Misa ${code}`,
+            unitId: 'unit-1',
+            unitName: 'Cái',
+          })),
+          findAccountObjectByNameFuzzy: jest.fn().mockResolvedValue(null),
+        } as any,
+      );
+
+      await expect(
+        service.createSaleVoucherFromInvoice(invoice.code),
+      ).resolves.toMatchObject({ success: true });
+      return savePost.mock.calls[0][1].voucher[0];
+    };
+
+    it('sends SP007601 as 5% or KKKNT (-2) and everything else as 8%', async () => {
+      const voucher = await pushVoucher([
+        line('P-001', 108, 0), // SP khác, lineVatRate 0 do mặc định DB → 8%
+        line('SP007601', 105, 5), // chọn 5%
+        line('SP007601', 100, 0), // chọn "0%" = KKKNT, không phải thuế suất 0%
+        line('SP007601', 108, null), // dòng HĐ cũ chưa chọn → 8% như trước
+        line('P-002', 108, 0),
+      ]);
+
+      expect(voucher.detail.map((d: any) => d.vat_rate)).toEqual([
+        8, 5, -2, 8, 8,
+      ]);
+      expect(voucher.detail.map((d: any) => d.vat_amount)).toEqual([
+        8, 5, 0, 8, 8,
+      ]);
+      expect(voucher.detail.map((d: any) => d.amount)).toEqual([
+        100, 100, 100, 100, 100,
+      ]);
+      expect(voucher.detail[2]).toMatchObject({
+        unit_price: 100,
+        amount_oc: 100,
+        vat_amount_oc: 0,
+      });
+
+      for (const target of [voucher, voucher.sa_invoice]) {
+        expect(target).toMatchObject({
+          total_sale_amount: 500,
+          total_vat_amount: 29,
+          total_amount: 529, // = 108 + 105 + 100 + 108 + 108
+        });
+      }
+      expect(voucher.sa_invoice.detail.map((d: any) => d.vat_rate)).toEqual([
+        8, 5, -2, 8, 8,
+      ]);
+      expect(voucher.sa_invoice.detail[2].amount_after_tax).toBe(100);
+
+      // KKKNT không bao giờ được gửi thành thuế suất 0%.
+      const allRates = [...voucher.detail, ...voucher.sa_invoice.detail].map(
+        (d: any) => d.vat_rate,
+      );
+      expect(allRates).not.toContain(0);
+    });
+
+    it('keeps the 8%-only rounding fix-up exactly as before', async () => {
+      // 3 dòng 10đ: mỗi dòng 9 + 1 VAT; trunc(27 × 8%) = 2 → bù -1 vào dòng đầu.
+      const voucher = await pushVoucher([
+        line('P-001', 10, 0),
+        line('P-002', 10, 0),
+        line('P-003', 10, 0),
+      ]);
+
+      expect(voucher.detail.map((d: any) => d.vat_amount)).toEqual([0, 1, 1]);
+      expect(voucher.detail.map((d: any) => d.amount)).toEqual([10, 9, 9]);
+      expect(voucher).toMatchObject({
+        total_sale_amount: 28,
+        total_vat_amount: 2,
+        total_amount: 30,
+      });
+    });
+
+    it('applies the rounding fix-up per rate group and never to a KKKNT line', async () => {
+      const voucher = await pushVoucher([
+        line('SP007601', 50, 0), // KKKNT đứng đầu
+        line('P-001', 10, 0),
+        line('P-002', 10, 0),
+        line('P-003', 10, 0),
+      ]);
+
+      expect(voucher.detail.map((d: any) => d.vat_rate)).toEqual([-2, 8, 8, 8]);
+      // Bù -1 vào dòng 8% đầu tiên (dòng 2), dòng KKKNT giữ VAT 0.
+      expect(voucher.detail.map((d: any) => d.vat_amount)).toEqual([
+        0, 0, 1, 1,
+      ]);
+      expect(voucher.detail.map((d: any) => d.amount)).toEqual([50, 10, 9, 9]);
+      expect(voucher).toMatchObject({
+        total_sale_amount: 78,
+        total_vat_amount: 2,
+        total_amount: 80,
+      });
+    });
+  });
 });

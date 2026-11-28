@@ -66,7 +66,12 @@ import {
   buildInventoryLogActor,
   buildInventoryLogBase,
 } from '../common/inventory-log.util';
-import { computeInvoiceVat, computeLineVat } from '../misa-sync/misa-vat.util';
+import {
+  computeInvoiceVat,
+  computeLineVatForKind,
+  LINE_VAT_PRODUCT_CODES,
+  resolveLineVatRate,
+} from '../misa-sync/misa-vat.util';
 import { PackingSlipsService } from '../packing-slips/packing-slips.service';
 import { mapColdCargoInvoice } from '../common/cold-cargo.util';
 import { PromotionsService } from '../promotions/promotions.service';
@@ -1342,12 +1347,19 @@ export class InvoicesService {
 
     const dataWithVat = data.map((invoice) => {
       // Tính VAT theo từng dòng sản phẩm (đúng nghiệp vụ kế toán) rồi cộng dồn.
+      // SP007601: 5% hoặc KKKNT theo lựa chọn GTGT dòng — khớp voucher Misa.
       const vat = computeInvoiceVat(
         (invoice.details || []).map((d) => ({
           quantity: d.quantity,
           price: d.price,
           discount: d.discount,
-          vatRate: Number((d.product as any)?.vat ?? 8),
+          resolvedVat: resolveLineVatRate(
+            {
+              productCode: d.product?.code ?? d.productCode,
+              lineVatRate: d.lineVatRate,
+            },
+            Number((d.product as any)?.vat ?? 8),
+          ),
         })),
       );
       const missingMisaCode = (invoice.details || []).some(
@@ -1401,7 +1413,15 @@ export class InvoicesService {
     >(Prisma.sql`
       WITH lines AS (
         SELECT FLOOR((d.price - d.discount) * d.quantity + 0.5) AS after_tax,
-               COALESCE(p.vat, 8) AS rate
+               -- SP007601 theo GTGT dòng POS: 5 → 5%; 0 → KKKNT (không kê khai
+               -- nộp thuế, KHÔNG phải thuế suất 0%) — tính rate 0 chỉ để thuế = 0,
+               -- trước thuế = sau thuế. Dòng cũ (trống) & SP khác: VAT SP như cũ.
+               CASE
+                 WHEN COALESCE(p.code, d."productCode") IN (${Prisma.join(LINE_VAT_PRODUCT_CODES)})
+                      AND d.line_vat_rate IS NOT NULL
+                 THEN d.line_vat_rate
+                 ELSE COALESCE(p.vat, 8)
+               END AS rate
         FROM unnest(${ids}::int[]) AS f(id)
         JOIN invoice_details d ON d."invoiceId" = f.id
         LEFT JOIN products p ON p.id = d."productId"
@@ -4508,9 +4528,32 @@ export class InvoicesService {
       const additionalPayment = Number(dto.additionalPayment || 0);
       const totalPaid = totalPaidFromOrder + additionalPayment;
 
+      // Client cũ (app điện thoại chưa cập nhật) gửi dòng hàng không kèm GTGT dòng
+      // → lấy theo dòng của đơn gốc (NULL = dòng cũ giữ NULL), không để mặc định
+      // NULL làm dòng đơn mới bị coi là dòng cũ.
+      const withOrderLineVat = (it: NonNullable<typeof dto.items>[number]) => {
+        if (it.lineVatRate !== undefined) return it;
+        const condition = it.conditionType || 'normal';
+        const sameProduct = order.items.filter(
+          (o) => o.productId === it.productId,
+        );
+        const match =
+          sameProduct.find(
+            (o) => (o.conditionType || 'normal') === condition,
+          ) ?? sameProduct[0];
+        return {
+          ...it,
+          lineVatRate: match
+            ? match.lineVatRate == null
+              ? null
+              : Number(match.lineVatRate)
+            : 0,
+        };
+      };
+
       const rawItemsToInvoice =
         dto.items && dto.items.length > 0
-          ? dto.items
+          ? dto.items.map(withOrderLineVat)
           : remainingItems.map((item) => ({
               productId: item.productId,
               productCode: item.productCode,
@@ -7483,10 +7526,12 @@ export class InvoicesService {
           },
           details: {
             select: {
+              productCode: true,
               quantity: true,
               price: true,
               discount: true,
-              product: { select: { vat: true } },
+              lineVatRate: true,
+              product: { select: { code: true, vat: true } },
             },
           },
         },
@@ -7501,7 +7546,13 @@ export class InvoicesService {
             quantity: d.quantity,
             price: d.price,
             discount: d.discount,
-            vatRate: Number((d.product as any)?.vat ?? 8),
+            resolvedVat: resolveLineVatRate(
+              {
+                productCode: d.product?.code ?? d.productCode,
+                lineVatRate: d.lineVatRate,
+              },
+              Number((d.product as any)?.vat ?? 8),
+            ),
           })),
         );
         sheet
@@ -7623,8 +7674,10 @@ export class InvoicesService {
               quantity: true,
               price: true,
               discount: true,
+              lineVatRate: true,
               product: {
                 select: {
+                  code: true,
                   vat: true,
                   misa_code: true,
                   misa_unit: true,
@@ -7638,11 +7691,19 @@ export class InvoicesService {
       if (batch.length === 0) break;
 
       for (const inv of batch) {
+        const resolveDetailVat = (d: (typeof inv.details)[number]) =>
+          resolveLineVatRate(
+            {
+              productCode: d.product?.code ?? d.productCode,
+              lineVatRate: d.lineVatRate,
+            },
+            Number((d.product as any)?.vat ?? 8),
+          );
         const lines = (inv.details || []).map((d) => ({
           quantity: d.quantity,
           price: d.price,
           discount: d.discount,
-          vatRate: Number((d.product as any)?.vat ?? 8),
+          resolvedVat: resolveDetailVat(d),
         }));
         const invVat = computeInvoiceVat(lines);
         const missingMisaCode = (inv.details || []).some(
@@ -7686,19 +7747,24 @@ export class InvoicesService {
           stt++;
           const row: Record<string, any> = { stt };
 
-          const vatRate = detail
-            ? Number((detail.product as any)?.vat ?? 8)
+          const resolvedVat = detail ? resolveDetailVat(detail) : null;
+          // KKKNT ghi chữ, không ghi 0 — không phải thuế suất 0%.
+          const vatRate = resolvedVat
+            ? resolvedVat.kind === 'KKKNT'
+              ? resolvedVat.label
+              : resolvedVat.misaVatRate
             : 0;
-          const lineVat = detail
-            ? computeLineVat(
-                {
-                  quantity: detail.quantity,
-                  price: detail.price,
-                  discount: detail.discount,
-                },
-                vatRate,
-              )
-            : null;
+          const lineVat =
+            detail && resolvedVat
+              ? computeLineVatForKind(
+                  {
+                    quantity: detail.quantity,
+                    price: detail.price,
+                    discount: detail.discount,
+                  },
+                  resolvedVat,
+                )
+              : null;
 
           for (const col of activeCols) {
             if (col.key in invData) {
