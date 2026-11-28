@@ -1713,6 +1713,11 @@ export class SmaxChatService {
           () => new Map<string, never>(),
         )
       : new Map<string, never>();
+    // Hội thoại loại trừ khỏi phân loại tin (không gửi AI): menu chuột phải của quản trị đổi qua lại
+    const intelExcluded =
+      preloaded || !this.intelQuery
+        ? new Set<string>()
+        : await this.intelQuery.excludedKeys(threads).catch(() => new Set<string>());
     const labelOf = (t: SmaxRecentThread) => {
       const l = labels.find((x) => x.tid === t.tid && x.pagePid === t.pagePid);
       // Gắn tay vẫn ưu tiên; kênh đã bật phân loại tin → nhãn tự động (bỏ nhãn AI cũ của nút "Phân loại")
@@ -1847,6 +1852,7 @@ export class SmaxChatService {
           // Khách chờ quá 30 phút giờ làm (không tắt được; hết khi bên mình trả lời)
           waiting: waiting.get(`${t.pagePid}:${t.tid}`) ?? null,
           aiLabel: labelOf(t),
+          intelExcluded: intelExcluded.has(`${t.pagePid}:${t.tid}`),
           messageCount: t.messageCount,
           avatar: t.avatar,
           memberPreview: t.memberPreview,

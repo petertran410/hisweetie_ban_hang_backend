@@ -5,7 +5,8 @@ import type { SmaxMessage, SmaxMessageIntel } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { LARK_CLIENT } from '../../lark-sync/lark-client.provider';
 import { MessageIntelService } from '../message-intel.service';
-import { alertsConfig, intelConfig, vnDay } from '../message-intel.config';
+import { utcTs } from '../sql-time';
+import { alertSettings, intelConfig, vnDay } from '../message-intel.config';
 import { contentOf } from '../context/context-builder';
 import { INTENTS, TOPICS } from '../taxonomy/taxonomy-v1';
 
@@ -216,8 +217,7 @@ export function buildAlertCard(input: {
  * Cảnh báo quản lý: mỗi phút xét tin vừa phân loại (≤ 2 giờ tuổi) theo `alertReason`, bỏ tin đã thu hồi,
  * gộp theo hội thoại (đã báo trong 4 giờ thì chỉ ghi nhận), gửi card vào nhóm Lark — mỗi ngày 1 topic: cảnh báo
  * đầu tiên trong ngày tạo tin mở đầu, các cảnh báo trả lời trong topic đó. Mỗi tin xét 1 lần
- * (smax_intel_alerts). Chỉ chạy khi MESSAGE_INTEL_ALERTS_ENABLED=true (mặc định tắt: tránh môi trường dev
- * dùng bản sao dữ liệu gửi cảnh báo thật).
+ * (smax_intel_alerts). Bật / tắt và nhóm nhận đặt trên màn hình (mặc định tắt; bản sao DB cho dev tự tắt).
  */
 @Injectable()
 export class IntelAlertService {
@@ -232,11 +232,11 @@ export class IntelAlertService {
 
   @Interval(60_000)
   async tick() {
-    if (!intelConfig().enabled || !alertsConfig().enabled || this.running)
-      return;
+    if (!intelConfig().enabled || this.running) return;
     this.running = true;
     try {
-      await this.runOnce();
+      // Bật / tắt trên màn hình Phân tích tin nhắn (smax_intel_runtime.alerts_enabled)
+      if ((await this.intel.runtime()).alertsEnabled) await this.runOnce();
     } catch (error) {
       this.logger.error(`Cảnh báo phân loại tin lỗi: ${String(error)}`);
     } finally {
@@ -250,7 +250,7 @@ export class IntelAlertService {
     const ids = await this.prisma.$queryRaw<{ id: bigint }[]>`
       SELECT i.id FROM smax_message_intel i
       WHERE i.version_id = ${version.id} AND i.status = 'completed'
-        AND i.message_at >= ${new Date(now.getTime() - FRESH_MS)}
+        AND i.message_at >= ${utcTs(new Date(now.getTime() - FRESH_MS))}
         AND (i.requires_escalation OR (i.intent = 'complaint' AND i.urgency >= 2) OR (i.is_anomaly AND i.urgency >= 3))
         AND NOT EXISTS (SELECT 1 FROM smax_intel_alerts a WHERE a.msg_pid = i.msg_pid AND a.version_id = i.version_id)
       ORDER BY i.message_at ASC LIMIT ${BATCH}`;
@@ -311,17 +311,17 @@ export class IntelAlertService {
         channel: channel?.name ?? job.pagePid,
         smaxUrl: `https://smax.ai/bizs/${process.env.SMAX_BIZ_ALIAS?.trim() || 'dieptra'}/chats/${job.pagePid}?tid=${job.tid}`,
       });
+      // Giành tin trước khi gửi: nhiều backend cùng chạy thì chỉ máy chèn được dòng 'sending' mới gửi
+      if (!(await this.record({ ...base, status: 'sending' }))) continue;
       try {
         const res = await this.replyInDayTopic(job.msgPid, card, now);
-        await this.record({
-          ...base,
+        await this.finish(base, {
           status: 'sent',
           larkMessageId: res?.data?.message_id ?? null,
         });
         sent++;
       } catch (error) {
-        await this.record({
-          ...base,
+        await this.finish(base, {
           status: 'failed',
           error: String(error).slice(0, 500),
         });
@@ -367,25 +367,45 @@ export class IntelAlertService {
     const runtime = await this.intel.runtime();
     if (!renew && runtime.alertDay === day && runtime.alertRootMessageId)
       return runtime.alertRootMessageId;
+    const { chatId } = alertSettings(runtime);
     const res = await this.lark.im.message.create({
       params: { receive_id_type: 'chat_id' },
       data: {
-        receive_id: alertsConfig().chatId,
+        receive_id: chatId,
         msg_type: 'interactive',
         content: JSON.stringify(buildDayRootCard(day)),
+        // Lark bỏ trùng theo uuid: nhiều backend cùng tạo topic trong ngày chỉ ra 1 tin
+        uuid: `intel-root-${day}-${chatId.slice(-8)}${renew ? `-${now.getTime()}` : ''}`,
       },
     });
     const id = res?.data?.message_id;
     if ((res?.code && res.code !== 0) || !id)
       throw new Error(`Lark lỗi tạo topic ${res?.code}: ${res?.msg}`);
-    await this.prisma.smaxIntelRuntime.update({
-      where: { id: 1 },
+    if (renew) {
+      await this.prisma.smaxIntelRuntime.update({
+        where: { id: 1 },
+        data: { alertDay: day, alertRootMessageId: id },
+      });
+      return id;
+    }
+    // Chỉ đặt khi chưa có topic hôm nay; máy khác vừa đặt trước → dùng topic của máy đó
+    const { count } = await this.prisma.smaxIntelRuntime.updateMany({
+      where: {
+        id: 1,
+        OR: [
+          { alertDay: null },
+          { alertDay: { not: day } },
+          { alertRootMessageId: null },
+        ],
+      },
       data: { alertDay: day, alertRootMessageId: id },
     });
-    return id;
+    if (count) return id;
+    return (await this.intel.runtime()).alertRootMessageId ?? id;
   }
 
-  private record(data: {
+  /** Ghi dòng xét cảnh báo; trả true khi chèn được (false = tin đã có dòng, máy khác đã xét). */
+  private async record(data: {
     msgPid: string;
     versionId: number;
     pagePid: string;
@@ -393,12 +413,25 @@ export class IntelAlertService {
     reason: AlertReason;
     messageAt: Date;
     status: string;
-    larkMessageId?: string | null;
-    error?: string;
   }) {
-    return this.prisma.smaxIntelAlert.createMany({
+    const { count } = await this.prisma.smaxIntelAlert.createMany({
       data: [data],
       skipDuplicates: true,
+    });
+    return count === 1;
+  }
+
+  private finish(
+    key: { msgPid: string; versionId: number },
+    data: { status: string; larkMessageId?: string | null; error?: string },
+  ) {
+    return this.prisma.smaxIntelAlert.updateMany({
+      where: {
+        msgPid: key.msgPid,
+        versionId: key.versionId,
+        status: 'sending',
+      },
+      data,
     });
   }
 }

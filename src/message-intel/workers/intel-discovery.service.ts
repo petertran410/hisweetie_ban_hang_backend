@@ -3,6 +3,7 @@ import { Cron, Interval } from '@nestjs/schedule';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MessageIntelService } from '../message-intel.service';
+import { utcTs } from '../sql-time';
 import { intelConfig } from '../message-intel.config';
 import { type ArchiveRow, decide, groupByMsgPid } from '../rules/rule-engine';
 
@@ -134,7 +135,7 @@ export class IntelDiscoveryService {
     );
     const missing = await this.prisma.$queryRaw<{ id: bigint }[]>`
       SELECT m.id FROM smax_messages m
-      WHERE m.created_at >= ${since} AND m.id <= ${runtime.discoveryCursor} AND m.type = 'message'
+      WHERE m.created_at >= ${utcTs(since)} AND m.id <= ${runtime.discoveryCursor} AND m.type = 'message'
         AND NOT EXISTS (
           SELECT 1 FROM smax_message_intel i WHERE i.msg_pid = m.msg_pid AND i.version_id = ${version.id}
         )
@@ -161,17 +162,30 @@ export class IntelDiscoveryService {
       ...new Set(rows.filter((r) => r.type !== 'system').map((r) => r.msgPid)),
     ];
     if (!msgPids.length) return 0;
-    const siblings = await this.prisma.smaxMessage.findMany({
-      // Kèm page_pid để dùng index unique (page_pid, msg_pid)
-      where: {
-        pagePid: { in: [...new Set([...ours, ...rows.map((r) => r.pagePid)])] },
-        msgPid: { in: msgPids },
-      },
-    });
+    const [siblings, exclusions] = await Promise.all([
+      this.prisma.smaxMessage.findMany({
+        // Kèm page_pid để dùng index unique (page_pid, msg_pid)
+        where: {
+          pagePid: {
+            in: [...new Set([...ours, ...rows.map((r) => r.pagePid)])],
+          },
+          msgPid: { in: msgPids },
+        },
+      }),
+      this.prisma.smaxIntelExclusion.findMany({
+        select: { pagePid: true, tid: true },
+      }),
+    ]);
+    // Hội thoại loại trừ: tin có mặt ở bất kỳ kênh nào của hội thoại đó → không gửi AI
+    const excluded = new Set(exclusions.map((e) => `${e.pagePid}:${e.tid}`));
     const data: Prisma.SmaxMessageIntelCreateManyInput[] = [];
     for (const msg of groupByMsgPid(siblings)) {
       if (allow.size && !msg.rows.some((r) => allow.has(r.pagePid))) continue;
-      const decision = decide(msg, ours);
+      const decision = msg.rows.some((r) =>
+        excluded.has(`${r.pagePid}:${r.tid}`),
+      )
+        ? ({ status: 'skipped', skipReason: 'excluded' } as const)
+        : decide(msg, ours);
       const base = {
         msgPid: msg.msgPid,
         versionId,

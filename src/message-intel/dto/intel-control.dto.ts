@@ -1,6 +1,7 @@
 import { Type } from 'class-transformer';
 import {
   ArrayMaxSize,
+  IsBoolean,
   IsNumber,
   MaxLength,
   ValidateNested,
@@ -23,6 +24,7 @@ export const INTEL_ACTIONS = [
   'cancel_backfill',
   'retry_failed',
   'set_budget',
+  'set_alerts',
 ] as const;
 export type IntelAction = (typeof INTEL_ACTIONS)[number];
 
@@ -80,6 +82,17 @@ export class IntelControlDto {
   @ArrayMaxSize(50)
   @IsString({ each: true })
   pagePids?: string[];
+
+  /** set_alerts: bật / tắt gửi cảnh báo Lark */
+  @IsOptional()
+  @IsBoolean()
+  alertsEnabled?: boolean;
+
+  /** set_alerts: chat id nhóm Lark nhận (oc_…); chuỗi rỗng = nhóm mặc định */
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  alertChatId?: string;
 
   /** set_budget: token / ngày */
   @IsOptional()

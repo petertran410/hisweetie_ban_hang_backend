@@ -3,6 +3,7 @@ import { Interval } from '@nestjs/schedule';
 import { randomUUID } from 'crypto';
 import { PrismaService } from '../../prisma/prisma.service';
 import { MessageIntelService } from '../message-intel.service';
+import { utcTs } from '../sql-time';
 import { intelConfig } from '../message-intel.config';
 import { ContextBuilder } from '../context/context-builder';
 import { JevProvider } from '../providers/jev.provider';
@@ -104,16 +105,16 @@ export class IntelWorkerService {
       WITH candidates AS (
         SELECT id FROM smax_message_intel
         WHERE version_id = ${versionId}
-          AND ((status IN ('pending', 'retry') AND next_retry_at <= ${now})
-            OR (status = 'processing' AND locked_until <= ${now}))
+          AND ((status IN ('pending', 'retry') AND next_retry_at <= ${utcTs(now)})
+            OR (status = 'processing' AND locked_until <= ${utcTs(now)}))
         ORDER BY next_retry_at ASC, id ASC
         FOR UPDATE SKIP LOCKED
         LIMIT ${limit}
       )
       UPDATE smax_message_intel AS j
       SET status = 'processing', claim_token = ${token}::uuid,
-          locked_until = ${new Date(now.getTime() + LEASE_MS)},
-          attempt_count = j.attempt_count + 1, updated_at = ${now}
+          locked_until = ${utcTs(new Date(now.getTime() + LEASE_MS))},
+          attempt_count = j.attempt_count + 1, updated_at = ${utcTs(now)}
       FROM candidates WHERE j.id = candidates.id
       RETURNING j.id, j.msg_pid, j.message_id, j.attempt_count`;
     return { token, claimed };

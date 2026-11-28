@@ -30,6 +30,7 @@ function make(
     siblings?: ArchiveRow[];
     runtime?: object;
     activatedAt?: Date;
+    exclusions?: { pagePid: string; tid: string }[];
   } = {},
 ) {
   const runtime = {
@@ -61,6 +62,9 @@ function make(
         ),
     },
     smaxIntelRuntime: { update: jest.fn().mockResolvedValue({}) },
+    smaxIntelExclusion: {
+      findMany: jest.fn().mockResolvedValue(opts.exclusions ?? []),
+    },
     $queryRaw: jest.fn(),
   };
   const intel = {
@@ -164,6 +168,38 @@ describe('IntelDiscoveryService.createJobs', () => {
     const { prisma, svc } = make({ siblings });
     await svc.createJobs(siblings, 7);
     expect(jobs(prisma)!.data.map((j) => j.msgPid)).toEqual(['g']);
+  });
+});
+
+describe('IntelDiscoveryService.createJobs: hội thoại loại trừ', () => {
+  it('tin của hội thoại loại trừ → bỏ qua (excluded), kể cả khi loại trừ ở kênh khác của cùng nhóm', async () => {
+    const siblings = [
+      row(1),
+      row(2, { msgPid: 'g', pagePid: 'zlwB', tid: 'zlw700' }),
+      row(3, { msgPid: 'g', pagePid: 'zlwA', tid: 'zlw900002' }),
+      row(4, { tid: 'zlw900003' }),
+    ];
+    const { prisma, svc } = make({
+      siblings,
+      exclusions: [
+        { pagePid: 'zlwA', tid: 'zlw900001' },
+        { pagePid: 'zlwB', tid: 'zlw700' },
+      ],
+    });
+    await svc.createJobs(siblings, 7);
+    const byPid = Object.fromEntries(
+      jobs(prisma)!.data.map((j) => [j.msgPid, j]),
+    );
+    expect(byPid.m1).toMatchObject({
+      status: 'skipped',
+      skipReason: 'excluded',
+    });
+    // Tin nhóm: dòng ở kênh A (hội thoại không loại trừ) vẫn bỏ qua vì dòng ở kênh B bị loại trừ
+    expect(byPid.g).toMatchObject({
+      status: 'skipped',
+      skipReason: 'excluded',
+    });
+    expect(byPid.m4).toMatchObject({ status: 'pending' });
   });
 });
 

@@ -3,6 +3,7 @@ import { Prisma, type SmaxMessage } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { MessageIntelService } from './message-intel.service';
 import { intelConfig } from './message-intel.config';
+import { utcTs } from './sql-time';
 import { JevProvider } from './providers/jev.provider';
 import type { IntelVersion } from './providers/classifier.interface';
 import {
@@ -162,7 +163,7 @@ export class MessageIntelQueryService {
       SELECT t.topic, count(*) AS n
       FROM smax_message_intel i, unnest(i.topics) AS t(topic)
       WHERE i.version_id = ${versionId} AND i.status = 'completed'
-        AND i.message_at >= ${range.from} AND i.message_at < ${range.to}
+        AND i.message_at >= ${utcTs(range.from)} AND i.message_at < ${utcTs(range.to)}
         AND (${range.pagePid ?? null}::text IS NULL OR i.page_pid = ${range.pagePid ?? null})
       GROUP BY t.topic ORDER BY n DESC`;
     const isEligible = (r: { status: string; skipReason: string | null }) =>
@@ -540,7 +541,7 @@ export class MessageIntelQueryService {
         SELECT page_pid, tid, id FROM smax_messages m
         WHERE m.page_pid = ANY(${pagePids}::text[]) AND m.msg_pid = i.msg_pid ORDER BY m.id LIMIT 1
       ) m ON true
-      WHERE i.version_id = ${version.id} AND i.message_at >= ${range.from} AND i.message_at < ${range.to}`;
+      WHERE i.version_id = ${version.id} AND i.message_at >= ${utcTs(range.from)} AND i.message_at < ${utcTs(range.to)}`;
     const conds: Prisma.Sql[] = [Prisma.sql`status = 'completed'`];
     if (filter.intent) conds.push(Prisma.sql`intent = ${filter.intent}`);
     if (filter.sentiment)
@@ -677,7 +678,7 @@ export class MessageIntelQueryService {
         FROM smax_message_intel i
         JOIN smax_messages m ON m.page_pid = ANY(${pages}::text[]) AND m.msg_pid = i.msg_pid
         WHERE i.version_id = ${version.id} AND i.status = 'completed'
-          AND i.message_at >= ${range.from} AND i.message_at < ${range.to}
+          AND i.message_at >= ${utcTs(range.from)} AND i.message_at < ${utcTs(range.to)}
           AND (i.intent = 'complaint' OR i.is_anomaly OR i.requires_escalation)`,
       this.overview(range, version.id),
     ]);
@@ -692,13 +693,25 @@ export class MessageIntelQueryService {
     };
   }
 
+  /** Hội thoại nào trong danh sách đang bị loại trừ khỏi phân loại tin ("page_pid:tid"). */
+  async excludedKeys(threads: { pagePid: string; tid: string }[]) {
+    if (!threads.length) return new Set<string>();
+    const rows = await this.prisma.smaxIntelExclusion.findMany({
+      where: { OR: threads.map((t) => ({ pagePid: t.pagePid, tid: t.tid })) },
+      select: { pagePid: true, tid: true },
+    });
+    return new Set(rows.map((r) => `${r.pagePid}:${r.tid}`));
+  }
+
   /**
-   * Kênh đang được phân loại tin (worker bật + có phiên bản chạy + nằm trong MESSAGE_INTEL_PAGE_PIDS nếu có).
+   * Kênh đang được phân loại tin (có phiên bản chạy + nằm trong MESSAGE_INTEL_PAGE_PIDS nếu có).
    * Khung chat dùng nhãn hội thoại tự động thay nút "Phân loại" cho các kênh này.
+   * Không xét MESSAGE_INTEL_ENABLED: cờ đó chỉ quyết định máy NÀY có chạy worker không (máy dev / bản chạy
+   * thêm tắt worker nhưng vẫn đọc nhãn do máy khác ghi). Dừng hẳn = bỏ kích hoạt phiên bản.
    */
   async coveredPagePids(pagePids: string[]) {
     const cfg = intelConfig();
-    if (!cfg.enabled || !(await this.intel.activeVersion())) return [];
+    if (!(await this.intel.activeVersion())) return [];
     const allow = new Set(cfg.pagePids);
     return pagePids.filter((p) => !allow.size || allow.has(p));
   }
@@ -744,7 +757,7 @@ export class MessageIntelQueryService {
       FROM smax_messages m
       LEFT JOIN smax_message_intel i ON i.msg_pid = m.msg_pid AND i.version_id = ${version.id}
       WHERE (m.page_pid, m.tid) IN (${pairs}) AND m.type = 'message' AND m.recalled = false
-        AND m.created_at >= ${new Date(now.getTime() - THREAD_LABEL_DAYS * 86_400_000)}
+        AND m.created_at >= ${utcTs(new Date(now.getTime() - THREAD_LABEL_DAYS * 86_400_000))}
       ORDER BY m.created_at, m.id`;
     const byThread = new Map<string, Row[]>();
     for (const r of rows) {
@@ -826,7 +839,7 @@ export class MessageIntelQueryService {
              i.purchase_intent, i.is_anomaly
       FROM smax_messages m
       JOIN smax_message_intel i ON i.msg_pid = m.msg_pid AND i.version_id = ${version.id} AND i.status = 'completed'
-      WHERE (${Prisma.join(threadConds, ' OR ')}) AND m.created_at >= ${since}
+      WHERE (${Prisma.join(threadConds, ' OR ')}) AND m.created_at >= ${utcTs(since)}
       ORDER BY i.msg_pid`;
     const sorted = rows.sort(
       (a, b) => b.message_at.getTime() - a.message_at.getTime(),

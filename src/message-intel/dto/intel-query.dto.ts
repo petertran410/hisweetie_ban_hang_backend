@@ -151,3 +151,32 @@ export class SandboxDto {
   @Type(() => SandboxLineDto)
   previous: SandboxLineDto[] = [];
 }
+
+/** Loại trừ 1 hội thoại khỏi phân loại tin (cả các kênh cùng nhóm). */
+export class ExcludeThreadDto {
+  @IsString()
+  @MaxLength(80)
+  pagePid!: string;
+
+  @IsString()
+  @MaxLength(120)
+  tid!: string;
+}
+
+/** Bỏ loại trừ: theo nhóm (tab Loại trừ) hoặc theo 1 hội thoại của nhóm (khung chat). */
+export class RemoveExclusionDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(220)
+  groupKey?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  pagePid?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  tid?: string;
+}

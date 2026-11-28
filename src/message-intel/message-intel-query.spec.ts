@@ -162,6 +162,31 @@ describe('MessageIntelQueryService', () => {
   });
 });
 
+describe('MessageIntelQueryService.coveredPagePids', () => {
+  const env = { ...process.env };
+  afterEach(() => {
+    process.env = { ...env };
+  });
+
+  it('máy tắt worker (MESSAGE_INTEL_ENABLED=false) vẫn coi kênh đã phân loại khi có phiên bản chạy → ẩn nút "Phân loại"', async () => {
+    process.env.MESSAGE_INTEL_ENABLED = 'false';
+    delete process.env.MESSAGE_INTEL_PAGE_PIDS;
+    const { svc } = make();
+    expect(await svc.coveredPagePids(['zlwA', 'zlwB'])).toEqual([
+      'zlwA',
+      'zlwB',
+    ]);
+  });
+
+  it('giới hạn theo MESSAGE_INTEL_PAGE_PIDS; chưa có phiên bản chạy → không kênh nào', async () => {
+    process.env.MESSAGE_INTEL_PAGE_PIDS = 'zlwA';
+    const { svc, intel } = make();
+    expect(await svc.coveredPagePids(['zlwA', 'zlwB'])).toEqual(['zlwA']);
+    intel.activeVersion.mockResolvedValue(null);
+    expect(await svc.coveredPagePids(['zlwA'])).toEqual([]);
+  });
+});
+
 describe('MessageIntelQueryService.threadLabels', () => {
   const at = (min: number) =>
     new Date(Date.parse('2026-11-27T03:00:00Z') + min * 60_000);

@@ -93,6 +93,14 @@ psql_local -d "${DB}_new" <<'SQL'
 UPDATE public_api_webhooks SET is_active = false WHERE is_active;
 -- Cron đẩy lại sản phẩm lên Lark Base: dữ liệu bản sao cũ hơn production → có thể ghi đè dữ liệu mới
 UPDATE settings SET lark_product_retry_cron_enabled = false;
+-- Cảnh báo phân loại tin (Lark) bật trên màn hình production → bản sao không gửi cảnh báo thật.
+-- Kiểm cột trước: production chưa chạy bản SQL có cột này thì bỏ qua.
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns
+             WHERE table_name = 'smax_intel_runtime' AND column_name = 'alerts_enabled') THEN
+    UPDATE smax_intel_runtime SET alerts_enabled = false;
+  END IF;
+END $$;
 ANALYZE;
 SQL
 

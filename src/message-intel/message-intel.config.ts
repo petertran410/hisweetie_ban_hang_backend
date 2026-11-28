@@ -25,14 +25,21 @@ export function intelConfig(env: NodeJS.ProcessEnv = process.env) {
 export const vnDay = (d = new Date()) =>
   new Date(d.getTime() + 7 * 3_600_000).toISOString().slice(0, 10);
 
-/** Nhóm Lark "Báo cáo hàng ngày Sale Chat" (user chốt); đổi bằng MESSAGE_INTEL_ALERT_CHAT_ID. */
-const DEFAULT_ALERT_CHAT_ID = 'oc_92ea2a2bbcca2116111809a3461f5795';
+/** Nhóm Lark "Báo cáo hàng ngày Sale Chat" (user chốt) — dùng khi chưa đặt chat id trên màn hình. */
+export const DEFAULT_ALERT_CHAT_ID = 'oc_92ea2a2bbcca2116111809a3461f5795';
+
+/** Chat id nhóm Lark (dạng oc_…). */
+export const LARK_CHAT_ID = /^oc_[A-Za-z0-9]{10,64}$/;
 
 /**
- * Cảnh báo quản lý qua Lark: MESSAGE_INTEL_ALERTS_ENABLED=true mới gửi (mặc định tắt — dev dùng bản sao
- * dữ liệu production không gửi cảnh báo thật).
+ * Cảnh báo quản lý qua Lark: bật / tắt và nhóm nhận đặt trên màn hình Phân tích tin nhắn (lưu trong
+ * smax_intel_runtime). Bản sao DB cho dev tự tắt cảnh báo (scripts/dev-db/sync-prod-to-local.sh).
  */
-export const alertsConfig = (env: NodeJS.ProcessEnv = process.env) => ({
-  enabled: env.MESSAGE_INTEL_ALERTS_ENABLED === 'true',
-  chatId: env.MESSAGE_INTEL_ALERT_CHAT_ID?.trim() || DEFAULT_ALERT_CHAT_ID,
+export const alertSettings = (runtime: {
+  alertsEnabled: boolean;
+  alertChatId: string | null;
+}) => ({
+  enabled: runtime.alertsEnabled,
+  chatId: runtime.alertChatId || DEFAULT_ALERT_CHAT_ID,
+  defaultChat: !runtime.alertChatId,
 });
