@@ -14,13 +14,16 @@ import { RequirePermissions } from '../auth/decorators/permissions.decorator';
 import { requestHasPermission } from '../auth/request-permissions';
 import { IntelControlDto } from './dto/intel-control.dto';
 import {
+  ExcludeThreadDto,
   IntelMessagesQueryDto,
   IntelRangeQueryDto,
+  RemoveExclusionDto,
   SandboxDto,
   SaveReviewDto,
 } from './dto/intel-query.dto';
 import { type Actor, MessageIntelService } from './message-intel.service';
 import { MessageIntelQueryService } from './message-intel-query.service';
+import { MessageIntelExclusionService } from './message-intel-exclusion.service';
 import { intelConfig } from './message-intel.config';
 import { JevProvider } from './providers/jev.provider';
 
@@ -38,6 +41,7 @@ export class MessageIntelController {
     private readonly intel: MessageIntelService,
     private readonly query: MessageIntelQueryService,
     private readonly jev: JevProvider,
+    private readonly exclusions: MessageIntelExclusionService,
   ) {}
 
   @Get('status')
@@ -136,6 +140,12 @@ export class MessageIntelController {
         break;
       case 'retry_failed':
         return this.intel.retryFailed(actor);
+      case 'set_alerts':
+        await this.intel.setAlerts(
+          { enabled: dto.alertsEnabled, chatId: dto.alertChatId },
+          actor,
+        );
+        break;
       case 'set_budget':
         if (dto.tokens === undefined)
           throw new BadRequestException('Thiếu tokens');
@@ -143,6 +153,37 @@ export class MessageIntelController {
         break;
     }
     return { ok: true };
+  }
+
+  /** Hội thoại loại trừ khỏi phân loại tin (không gửi AI): chỉ quản trị (message_intel:manage). */
+  @Get('exclusions')
+  @RequirePermissions('message_intel:manage')
+  listExclusions() {
+    return this.exclusions.list();
+  }
+
+  @Get('exclusions/threads')
+  @RequirePermissions('message_intel:manage')
+  searchThreads(@Query('q') q?: string) {
+    return this.exclusions.searchThreads(String(q ?? '').slice(0, 100));
+  }
+
+  @Post('exclusions')
+  @RequirePermissions('message_intel:manage')
+  exclude(@Body() dto: ExcludeThreadDto, @Req() req: AuthedRequest) {
+    return this.exclusions.add(
+      { pagePid: dto.pagePid, tid: dto.tid },
+      { id: req.user.id, name: req.user.name },
+    );
+  }
+
+  @Post('exclusions/remove')
+  @RequirePermissions('message_intel:manage')
+  removeExclusion(@Body() dto: RemoveExclusionDto, @Req() req: AuthedRequest) {
+    return this.exclusions.remove(dto, {
+      id: req.user.id,
+      name: req.user.name,
+    });
   }
 
   private requireChatView(req: AuthedRequest) {

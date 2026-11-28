@@ -6890,6 +6890,23 @@ model SmaxIntelReview {
   @@map("smax_intel_reviews")
 }
 
+/// Hội thoại loại trừ khỏi phân loại tin (không gửi AI). Nhóm nhiều kênh: mọi hội thoại cùng nhóm chung group_key
+model SmaxIntelExclusion {
+  id            Int      @id @default(autoincrement())
+  /// "page_pid:tid" của hội thoại được chọn loại trừ
+  groupKey      String   @map("group_key")
+  pagePid       String   @map("page_pid")
+  tid           String
+  name          String   @default("")
+  createdBy     Int?     @map("created_by")
+  createdByName String?  @map("created_by_name")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@unique([pagePid, tid])
+  @@index([groupKey])
+  @@map("smax_intel_exclusions")
+}
+
 /// Điều khiển worker phân loại (1 dòng, id = 1)
 model SmaxIntelRuntime {
   id               Int       @id @default(1)
@@ -6909,6 +6926,10 @@ model SmaxIntelRuntime {
   backfillTo       DateTime? @map("backfill_to")
   /// Rỗng = mọi kênh
   backfillPagePids String[]  @default([]) @map("backfill_page_pids")
+  /// Gửi cảnh báo quản lý vào Lark (bật / tắt trên màn hình Phân tích tin nhắn)
+  alertsEnabled      Boolean   @default(false) @map("alerts_enabled")
+  /// Chat id nhóm Lark nhận cảnh báo; null = nhóm mặc định "Báo cáo hàng ngày Sale Chat"
+  alertChatId        String?   @map("alert_chat_id")
   /// Ngày (giờ VN) của topic cảnh báo Lark đang dùng
   alertDay           String?   @map("alert_day")
   /// Tin mở đầu topic cảnh báo của ngày; cảnh báo trong ngày trả lời trong topic này
