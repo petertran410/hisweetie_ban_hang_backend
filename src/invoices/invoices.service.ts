@@ -50,6 +50,7 @@ import {
   getSeverityFromActionCode,
 } from '../audit-logs/audit-templates';
 import { recalcCustomerDebt } from 'src/common/customer-debt.util';
+import { roundMoney } from 'src/common/money.util';
 import { recalcOnHandForPairs } from 'src/common/inventory-onhand.util';
 import {
   BUCKET_DAMAGED,
@@ -2020,20 +2021,22 @@ export class InvoicesService {
           promo.effectiveItems,
         );
 
-        const totalAmount = effectiveItems.reduce(
-          (sum, item) => sum + item.totalPrice,
-          0,
+        const totalAmount = roundMoney(
+          effectiveItems.reduce((sum, item) => sum + item.totalPrice, 0),
         );
         // Giảm giá cấp hóa đơn: discountRatio > 0 ⇒ mode %, quy đổi ra tiền theo
         // tổng tiền hàng (thêm/bớt hàng thì tiền đổi, % giữ nguyên).
         // ratio = 0 ⇒ mode tiền, giữ nguyên số user nhập.
-        const discountAmount =
+        const discountAmount = roundMoney(
           dto.discountRatio && dto.discountRatio > 0
             ? (totalAmount * dto.discountRatio) / 100 +
-              promo.extraInvoiceDiscount
-            : (dto.discountAmount || 0) + promo.extraInvoiceDiscount;
+                promo.extraInvoiceDiscount
+            : (dto.discountAmount || 0) + promo.extraInvoiceDiscount,
+        );
         const shippingFee = dto.shippingFee ?? 0;
-        const grandTotal = totalAmount - discountAmount + shippingFee;
+        const grandTotal = roundMoney(
+          totalAmount - discountAmount + shippingFee,
+        );
         const requestedPaymentAmount = this.getPosPaymentAmount(
           dto,
           Number(dto.paidAmount || 0),
@@ -2041,7 +2044,7 @@ export class InvoicesService {
         const paidAmount = fromPos
           ? requestedPaymentAmount
           : Number(dto.paidAmount || 0);
-        const debtAmount = grandTotal - paidAmount;
+        const debtAmount = roundMoney(grandTotal - paidAmount);
 
         const status: number = INVOICE_STATUS.PROCESSING;
         // Hóa đơn mới luôn bắt đầu ở PROCESSING — không tự chuyển COMPLETED dù đã thanh toán đủ,
@@ -2776,27 +2779,27 @@ export class InvoicesService {
           soldExpiryDate: detail.soldExpiryDate,
         })),
       );
-      const totalAmount = detailData.reduce(
-        (sum, item) => sum + Number(item.totalPrice),
-        0,
+      const totalAmount = roundMoney(
+        detailData.reduce((sum, item) => sum + Number(item.totalPrice), 0),
       );
-      const discount = invoices.reduce(
-        (sum, invoice) => sum + Number(invoice.discount),
-        0,
+      const discount = roundMoney(
+        invoices.reduce((sum, invoice) => sum + Number(invoice.discount), 0),
       );
       const shippingFee = invoices.reduce(
         (sum, invoice) => sum + Number(invoice.shippingFee),
         0,
       );
-      const grandTotal = totalAmount - discount + shippingFee;
+      const grandTotal = roundMoney(totalAmount - discount + shippingFee);
       const activePayments = invoices.flatMap((invoice) =>
         invoice.payments.filter((payment) => payment.status !== 2),
       );
-      const paidAmount = activePayments.reduce(
-        (sum, payment) => sum + Number(payment.amount),
-        0,
+      const paidAmount = roundMoney(
+        activePayments.reduce(
+          (sum, payment) => sum + Number(payment.amount),
+          0,
+        ),
       );
-      const debtAmount = grandTotal - paidAmount;
+      const debtAmount = roundMoney(grandTotal - paidAmount);
 
       const slipIds = [
         ...new Set(
@@ -3291,26 +3294,30 @@ export class InvoicesService {
           effectiveItems,
         );
 
-        const totalAmount = effectiveItems.reduce(
-          (sum, item) => sum + item.totalPrice,
-          0,
+        const totalAmount = roundMoney(
+          effectiveItems.reduce((sum, item) => sum + item.totalPrice, 0),
         );
-        const discountAmount =
+        const discountAmount = roundMoney(
           dto.discountRatio && dto.discountRatio > 0
             ? (totalAmount * dto.discountRatio) / 100 + extraInvoiceDiscount
-            : (dto.discountAmount || 0) + extraInvoiceDiscount;
+            : (dto.discountAmount || 0) + extraInvoiceDiscount,
+        );
         const shippingFee =
           dto.shippingFee ?? Number(currentInvoice.shippingFee || 0);
-        const grandTotal = totalAmount - discountAmount + shippingFee;
+        const grandTotal = roundMoney(
+          totalAmount - discountAmount + shippingFee,
+        );
         // Chỉ cộng các payment còn active (loại đã hủy) — payments sẽ được transfer sang HĐ mới
         const activePayments = currentInvoice.payments.filter(
           (p: any) => p.status !== 2,
         );
-        const paidAmount = activePayments.reduce(
-          (sum: number, p: any) => sum + Number(p.amount),
-          0,
+        const paidAmount = roundMoney(
+          activePayments.reduce(
+            (sum: number, p: any) => sum + Number(p.amount),
+            0,
+          ),
         );
-        const debtAmount = grandTotal - paidAmount;
+        const debtAmount = roundMoney(grandTotal - paidAmount);
 
         // Hóa đơn mới (.xx) kế thừa nguyên trạng thái của hóa đơn cũ
         // (processing → processing, packed → packed, loading → loading,
@@ -3693,12 +3700,14 @@ export class InvoicesService {
         updateData.description = dto.description;
       if (dto.shippingFee !== undefined) {
         updateData.shippingFee = dto.shippingFee;
-        updateData.grandTotal =
+        updateData.grandTotal = roundMoney(
           Number(currentInvoice.totalAmount) -
-          Number(currentInvoice.discount) +
-          dto.shippingFee;
-        updateData.debtAmount =
-          updateData.grandTotal - Number(currentInvoice.paidAmount);
+            Number(currentInvoice.discount) +
+            dto.shippingFee,
+        );
+        updateData.debtAmount = roundMoney(
+          updateData.grandTotal - Number(currentInvoice.paidAmount),
+        );
         if (currentInvoice.status === INVOICE_STATUS.COMPLETED) {
           updateData.status =
             updateData.debtAmount <= 0
@@ -3959,17 +3968,19 @@ export class InvoicesService {
           })),
         ]);
 
-        const totalAmount = inPlaceItems.reduce(
-          (sum, item) => sum + item.totalPrice,
-          0,
+        const totalAmount = roundMoney(
+          inPlaceItems.reduce((sum, item) => sum + item.totalPrice, 0),
         );
-        const discountAmount =
+        const discountAmount = roundMoney(
           dto.discountRatio && dto.discountRatio > 0
             ? (totalAmount * dto.discountRatio) / 100 + inPlaceExtraDiscount
-            : (dto.discountAmount || 0) + inPlaceExtraDiscount;
+            : (dto.discountAmount || 0) + inPlaceExtraDiscount,
+        );
         const shippingFee =
           dto.shippingFee ?? Number(currentInvoice.shippingFee || 0);
-        const grandTotal = totalAmount - discountAmount + shippingFee;
+        const grandTotal = roundMoney(
+          totalAmount - discountAmount + shippingFee,
+        );
 
         // Tổng invoicePayment còn active (loại đã hủy)
         const payments = await tx.invoicePayment.findMany({
@@ -3990,8 +4001,8 @@ export class InvoicesService {
           0,
         );
 
-        const paidAmount = sumPayments + sumCtns;
-        const debtAmount = grandTotal - paidAmount;
+        const paidAmount = roundMoney(sumPayments + sumCtns);
+        const debtAmount = roundMoney(grandTotal - paidAmount);
 
         let status: number = currentInvoice.status;
         if (
@@ -4692,28 +4703,29 @@ export class InvoicesService {
         effectiveItems,
       );
 
-      const totalAmount = effectiveItems.reduce(
-        (sum, item) => sum + item.totalPrice,
-        0,
+      const totalAmount = roundMoney(
+        effectiveItems.reduce((sum, item) => sum + item.totalPrice, 0),
       );
 
       // Mode %: quy đổi ra tiền theo tổng tiền hàng thực tế của HĐ này.
-      const effectiveManualDiscount =
+      const effectiveManualDiscount = roundMoney(
         dtoDiscountRatio != null && dtoDiscountRatio > 0
           ? (totalAmount * dtoDiscountRatio) / 100
-          : discountForThisInvoice;
+          : discountForThisInvoice,
+      );
 
       const shippingFee = this.allocateSourceShippingFee(
         order.shippingFee,
         order.invoices,
         dto.shippingFee,
       );
-      const grandTotal =
+      const grandTotal = roundMoney(
         totalAmount -
-        effectiveManualDiscount -
-        extraInvoiceDiscount +
-        shippingFee;
-      const debtAmount = grandTotal - totalPaid;
+          effectiveManualDiscount -
+          extraInvoiceDiscount +
+          shippingFee,
+      );
+      const debtAmount = roundMoney(grandTotal - totalPaid);
 
       // Hóa đơn tạo từ order luôn bắt đầu ở PROCESSING — chưa giao hàng nên không thể là COMPLETED.
       const status = INVOICE_STATUS.PROCESSING;
@@ -5379,17 +5391,18 @@ export class InvoicesService {
               lineVatRate: (item as any).lineVatRate ?? null, // giữ NULL = dòng cũ
             }));
 
-      const totalAmount = itemsToInvoice.reduce(
-        (sum, item) => sum + item.totalPrice,
-        0,
+      const totalAmount = roundMoney(
+        itemsToInvoice.reduce((sum, item) => sum + item.totalPrice, 0),
       );
       const shippingFee = this.allocateSourceShippingFee(
         consignment.shippingFee,
         consignment.invoices,
         dto.shippingFee,
       );
-      const grandTotal = totalAmount - discountForThisInvoice + shippingFee;
-      const debtAmount = grandTotal - totalPaid;
+      const grandTotal = roundMoney(
+        totalAmount - discountForThisInvoice + shippingFee,
+      );
+      const debtAmount = roundMoney(grandTotal - totalPaid);
 
       const consignmentPaymentMethod = dto.paymentNoteType || dto.paymentType;
 

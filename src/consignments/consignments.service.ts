@@ -18,6 +18,7 @@ import {
 import { searchCustomerIds } from '../common/customer-search.util';
 import { restoreConsignmentStock } from '../common/consignment-packing.util';
 import { resolveDeliveryAddress } from '../common/address-resolver.util';
+import { roundMoney } from '../common/money.util';
 import { CONSIGNMENT_RETURN_STATUS } from '../consignment-returns/dto';
 import { LarkProductSyncService } from '../lark-sync/services/lark-product-sync.service';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
@@ -641,9 +642,11 @@ export class ConsignmentsService {
     const items = await tx.consignmentItem.findMany({
       where: { consignmentId },
     });
-    const totalAmount = items.reduce(
-      (sum: number, item: any) => sum + Number(item.totalPrice),
-      0,
+    const totalAmount = roundMoney(
+      items.reduce(
+        (sum: number, item: any) => sum + Number(item.totalPrice),
+        0,
+      ),
     );
     const consignment = await tx.consignment.findUnique({
       where: { id: consignmentId },
@@ -655,12 +658,14 @@ export class ConsignmentsService {
     // để mẫu in/báo cáo đọc field này luôn đúng.
     // ratio = 0 ⇒ mode tiền, giữ nguyên số user nhập.
     const ratio = Number(consignment.discountRatio) || 0;
-    const discountAmount =
+    const discountAmount = roundMoney(
       ratio > 0
         ? (totalAmount * ratio) / 100
-        : Number(consignment.discount) || 0;
-    const grandTotal =
-      totalAmount - discountAmount + Number(consignment.shippingFee || 0);
+        : Number(consignment.discount) || 0,
+    );
+    const grandTotal = roundMoney(
+      totalAmount - discountAmount + Number(consignment.shippingFee || 0),
+    );
 
     await tx.consignment.update({
       where: { id: consignmentId },
